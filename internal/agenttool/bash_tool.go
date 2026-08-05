@@ -10,8 +10,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -130,6 +133,17 @@ func (t *BashTool) ExecutionMode() agentcore.ToolExecutionMode {
 // simulate a Windows box with or without bash installed.
 var shellLookPath = exec.LookPath
 
+// wslBashProbe reports whether the WSL bash relay at path can actually run a
+// command. It is a package var so tests can simulate broken or healthy WSL.
+var wslBashProbe = probeWSLBash
+
+// wslProbeOnce caches the WSL relay probe so a broken relay is not re-probed
+// on every bash call.
+var (
+	wslProbeOnce sync.Once
+	wslProbeOK   bool
+)
+
 // resolveShell picks the interpreter and the flag that makes it read the command
 // from the next argument. An explicit shell (BashTool.Shell) is always honored as
 // a POSIX-style "<shell> -c <command>".
@@ -144,7 +158,7 @@ func resolveShell(explicit, goos string, lookPath func(string) (string, error)) 
 		return explicit, "-c"
 	}
 	if goos == "windows" {
-		if p, err := lookPath("bash"); err == nil {
+		if p := resolveWindowsBash(lookPath); p != "" {
 			return p, "-c"
 		}
 		if p, err := lookPath("powershell"); err == nil {
@@ -153,6 +167,68 @@ func resolveShell(explicit, goos string, lookPath func(string) (string, error)) 
 		return "cmd", "/C"
 	}
 	return "bash", "-c"
+}
+
+// resolveWindowsBash returns a usable bash on Windows, or "" when only a
+// broken shell would be available. Git Bash install locations are preferred
+// because PATH may resolve bash to C:\Windows\System32\bash.exe, the WSL
+// relay. That relay fails on machines with no real Linux distro (for example
+// only docker-desktop), so it is probed before being accepted.
+func resolveWindowsBash(lookPath func(string) (string, error)) string {
+	for _, p := range gitBashCandidates() {
+		if isRegularFile(p) {
+			return p
+		}
+	}
+	p, err := lookPath("bash")
+	if err != nil {
+		return ""
+	}
+	if isWSLBashRelay(p) && !wslBashProbe(p) {
+		return ""
+	}
+	return p
+}
+
+// gitBashCandidates lists the standard Git for Windows bash locations so a
+// real bash is preferred over the WSL relay.
+func gitBashCandidates() []string {
+	candidates := []string{
+		`C:\Program Files\Git\bin\bash.exe`,
+		`C:\Program Files (x86)\Git\bin\bash.exe`,
+	}
+	if local := os.Getenv("LOCALAPPDATA"); local != "" {
+		candidates = append(candidates, filepath.Join(local, `Programs\Git\bin\bash.exe`))
+	}
+	return candidates
+}
+
+// isWSLBashRelay reports whether path is the WSL bash relay in System32.
+func isWSLBashRelay(path string) bool {
+	root := os.Getenv("SystemRoot")
+	if root == "" {
+		root = `C:\Windows`
+	}
+	wslBash := filepath.Join(root, `System32\bash.exe`)
+	return strings.EqualFold(filepath.Clean(path), filepath.Clean(wslBash))
+}
+
+// isRegularFile reports whether path names an existing non-directory file.
+func isRegularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+// probeWSLBash runs a trivial command through the WSL relay to verify that a
+// real distro is installed. docker-desktop-only machines fail here quickly.
+func probeWSLBash(path string) bool {
+	wslProbeOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, path, "-c", ":")
+		wslProbeOK = cmd.Run() == nil
+	})
+	return wslProbeOK
 }
 
 // streamWriter forwards each written chunk to onUpdate as a growing partial

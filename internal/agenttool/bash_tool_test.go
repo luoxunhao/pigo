@@ -141,6 +141,20 @@ func TestBashToolMissingCommand(t *testing.T) {
 	}
 }
 
+func TestBashToolWindowsFallsBackToPowerShell(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-only")
+	}
+	tool := &BashTool{}
+	res, gerr := runBash(t, tool, map[string]any{"command": "Write-Output hi"}, nil)
+	if gerr != nil {
+		t.Fatalf("unexpected go error: %v", gerr)
+	}
+	if !strings.Contains(resultText(res), "hi") {
+		t.Errorf("output = %q, want to contain hi", resultText(res))
+	}
+}
+
 func TestBashToolMode(t *testing.T) {
 	tool := &BashTool{}
 	if tool.Name() != "bash" {
@@ -270,3 +284,39 @@ func TestResolveShell(t *testing.T) {
 	}
 }
 
+func TestResolveShellSkipsBrokenWSLRelay(t *testing.T) {
+	old := wslBashProbe
+	wslBashProbe = func(string) bool { return false }
+	defer func() { wslBashProbe = old }()
+
+	look := func(name string) (string, error) {
+		switch name {
+		case "bash":
+			return `C:\Windows\System32\bash.exe`, nil
+		case "powershell":
+			return `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, nil
+		}
+		return "", fmt.Errorf("not found")
+	}
+	shell, flag := resolveShell("", "windows", look)
+	if flag != "-Command" || !strings.Contains(shell, "powershell") {
+		t.Fatalf("shell = %q flag = %q, want powershell fallback", shell, flag)
+	}
+}
+
+func TestResolveShellKeepsWorkingWSLBash(t *testing.T) {
+	old := wslBashProbe
+	wslBashProbe = func(string) bool { return true }
+	defer func() { wslBashProbe = old }()
+
+	look := func(name string) (string, error) {
+		if name == "bash" {
+			return `C:\Windows\System32\bash.exe`, nil
+		}
+		return "", fmt.Errorf("not found")
+	}
+	shell, flag := resolveShell("", "windows", look)
+	if flag != "-c" || !strings.Contains(shell, "bash") {
+		t.Fatalf("shell = %q flag = %q, want working WSL bash", shell, flag)
+	}
+}
