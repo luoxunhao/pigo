@@ -216,6 +216,36 @@ func (s *Store) Create(meta Metadata, header session.SessionHeader, messages age
 	return s.upsertIndex(meta)
 }
 
+// ImportEntries materializes an existing transcript (entries with their
+// id/parentId tree preserved) as a session in this store: metadata + transcript
+// + index. It is the migration primitive that brings a legacy flat session into
+// the project-scoped store without regenerating entry ids, so fork/clone/tree
+// behavior survives the move. It fails when a session with the same id already
+// exists in this store.
+func (s *Store) ImportEntries(meta Metadata, header session.SessionHeader, entries []session.Entry) error {
+	if meta.SessionID == "" {
+		return errors.New("sessionstore: session id must not be empty")
+	}
+	if header.ID == "" {
+		header.ID = meta.SessionID
+	}
+	if header.ID != meta.SessionID {
+		return fmt.Errorf("sessionstore: header id %q != metadata id %q", header.ID, meta.SessionID)
+	}
+	meta.SchemaVersion = SchemaVersion
+	normalize(&meta)
+	if _, err := s.LoadMetadata(meta.SessionID); err == nil {
+		return fmt.Errorf("sessionstore: session %q already exists", meta.SessionID)
+	}
+	if err := s.writeMetadata(meta); err != nil {
+		return err
+	}
+	if err := s.transcripts.SaveEntries(header, entries); err != nil {
+		return fmt.Errorf("sessionstore: save transcript: %w", err)
+	}
+	return s.upsertIndex(meta)
+}
+
 // SaveMetadata updates a session's metadata and refreshes the index. It does
 // not touch the transcript.
 func (s *Store) SaveMetadata(meta Metadata) error {
@@ -281,6 +311,40 @@ func (s *Store) Append(sessionID string, updatedAt time.Time, messages agentcore
 	return s.SaveMetadata(meta)
 }
 
+// AppendBranch grows an existing session's transcript as a branch descending
+// from parentLeafID and refreshes the metadata counts/timestamp. It mirrors
+// Append but preserves the on-disk entry tree (and therefore any sibling
+// branches), so /tree leaf-switching and fork behavior keep working on the
+// unified store. An empty parentLeafID roots a new chain.
+func (s *Store) AppendBranch(sessionID string, header session.SessionHeader, parentLeafID string, messages agentcore.MessageList) (string, error) {
+	if len(messages) == 0 {
+		return parentLeafID, nil
+	}
+	leaf, err := s.transcripts.AppendBranch(header, parentLeafID, messages)
+	if err != nil {
+		return "", err
+	}
+	meta, err := s.LoadMetadata(sessionID)
+	if err != nil {
+		return "", err
+	}
+	if header.UpdatedAt.IsZero() {
+		meta.LastActiveAt = time.Now().UTC()
+	} else {
+		meta.LastActiveAt = header.UpdatedAt
+	}
+	meta.MessageCount += len(messages)
+	for _, m := range messages {
+		switch m.(type) {
+		case agentcore.UserMessage:
+			meta.TurnCount++
+		case agentcore.ToolResultMessage:
+			meta.ToolCallCount++
+		}
+	}
+	return leaf, s.SaveMetadata(meta)
+}
+
 // Touch refreshes a session's last-active timestamp.
 func (s *Store) Touch(sessionID string) error {
 	meta, err := s.LoadMetadata(sessionID)
@@ -298,6 +362,51 @@ func (s *Store) List() ([]Metadata, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.listLocked()
+}
+
+// ListAll returns the metadata of every session in every project store under
+// pigoHome, most recently active first. It is the cross-project listing used by
+// --list-sessions / --continue and the dream distillation source. A missing
+// projects root (no project-scoped sessions yet) is not an error; corrupt
+// metadata files are skipped so one bad session cannot hide the rest.
+func ListAll(pigoHome string) ([]Metadata, error) {
+	root := ProjectsRoot(pigoHome)
+	projects, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("sessionstore: read projects root: %w", err)
+	}
+	var all []Metadata
+	for _, p := range projects {
+		if !p.IsDir() {
+			continue
+		}
+		dir := filepath.Join(root, p.Name(), "sessions")
+		files, err := os.ReadDir(dir)
+		if err != nil {
+			continue // a project without a sessions dir is not an error
+		}
+		for _, f := range files {
+			if f.IsDir() || !strings.HasSuffix(f.Name(), ".metadata.json") {
+				continue
+			}
+			var file StoredMetadataFile
+			if err := readJSON(filepath.Join(dir, f.Name()), &file); err != nil {
+				continue
+			}
+			if file.SchemaVersion > SchemaVersion {
+				continue
+			}
+			file.Metadata.SessionID = strings.TrimSuffix(f.Name(), ".metadata.json")
+			all = append(all, file.Metadata)
+		}
+	}
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].LastActiveAt.After(all[j].LastActiveAt)
+	})
+	return all, nil
 }
 
 // Delete removes a session's metadata and transcript and updates the index.

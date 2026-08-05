@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -145,6 +147,21 @@ func TestBashToolWindowsFallsBackToPowerShell(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("windows-only")
 	}
+	oldCandidates, oldProbe, oldLook := gitBashCandidates, wslBashProbe, shellLookPath
+	gitBashCandidates = func() []string { return nil }
+	wslBashProbe = func(string) bool { return false }
+	shellLookPath = func(name string) (string, error) {
+		if name == "powershell" {
+			return `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, nil
+		}
+		return "", fmt.Errorf("not found")
+	}
+	defer func() {
+		gitBashCandidates = oldCandidates
+		wslBashProbe = oldProbe
+		shellLookPath = oldLook
+	}()
+
 	tool := &BashTool{}
 	res, gerr := runBash(t, tool, map[string]any{"command": "Write-Output hi"}, nil)
 	if gerr != nil {
@@ -152,6 +169,44 @@ func TestBashToolWindowsFallsBackToPowerShell(t *testing.T) {
 	}
 	if !strings.Contains(resultText(res), "hi") {
 		t.Errorf("output = %q, want to contain hi", resultText(res))
+	}
+}
+
+func TestResolveWindowsBashDerivesFromGitPath(t *testing.T) {
+	oldCandidates := gitBashCandidates
+	gitBashCandidates = func() []string { return nil }
+	defer func() { gitBashCandidates = oldCandidates }()
+
+	root := t.TempDir()
+	cmdDir := filepath.Join(root, "cmd")
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitPath := filepath.Join(cmdDir, "git.exe")
+	bashPath := filepath.Join(binDir, "bash.exe")
+	if err := os.WriteFile(gitPath, []byte("git"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bashPath, []byte("bash"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	look := func(name string) (string, error) {
+		if name == "git" {
+			return gitPath, nil
+		}
+		return "", fmt.Errorf("not found")
+	}
+	shell, flag := resolveShell("", "windows", look)
+	if flag != "-c" {
+		t.Fatalf("flag = %q, want -c", flag)
+	}
+	if !strings.EqualFold(filepath.Clean(shell), filepath.Clean(bashPath)) {
+		t.Fatalf("shell = %q, want %q", shell, bashPath)
 	}
 }
 

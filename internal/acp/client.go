@@ -115,6 +115,51 @@ func (c *Client) LoadSession(ctx context.Context, sessionID, cwd string) (string
 	return resp.SessionID, nil
 }
 
+// ListSessions returns the stored session summaries for a workspace (empty cwd
+// lists all projects).
+func (c *Client) ListSessions(ctx context.Context, cwd string) ([]map[string]any, error) {
+	params := map[string]any{}
+	if cwd != "" {
+		params["cwd"] = cwd
+	}
+	raw, err := c.transport.SendRequest(ctx, MethodSessionList, params)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Sessions, nil
+}
+
+// DeleteSession removes a stored session idempotently.
+func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
+	_, err := c.transport.SendRequest(ctx, MethodSessionDelete, map[string]any{"sessionId": sessionID})
+	return err
+}
+
+// SetMode switches the session thinking mode.
+func (c *Client) SetMode(ctx context.Context, sessionID, modeID string) error {
+	_, err := c.transport.SendRequest(ctx, MethodSessionMode, map[string]any{
+		"sessionId": sessionID,
+		"modeId":    modeID,
+	})
+	return err
+}
+
+// SetConfigOption updates a session config option (model or thought_level).
+func (c *Client) SetConfigOption(ctx context.Context, sessionID, configID, value string) error {
+	_, err := c.transport.SendRequest(ctx, MethodSessionConfigOpt, map[string]any{
+		"sessionId": sessionID,
+		"configId":  configID,
+		"value":     value,
+	})
+	return err
+}
+
 // Prompt sends a text prompt and waits for the turn to finish, returning the
 // ACP stop reason.
 func (c *Client) Prompt(ctx context.Context, sessionID, text string) (string, error) {

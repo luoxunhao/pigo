@@ -15,7 +15,7 @@ func textPartial(text string) agentcore.AssistantMessage {
 }
 
 func TestMapTextDeltas(t *testing.T) {
-	m := newEventMapper()
+	m := newEventMapper("")
 	ev1 := agentcore.MessageUpdateEvent{
 		Message:               textPartial("hel"),
 		AssistantMessageEvent: provider.StreamTextEvent{Partial: textPartial("hel")},
@@ -40,7 +40,7 @@ func TestMapTextDeltas(t *testing.T) {
 }
 
 func TestMapThoughtChunk(t *testing.T) {
-	m := newEventMapper()
+	m := newEventMapper("")
 	partial := agentcore.AssistantMessage{
 		RoleField: agentcore.RoleAssistant,
 		Content:   agentcore.ContentList{agentcore.NewThinkingContent("reasoning")},
@@ -56,7 +56,7 @@ func TestMapThoughtChunk(t *testing.T) {
 }
 
 func TestMapToolStartEnd(t *testing.T) {
-	m := newEventMapper()
+	m := newEventMapper("")
 	start := m.Map("s1", agentcore.ToolExecutionStartEvent{
 		ToolCallID: "call-1",
 		ToolName:   "bash",
@@ -75,13 +75,18 @@ func TestMapToolStartEnd(t *testing.T) {
 		Result:     agentcore.AgentToolResult{Content: agentcore.ContentList{agentcore.NewTextContent("hi")}},
 	})
 	e := end[0]
-	if e["sessionUpdate"] != "tool_call_update" || e["status"] != "completed" || e["rawOutput"] != "hi" {
+	if e["sessionUpdate"] != "tool_call_update" || e["status"] != "completed" {
 		t.Fatalf("tool end shape = %+v", e)
+	}
+	meta := e["_meta"].(map[string]any)
+	out := meta["terminal_output"].(map[string]any)
+	if out["data"] != "hi" {
+		t.Fatalf("terminal output = %v, want hi", out["data"])
 	}
 }
 
 func TestMapUsage(t *testing.T) {
-	m := newEventMapper()
+	m := newEventMapper("")
 	updates := m.Map("s1", agentcore.TelemetryEvent{ContextTokens: 10, ContextWindow: 1000})
 	if len(updates) != 1 {
 		t.Fatalf("updates = %+v", updates)
@@ -93,7 +98,7 @@ func TestMapUsage(t *testing.T) {
 }
 
 func TestMapIgnoresUnmappedEvents(t *testing.T) {
-	m := newEventMapper()
+	m := newEventMapper("")
 	if updates := m.Map("s1", agentcore.AgentStartEvent{SessionID: "s1"}); len(updates) != 0 {
 		t.Fatalf("unmapped event produced updates: %+v", updates)
 	}

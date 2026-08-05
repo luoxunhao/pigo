@@ -201,3 +201,29 @@ func TestPersistAfterCompaction(t *testing.T) {
 		t.Fatalf("persisted messages = %d, want 2 (flattened compacted context)", len(msgs))
 	}
 }
+
+// TestACPSessionPersistNoop verifies that an ACP-backed runSession never writes
+// its own transcript: the ACP server owns persistence, so persist() is a no-op
+// even when the context has new messages. This is the guard that removes the
+// previous double-write between the ACP server and the TUI.
+func TestACPSessionPersistNoop(t *testing.T) {
+	store := newTestStore(t)
+	s, _, err := newRunSessionWithStore(store, Options{Model: "m", ProviderName: "p"})
+	if err != nil {
+		t.Fatalf("newRunSessionWithStore: %v", err)
+	}
+	s.acpBacked = true
+	s.agentCtx.Messages = append(s.agentCtx.Messages,
+		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("hi")}},
+		agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant, Content: agentcore.ContentList{agentcore.NewTextContent("yo")}},
+	)
+	if err := s.persist(); err != nil {
+		t.Fatalf("persist (acp-backed): %v", err)
+	}
+	if s.persisted != 0 {
+		t.Errorf("persisted = %d, want 0 (no local write)", s.persisted)
+	}
+	if _, _, err := store.Load(s.header.ID); err == nil {
+		t.Fatal("acp-backed persist wrote a transcript to the local store")
+	}
+}

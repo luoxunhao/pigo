@@ -10,6 +10,7 @@ import (
 
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/session"
+	"github.com/smallnest/pigo/internal/sessionstore"
 )
 
 // stubSessions is an in-memory SessionSource for distill tests: it lists the
@@ -33,6 +34,59 @@ func (s *stubSessions) Load(id string) (session.SessionHeader, agentcore.Message
 
 func userMsg(text string) agentcore.UserMessage {
 	return agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent(text)}}
+}
+
+// TestResolveSessionStoreSeesProjectAndLegacy verifies the distillation source
+// reads sessions from the project-scoped stores (the single write home) plus
+// any not-yet-migrated legacy flat sessions.
+func TestResolveSessionStoreSeesProjectAndLegacy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("PIGO_HOME", home)
+	ws := filepath.Join(home, "proj")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	msgs := agentcore.MessageList{userMsg("hi")}
+
+	proj, err := sessionstore.OpenForWorkspace(home, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := sessionstore.NewMetadata("proj-sess", "Project", "pigo", "m", ws)
+	meta.CreatedAt = now
+	meta.LastActiveAt = now
+	projHeader := session.SessionHeader{ID: "proj-sess", CreatedAt: now, UpdatedAt: now, Model: "m", Provider: "p", Cwd: ws}
+	if err := proj.Create(meta, projHeader, msgs); err != nil {
+		t.Fatal(err)
+	}
+
+	legacy, err := session.NewStore(filepath.Join(home, "sessions"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyHeader := session.SessionHeader{ID: "legacy-sess", CreatedAt: now, UpdatedAt: now.Add(time.Hour), Model: "m", Provider: "p", Cwd: ws}
+	if err := legacy.Save(legacyHeader, msgs); err != nil {
+		t.Fatal(err)
+	}
+
+	src, err := resolveSessionStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	headers, err := src.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(headers) != 2 {
+		t.Fatalf("List returned %d headers, want 2", len(headers))
+	}
+	if _, loaded, err := src.Load("proj-sess"); err != nil || len(loaded) != 1 {
+		t.Fatalf("load project session: err=%v msgs=%d", err, len(loaded))
+	}
+	if _, loaded, err := src.Load("legacy-sess"); err != nil || len(loaded) != 1 {
+		t.Fatalf("load legacy session: err=%v msgs=%d", err, len(loaded))
+	}
 }
 
 func asstMsg(text string) agentcore.AssistantMessage {

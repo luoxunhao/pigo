@@ -315,6 +315,9 @@ func dispatch(ctx context.Context, opts cliOptions, out, errOut io.Writer) int {
 			AppendSystemPrompt: opts.appendSystemPrompt,
 			Approve:            opts.approve,
 			MemoryEnabled:      opts.memory.Memory.Enabled,
+			ConfigPrompts:      opts.configPrompts,
+			CliPrompts:         opts.promptTemplates,
+			NoPromptTemplates:  opts.noPromptTemplates,
 		}, os.Stdin, out, errOut)
 	}
 

@@ -180,6 +180,14 @@ func resolveWindowsBash(lookPath func(string) (string, error)) string {
 			return p
 		}
 	}
+	// Git can live outside the standard install dirs (portable installs,
+	// D:\Program Files\Git, ...). git.exe is at <root>\cmd\git.exe, so derive
+	// the sibling <root>\bin\bash.exe from the git executable on PATH.
+	if gitPath, err := lookPath("git"); err == nil {
+		if p := gitBashCandidateFromGitPath(gitPath); isRegularFile(p) {
+			return p
+		}
+	}
 	p, err := lookPath("bash")
 	if err != nil {
 		return ""
@@ -191,8 +199,11 @@ func resolveWindowsBash(lookPath func(string) (string, error)) string {
 }
 
 // gitBashCandidates lists the standard Git for Windows bash locations so a
-// real bash is preferred over the WSL relay.
-func gitBashCandidates() []string {
+// real bash is preferred over the WSL relay. It is a var so tests can
+// substitute a deterministic list.
+var gitBashCandidates = defaultGitBashCandidates
+
+func defaultGitBashCandidates() []string {
 	candidates := []string{
 		`C:\Program Files\Git\bin\bash.exe`,
 		`C:\Program Files (x86)\Git\bin\bash.exe`,
@@ -201,6 +212,15 @@ func gitBashCandidates() []string {
 		candidates = append(candidates, filepath.Join(local, `Programs\Git\bin\bash.exe`))
 	}
 	return candidates
+}
+
+// gitBashCandidateFromGitPath maps a git.exe path to its sibling Git Bash:
+// <root>\cmd\git.exe -> <root>\bin\bash.exe.
+func gitBashCandidateFromGitPath(gitPath string) string {
+	if strings.TrimSpace(gitPath) == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(filepath.Dir(gitPath)), "bin", "bash.exe")
 }
 
 // isWSLBashRelay reports whether path is the WSL bash relay in System32.

@@ -7,8 +7,10 @@ package headless
 
 import (
 	"testing"
+	"time"
 
 	"github.com/smallnest/pigo/internal/agentcore"
+	"github.com/smallnest/pigo/internal/session"
 )
 
 func textUser(s string) agentcore.UserMessage {
@@ -45,10 +47,14 @@ func TestOpenHeadlessSessionFresh(t *testing.T) {
 		t.Fatalf("persist: %v", err)
 	}
 
-	// The session must now be loadable with both messages.
-	_, msgs, err := hs.store.Load(hs.header.ID)
+	// The session must now be loadable from the project-scoped store with both
+	// messages, and its metadata must exist alongside the transcript.
+	_, _, msgs, err := hs.store.Load(hs.header.ID)
 	if err != nil {
 		t.Fatalf("Load persisted session: %v", err)
+	}
+	if _, err := hs.store.LoadMetadata(hs.header.ID); err != nil {
+		t.Fatalf("metadata missing after fresh persist: %v", err)
 	}
 	if len(msgs) != 2 {
 		t.Fatalf("persisted session has %d messages, want 2", len(msgs))
@@ -92,7 +98,7 @@ func TestOpenHeadlessSessionResume(t *testing.T) {
 	if err := hs2.persist(ctx2); err != nil {
 		t.Fatalf("second persist: %v", err)
 	}
-	_, msgs, err := hs2.store.Load(sessID)
+	_, _, msgs, err := hs2.store.Load(sessID)
 	if err != nil {
 		t.Fatalf("Load after second turn: %v", err)
 	}
@@ -117,7 +123,7 @@ func TestHeadlessPersistNoop(t *testing.T) {
 	if err := hs.persist(ctx); err != nil {
 		t.Fatalf("noop persist: %v", err)
 	}
-	_, msgs, err := hs.store.Load(hs.header.ID)
+	_, _, msgs, err := hs.store.Load(hs.header.ID)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -152,5 +158,61 @@ func TestHeadlessPersistCompactionShrink(t *testing.T) {
 	}
 	if hs.persisted != 2 {
 		t.Errorf("cursor after clamp = %d, want 2", hs.persisted)
+	}
+}
+
+// TestHeadlessLegacySessionMigratesOnResume verifies that a session written by
+// the old flat store is migrated into the project-scoped store on first resume:
+// the new run appends only to the project store, and the legacy flat copy is
+// never written again (no double write).
+func TestHeadlessLegacySessionMigratesOnResume(t *testing.T) {
+	t.Setenv("PIGO_HOME", t.TempDir())
+	legacy, err := LegacySessionStore()
+	if err != nil {
+		t.Fatalf("LegacySessionStore: %v", err)
+	}
+	now := time.Now().UTC()
+	id := session.NewID(now)
+	header := session.SessionHeader{
+		ID:           id,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+		Model:        "m",
+		Provider:     "p",
+		SystemPrompt: "s",
+		Cwd:          headlessCwd(),
+	}
+	msgs := agentcore.MessageList{textUser("old question"), textAssistant("old answer")}
+	if err := legacy.Save(header, msgs); err != nil {
+		t.Fatalf("save legacy session: %v", err)
+	}
+
+	prior, hs, err := openHeadlessSession(id, "m", "p", "s")
+	if err != nil {
+		t.Fatalf("resume legacy session: %v", err)
+	}
+	if len(prior) != 2 {
+		t.Fatalf("resume must seed %d prior messages, got %d", 2, len(prior))
+	}
+
+	ctx := &agentcore.AgentContext{Messages: append(prior, textUser("new question"), textAssistant("new answer"))}
+	if err := hs.persist(ctx); err != nil {
+		t.Fatalf("persist after migration: %v", err)
+	}
+	_, _, projectMsgs, err := hs.store.Load(id)
+	if err != nil {
+		t.Fatalf("project store Load: %v", err)
+	}
+	if len(projectMsgs) != 4 {
+		t.Fatalf("project store has %d messages, want 4", len(projectMsgs))
+	}
+	// The legacy flat copy must remain untouched: exactly the two original
+	// messages, proving the resumed run did not write there again.
+	_, legacyMsgs, err := legacy.Load(id)
+	if err != nil {
+		t.Fatalf("legacy Load: %v", err)
+	}
+	if len(legacyMsgs) != 2 {
+		t.Fatalf("legacy copy has %d messages, want 2 (no double write)", len(legacyMsgs))
 	}
 }
