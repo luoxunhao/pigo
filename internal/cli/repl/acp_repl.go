@@ -84,15 +84,15 @@ func runACPInteractive(client *acp.Client, in io.Reader, out io.Writer, sessionI
 		line, _ := reader.ReadString('\n')
 		switch strings.ToLower(strings.TrimSpace(line)) {
 		case "y", "yes":
-			return map[string]any{"outcome": "selected", "optionId": "allow_once"}, nil
+			return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": "allow_once"}}, nil
 		case "a", "always":
-			return map[string]any{"outcome": "selected", "optionId": "allow_always"}, nil
+			return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": "allow_always"}}, nil
 		case "n", "no":
-			return map[string]any{"outcome": "selected", "optionId": "reject_once"}, nil
+			return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": "reject_once"}}, nil
 		case "r":
-			return map[string]any{"outcome": "selected", "optionId": "reject_always"}, nil
+			return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": "reject_always"}}, nil
 		default:
-			return map[string]any{"outcome": "cancelled"}, nil
+			return map[string]any{"outcome": map[string]any{"outcome": "cancelled"}}, nil
 		}
 	})
 

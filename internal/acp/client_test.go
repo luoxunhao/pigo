@@ -89,7 +89,7 @@ func TestClientRoutesPermissionRequests(t *testing.T) {
 	handlerCalled := make(chan struct{}, 1)
 	cl.SetPermissionHandler(func(req Request) (any, *Error) {
 		close(handlerCalled)
-		return map[string]any{"outcome": "selected", "optionId": "allow_always"}, nil
+		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": "allow_always"}}, nil
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

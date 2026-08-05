@@ -138,16 +138,18 @@ func (b *ACPPermissionBroker) request(ctx context.Context, sessionID string, cal
 	}
 
 	var resp struct {
-		Outcome  string `json:"outcome"`
-		OptionID string `json:"optionId"`
+		Outcome struct {
+			Outcome  string `json:"outcome"`
+			OptionID string `json:"optionId"`
+		} `json:"outcome"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return permissionReject, fmt.Errorf("parse permission response: %w", err)
 	}
-	if resp.Outcome != "selected" {
+	if resp.Outcome.Outcome != "selected" {
 		return permissionReject, nil
 	}
-	switch resp.OptionID {
+	switch resp.Outcome.OptionID {
 	case "allow_once":
 		return permissionAllowOnce, nil
 	case "allow_always":

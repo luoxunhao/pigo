@@ -42,7 +42,7 @@ func TestFullModelPermissionFlow(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if string(raw) != `{"optionId":"allow_once","outcome":"selected"}` {
+		if string(raw) != `{"outcome":{"optionId":"allow_once","outcome":"selected"}}` {
 			t.Fatalf("decision = %s", raw)
 		}
 	default:
@@ -68,7 +68,7 @@ func TestFullModelPermissionCancel(t *testing.T) {
 	select {
 	case v := <-respond:
 		raw, _ := json.Marshal(v)
-		if string(raw) != `{"outcome":"cancelled"}` {
+		if string(raw) != `{"outcome":{"outcome":"cancelled"}}` {
 			t.Fatalf("decision = %s", raw)
 		}
 	default:

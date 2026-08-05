@@ -68,7 +68,7 @@ func bashCall() agentcore.AgentToolCall {
 
 func respond(m *mockTransport, optionID string) {
 	m.mu.Lock()
-	m.raw = json.RawMessage(`{"outcome":"selected","optionId":"` + optionID + `"}`)
+	m.raw = json.RawMessage(`{"outcome":{"outcome":"selected","optionId":"` + optionID + `"}}`)
 	m.mu.Unlock()
 }
 
@@ -138,7 +138,7 @@ func TestPermissionRejectAlways(t *testing.T) {
 func TestPermissionCancelledRejects(t *testing.T) {
 	m, mgr, cwd := newPermissionTest(t)
 	m.mu.Lock()
-	m.raw = json.RawMessage(`{"outcome":"cancelled"}`)
+	m.raw = json.RawMessage(`{"outcome":{"outcome":"cancelled"}}`)
 	m.mu.Unlock()
 	broker := NewACPPermissionBroker(m, mgr, cwd, 0)
 	dec := broker.BeforeToolCall("s1")(context.Background(), bashCall())

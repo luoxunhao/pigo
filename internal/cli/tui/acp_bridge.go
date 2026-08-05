@@ -105,6 +105,13 @@ func updateToTea(u map[string]any) tea.Msg {
 	return nil
 }
 
+// nestedText extracts the text from an ACP content chunk update payload.
+func nestedText(u map[string]any) string {
+	content, _ := u["content"].(map[string]any)
+	text, _ := content["text"].(string)
+	return text
+}
+
 func strVal(v any) string {
 	s, _ := v.(string)
 	return s

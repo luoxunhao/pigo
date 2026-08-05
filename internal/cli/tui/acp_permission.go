@@ -58,9 +58,9 @@ func (m *Model) respondPermission(optionID string) {
 		return
 	}
 	if optionID == "" {
-		m.permission.respond <- map[string]any{"outcome": "cancelled"}
+		m.permission.respond <- map[string]any{"outcome": map[string]any{"outcome": "cancelled"}}
 	} else {
-		m.permission.respond <- map[string]any{"outcome": "selected", "optionId": optionID}
+		m.permission.respond <- map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": optionID}}
 	}
 	m.permission = nil
 }
