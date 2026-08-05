@@ -277,6 +277,204 @@ func TestSessionCancelStopsTurn(t *testing.T) {
 	_ = msgs
 }
 
+func TestSessionListAndLoadMessages(t *testing.T) {
+	client, server := NewChannelPair()
+	defer client.Close()
+	defer server.Close()
+
+	runner := &fakeRunner{}
+	disp, _ := newTestDispatcher(t, runner, server)
+	srv := NewServer(server, disp)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { _ = srv.Serve(ctx) }()
+
+	ws := filepath.Join(t.TempDir(), "ws")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	newSession := func() string {
+		raw, err := client.SendRequest(ctx, MethodSessionNew, map[string]any{"cwd": ws})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var resp struct {
+			SessionID string `json:"sessionId"`
+		}
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			t.Fatal(err)
+		}
+		return resp.SessionID
+	}
+	first := newSession()
+	second := newSession()
+
+	// Persist one turn so session/load has messages to return.
+	if _, err := client.SendRequest(ctx, MethodSessionPrompt, map[string]any{
+		"sessionId": first,
+		"prompt":    []map[string]any{{"type": "text", "text": "hello"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := client.SendRequest(ctx, MethodSessionList, map[string]any{"cwd": ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listResp struct {
+		Sessions []struct {
+			SessionID    string `json:"sessionId"`
+			Title        string `json:"title"`
+			MessageCount int    `json:"messageCount"`
+			Cwd          string `json:"cwd"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(raw, &listResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(listResp.Sessions) != 2 {
+		t.Fatalf("session list length = %d, want 2", len(listResp.Sessions))
+	}
+	seen := map[string]bool{}
+	for _, s := range listResp.Sessions {
+		seen[s.SessionID] = true
+		if s.Title == "" || s.Cwd != ws {
+			t.Fatalf("session summary missing fields: %+v", s)
+		}
+	}
+	if !seen[first] || !seen[second] {
+		t.Fatalf("session list = %+v, want both ids", seen)
+	}
+
+	raw, err = client.SendRequest(ctx, MethodSessionLoad, map[string]any{
+		"sessionId": first,
+		"cwd":       ws,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var loadResp struct {
+		SessionID string           `json:"sessionId"`
+		Messages  []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal(raw, &loadResp); err != nil {
+		t.Fatal(err)
+	}
+	if loadResp.SessionID != first {
+		t.Fatalf("loaded session = %q, want %q", loadResp.SessionID, first)
+	}
+	if len(loadResp.Messages) < 2 {
+		t.Fatalf("loaded messages = %d, want at least user+assistant", len(loadResp.Messages))
+	}
+	user := loadResp.Messages[0]
+	if user["role"] != "user" || user["id"] == "" || user["content"] == nil {
+		t.Fatalf("first message shape = %+v", user)
+	}
+	if _, ok := user["timestamp"]; !ok {
+		t.Fatalf("first message missing timestamp: %+v", user)
+	}
+}
+
+func TestPigoWebExtensions(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	client, server := NewChannelPair()
+	defer client.Close()
+	defer server.Close()
+
+	runner := &fakeRunner{}
+	disp, _ := newTestDispatcher(t, runner, server)
+	srv := NewServer(server, disp)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { _ = srv.Serve(ctx) }()
+
+	raw, err := client.SendRequest(ctx, MethodPigoModels, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var modelsResp struct {
+		CurrentModelID string           `json:"currentModelId"`
+		Models         []map[string]any `json:"models"`
+	}
+	if err := json.Unmarshal(raw, &modelsResp); err != nil {
+		t.Fatal(err)
+	}
+	if modelsResp.CurrentModelID == "" || len(modelsResp.Models) == 0 {
+		t.Fatalf("models response = %+v", modelsResp)
+	}
+
+	raw, err = client.SendRequest(ctx, MethodPigoConfig, map[string]any{"model": "test/provider"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfgResp struct {
+		Model        string `json:"model"`
+		NeedsRestart bool   `json:"needsRestart"`
+		APIKeyConfig bool   `json:"apiKeyConfigured"`
+	}
+	if err := json.Unmarshal(raw, &cfgResp); err != nil {
+		t.Fatal(err)
+	}
+	if !cfgResp.NeedsRestart || cfgResp.Model != "test/provider" || cfgResp.APIKeyConfig {
+		t.Fatalf("config response = %+v", cfgResp)
+	}
+
+	ws := filepath.Join(t.TempDir(), "ws")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw, err = client.SendRequest(ctx, MethodSessionNew, map[string]any{"cwd": ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var newResp struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(raw, &newResp); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.SendRequest(ctx, MethodSessionPrompt, map[string]any{
+		"sessionId": newResp.SessionID,
+		"prompt":    []map[string]any{{"type": "text", "text": "hello"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err = client.SendRequest(ctx, MethodPigoMessages, map[string]any{"sessionId": newResp.SessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msgsResp struct {
+		Messages []map[string]any `json:"messages"`
+		HasMore  bool             `json:"hasMore"`
+	}
+	if err := json.Unmarshal(raw, &msgsResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(msgsResp.Messages) < 2 || msgsResp.HasMore {
+		t.Fatalf("messages response = %+v", msgsResp)
+	}
+
+	if _, err := client.SendRequest(ctx, MethodSessionDelete, map[string]any{"sessionId": newResp.SessionID}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err = client.SendRequest(ctx, MethodSessionList, map[string]any{"cwd": ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listResp struct {
+		Sessions []any `json:"sessions"`
+	}
+	if err := json.Unmarshal(raw, &listResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(listResp.Sessions) != 0 {
+		t.Fatalf("sessions after delete = %+v", listResp.Sessions)
+	}
+}
+
 func TestSessionCloseAndLoad(t *testing.T) {
 	client, server := NewChannelPair()
 	defer client.Close()

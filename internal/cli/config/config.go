@@ -16,6 +16,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -101,6 +102,25 @@ func LoadFileConfig(path string) (FileConfig, error) {
 		return FileConfig{}, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	return cfg, nil
+}
+
+// SaveFileConfig writes cfg to path as TOML, creating parent directories. The
+// file is written with owner-only permissions because it may hold an API key.
+func SaveFileConfig(path string, cfg FileConfig) error {
+	if path == "" {
+		return fmt.Errorf("config: empty path")
+	}
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(cfg); err != nil {
+		return fmt.Errorf("encode config %s: %w", path, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("config: create dir for %s: %w", path, err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		return fmt.Errorf("write config %s: %w", path, err)
+	}
+	return nil
 }
 
 // GenericBaseURLEnvVar derives the generic base-url override env var name for a

@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,7 @@ type Dispatcher struct {
 	runner          SessionRunner
 	runMu           map[string]*sync.Mutex
 	runMuOnce       sync.Once
+	extraRootsMu    sync.Mutex
 }
 
 // NewDispatcher builds a dispatcher. model and sysPrompt are the session
@@ -196,6 +198,10 @@ func (d *Dispatcher) HandleRequest(ctx context.Context, id RequestID, method str
 		return d.sessionNew(params)
 	case MethodSessionLoad:
 		return d.sessionLoad(params)
+	case MethodSessionList:
+		return d.sessionList(params)
+	case MethodSessionDelete:
+		return d.sessionDelete(params)
 	case MethodSessionClose:
 		return d.sessionClose(params)
 	case MethodModelSet:
@@ -204,6 +210,12 @@ func (d *Dispatcher) HandleRequest(ctx context.Context, id RequestID, method str
 		return d.pigoCommand(params)
 	case MethodPigoStatus:
 		return d.pigoStatus(params)
+	case MethodPigoModels:
+		return d.pigoModels(params)
+	case MethodPigoConfig:
+		return d.pigoConfig(params)
+	case MethodPigoMessages:
+		return d.pigoMessages(params)
 	case MethodPigoRewind, MethodPigoFork, MethodPigoTree, MethodPigoGoal, MethodPigoBtw, MethodPigoDream, MethodPigoRemoteControl:
 		return nil, NewError(CodeNotImplemented, method+" is not implemented yet")
 	default:
@@ -240,11 +252,13 @@ func (d *Dispatcher) HandleNotification(ctx context.Context, method string, para
 
 func (d *Dispatcher) sessionNew(params json.RawMessage) (any, *Error) {
 	var req struct {
-		Cwd string `json:"cwd"`
+		Cwd                   string   `json:"cwd"`
+		AdditionalDirectories []string `json:"additionalDirectories,omitempty"`
 	}
 	if err := json.Unmarshal(params, &req); err != nil || req.Cwd == "" {
 		return nil, NewError(CodeInvalidParams, "missing cwd")
 	}
+	d.applyAdditionalDirectories(req.AdditionalDirectories)
 	store, err := d.manager.StoreForWorkspace(d.pigoHome, req.Cwd)
 	if err != nil {
 		return nil, NewError(CodeInternalError, err.Error())
@@ -279,14 +293,56 @@ func (d *Dispatcher) sessionLoad(params json.RawMessage) (any, *Error) {
 	if err != nil {
 		return nil, NewError(CodeInvalidParams, "session not found: "+req.SessionID)
 	}
-	return map[string]any{
+	resp := map[string]any{
 		"sessionId":     sess.ID,
 		"configOptions": []any{},
 		"models": map[string]any{
 			"currentModelId":  sess.Model,
 			"availableModels": []any{},
 		},
-	}, nil
+	}
+	if tr := sess.Store.TranscriptStore(); tr != nil {
+		if _, entries, err := tr.LoadEntries(sess.ID); err == nil {
+			messages := make([]any, 0, len(entries))
+			for _, e := range entries {
+				messages = append(messages, entryToACPMessage(e))
+			}
+			resp["messages"] = messages
+		}
+	}
+	return resp, nil
+}
+
+func (d *Dispatcher) sessionList(params json.RawMessage) (any, *Error) {
+	var req struct {
+		Cwd string `json:"cwd"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil || req.Cwd == "" {
+		return nil, NewError(CodeInvalidParams, "missing cwd")
+	}
+	store, err := d.manager.StoreForWorkspace(d.pigoHome, req.Cwd)
+	if err != nil {
+		return nil, NewError(CodeInternalError, err.Error())
+	}
+	metas, err := store.List()
+	if err != nil {
+		return nil, NewError(CodeInternalError, err.Error())
+	}
+	sessions := make([]any, 0, len(metas))
+	for _, m := range metas {
+		sessions = append(sessions, map[string]any{
+			"sessionId":       m.SessionID,
+			"title":           m.SessionName,
+			"cwd":             m.WorkspacePath,
+			"model":           m.ModelName,
+			"createdAt":       m.CreatedAt,
+			"updatedAt":       m.LastActiveAt,
+			"messageCount":    m.MessageCount,
+			"toolCallCount":   m.ToolCallCount,
+			"parentSessionId": m.ParentSessionID,
+		})
+	}
+	return map[string]any{"sessions": sessions, "nextCursor": nil}, nil
 }
 
 func (d *Dispatcher) sessionClose(params json.RawMessage) (any, *Error) {
@@ -340,6 +396,7 @@ func (d *Dispatcher) runPrompt(ctx context.Context, id RequestID, params json.Ra
 		_ = d.transport.SendResponse(ctx, id, nil, NewError(CodeInternalError, err.Error()))
 		return
 	}
+	go d.generateTitle(sess, text)
 
 	stop := "end_turn"
 	if last != nil {
@@ -408,6 +465,7 @@ func parsePromptParams(params json.RawMessage) (sessionID, text string, ok bool)
 		Prompt    []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
+			URI  string `json:"uri"`
 		} `json:"prompt"`
 	}
 	if err := json.Unmarshal(params, &req); err != nil {
@@ -419,6 +477,18 @@ func parsePromptParams(params json.RawMessage) (sessionID, text string, ok bool)
 	for _, block := range req.Prompt {
 		if block.Type == "text" || block.Type == "" {
 			text += block.Text
+			continue
+		}
+		if block.Type == "resource_link" {
+			path := strings.TrimPrefix(block.URI, "file://")
+			if path != "" {
+				if data, err := os.ReadFile(path); err == nil {
+					if len(data) > 64*1024 {
+						data = data[:64*1024]
+					}
+					text += "\n\n<resource_link:" + path + ">\n" + string(data) + "\n</resource_link>"
+				}
+			}
 		}
 	}
 	return req.SessionID, text, true

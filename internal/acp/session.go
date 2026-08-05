@@ -158,6 +158,21 @@ func (m *SessionManager) Close(sessionID string) {
 	}
 }
 
+// DeleteEverywhere removes a session from every open project store. The store
+// delete is idempotent for missing sessions, so this is safe to call against
+// stores that never contained the id.
+func (m *SessionManager) DeleteEverywhere(sessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, s := range m.stores {
+		if err := s.Delete(sessionID); err != nil {
+			return err
+		}
+	}
+	delete(m.sessions, sessionID)
+	return nil
+}
+
 // Run executes one prompt turn on a session, streams agent events through
 // onEvent, persists the newly produced messages, and returns the final
 // assistant message. A cancellation surfaces as an error whose context is
