@@ -38,6 +38,9 @@ config.toml
 
 .loop-state.json
 
+# Node.js dependencies
+node_modules/
+
 # Compiled binary (go build ./cmd/pigo produces ./pigo)
 /pigo
 
