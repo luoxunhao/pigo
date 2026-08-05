@@ -264,6 +264,20 @@ func (r *SlashRegistry) AddBuiltin(cmd SlashCommand) {
 	r.add(cmd)
 }
 
+// ReplaceBuiltin installs or replaces a built-in command on this registry
+// instance. It behaves like AddBuiltin (SourceBuiltin / TierBuiltin) but
+// allows a same-named built-in to be replaced. The ACP migration uses it to
+// route /model and friends through pigo/command without panicking on the
+// built-ins already seeded by NewSlashRegistry.
+func (r *SlashRegistry) ReplaceBuiltin(cmd SlashCommand) {
+	if cmd.Name == "" {
+		panic("agent: ReplaceBuiltin with empty name")
+	}
+	cmd.Source = SourceBuiltin
+	cmd.Tier = TierBuiltin
+	r.add(cmd)
+}
+
 // AddUser installs a user command (TierGlobal), e.g. a prompt template from
 // ~/.pigo/prompts or the legacy ~/.pigo/commands. A same-named built-in or
 // project-tier command wins; same-tier (global) adds override silently.

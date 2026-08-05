@@ -9,7 +9,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strings"
 
 	"github.com/smallnest/pigo/internal/agentcore"
 )
@@ -43,7 +45,7 @@ func Discover(dir string, warnLog, pluginStderr io.Writer) (*Manager, error) {
 			continue
 		}
 		info, err := e.Info()
-		if err != nil || !isExecutable(info.Mode()) {
+		if err != nil || !isExecutable(info.Mode(), e.Name()) {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
@@ -59,9 +61,18 @@ func Discover(dir string, warnLog, pluginStderr io.Writer) (*Manager, error) {
 	return m, nil
 }
 
-// isExecutable reports whether the file mode has any execute bit set.
-func isExecutable(mode os.FileMode) bool {
-	return mode&0o111 != 0
+// isExecutable reports whether the file mode has any execute bit set. Windows
+// has no executable bits, so a conventional executable extension is accepted
+// there (plugin dirs only contain files meant to be run).
+func isExecutable(mode os.FileMode, name string) bool {
+	if mode&0o111 != 0 {
+		return true
+	}
+	if runtime.GOOS == "windows" {
+		lower := strings.ToLower(name)
+		return strings.HasSuffix(lower, ".exe") || strings.HasSuffix(lower, ".bat") || strings.HasSuffix(lower, ".cmd")
+	}
+	return false
 }
 
 // Tools returns the aggregated tools of every loaded plugin, in load order.

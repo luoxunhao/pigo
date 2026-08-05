@@ -115,9 +115,12 @@ func TestCwdChdirRootsEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Getwd: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chdir(orig) })
 
 	dir := t.TempDir()
+	// Register the chdir restore AFTER the temp dir so cleanup restores the
+	// process working directory before RemoveAll runs (t.Cleanup is LIFO, and
+	// Windows cannot delete the process's current working directory).
+	t.Cleanup(func() { _ = os.Chdir(orig) })
 	if err := os.Chdir(dir); err != nil {
 		t.Fatalf("Chdir: %v", err)
 	}

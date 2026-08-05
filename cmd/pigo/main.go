@@ -5,6 +5,7 @@
 //	pigo                                          # interactive REPL (on a TTY)
 //	pigo -p "read README and summarize"           # print mode: final text
 //	pigo -p "..." --output-format stream-json      # line-delimited JSON events
+//	pigo --acp                                     # ACP stdio server (Zed, IDE clients)
 //	pigo install <pkg> | list | uninstall | update # package management
 //
 // The provider is resolved from --model against the built-in OpenAI-compatible
@@ -27,6 +28,7 @@ import (
 	flag "github.com/spf13/pflag"
 
 	"github.com/smallnest/pigo/internal/cli"
+	"github.com/smallnest/pigo/internal/cli/acpcmd"
 	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/cli/headless"
 	"github.com/smallnest/pigo/internal/cli/pkgcmd"
@@ -96,6 +98,10 @@ type cliOptions struct {
 	// #135): pigo reads JSON-RPC sub-agent run requests from stdin and writes
 	// results to stdout. Internal, used by SubAgentTool's process mode.
 	subagentRPC bool
+	// acpMode selects the Agent Client Protocol stdio server mode: pigo reads
+	// newline-delimited JSON-RPC from stdin and writes protocol responses to
+	// stdout. This is the entry point Zed and other external ACP clients use.
+	acpMode bool
 	// dream, when set, runs the process-isolated memory-consolidation pass and
 	// exits: pigo enumerates + consolidates the global/project memory scope, emits
 	// a single-line Report JSON on stdout, and exits 0/1. Internal, spawned by the
@@ -175,6 +181,7 @@ func main() {
 	flag.StringArrayVar(&opts.promptTemplates, "prompt-template", nil, "load a prompt template from a file or directory (non-recursive); repeatable (mirrors pi --prompt-template)")
 	flag.StringVar(&opts.thinkingLevel, "thinking-level", "", "reasoning effort: off|minimal|low|medium|high|xhigh|max (overrides PIGO_THINKING_LEVEL and config; default medium)")
 	flag.BoolVar(&opts.subagentRPC, "subagent-rpc", false, "internal: run as a process-isolated sub-agent JSON-RPC server over stdio (US-019)")
+	flag.BoolVar(&opts.acpMode, "acp", false, "internal: run as an Agent Client Protocol server over stdio for external clients (Zed, desktop shell)")
 	flag.BoolVar(&opts.dream, "dream", false, "internal: run a memory-consolidation pass over the global/project memory scope, emit a Report JSON on stdout, and exit (SPEC §4.1)")
 	flag.BoolVar(&opts.dreamDryRun, "dream-dry-run", false, "internal: with --dream, analyze and report without writing files or updating dream state (SPEC §5.5)")
 	flag.BoolVar(&opts.noTUI, "no-tui", false, "use the line-based REPL instead of the full-screen TUI")
@@ -286,6 +293,31 @@ func applyFileConfig(opts *cliOptions, cfg config.FileConfig, changed func(strin
 // headless, subagent-rpc) is reached from here, so the CLI's behavior can be
 // exercised without re-parsing flags. A returned code of 0 is success.
 func dispatch(ctx context.Context, opts cliOptions, out, errOut io.Writer) int {
+	// --acp is a fully separate mode: speak Agent Client Protocol over stdio
+	// until the client closes the transport. It shares the run assembly with
+	// the interactive paths but owns no terminal UI.
+	if opts.acpMode {
+		thinking, err := run.ResolveThinkingLevel(opts.thinkingLevel)
+		if err != nil {
+			fmt.Fprintf(errOut, "pigo: %v\n", err)
+			return 2
+		}
+		return acpcmd.Run(ctx, acpcmd.Options{
+			Model:              opts.model,
+			ProviderName:       opts.provider,
+			BaseURL:            opts.baseURL,
+			Protocol:           opts.protocol,
+			APIKey:             opts.apiKey,
+			ThinkingLevel:      thinking,
+			NoTools:            opts.noTools,
+			NoSkills:           opts.noSkills,
+			SystemPrompt:       opts.systemPrompt,
+			AppendSystemPrompt: opts.appendSystemPrompt,
+			Approve:            opts.approve,
+			MemoryEnabled:      opts.memory.Memory.Enabled,
+		}, os.Stdin, out, errOut)
+	}
+
 	// --subagent-rpc is a fully separate mode: speak the sub-agent JSON-RPC
 	// protocol over stdio and exit. It is the subprocess end of process-isolated
 	// sub-agents and shares nothing with the interactive/headless paths.

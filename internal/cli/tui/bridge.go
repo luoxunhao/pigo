@@ -1,13 +1,9 @@
 package tui
 
 import (
-	"context"
 	"encoding/json"
 
 	tea "charm.land/bubbletea/v2"
-
-	"github.com/smallnest/pigo/internal/agentcore"
-	"github.com/smallnest/pigo/internal/runtime"
 )
 
 // This file bridges the agent run seam (runtime.StartRun + runtime.DrainStream)
@@ -17,7 +13,7 @@ import (
 // the run and converts every event into the matching tea.Msg (see msgs.go),
 // sending it into a buffered channel; a tea.Cmd (waitForEvent) receives one msg
 // per Update tick. The channel is the only synchronization point, so the
-// producer never touches the model and the model never touches the run — all
+// producer never touches the model and the model never touches the run 鈥?all
 // state transitions happen on the tea goroutine.
 //
 // Back-pressure is intentional: the channel blocks the draining goroutine when
@@ -34,45 +30,6 @@ const eventChanCap = 64
 // through.
 func newEventChan() chan tea.Msg {
 	return make(chan tea.Msg, eventChanCap)
-}
-
-// newStreamHandler builds the runtime.StreamHandler that converts each run event
-// into a tea.Msg and sends it into ch. Sends block when ch is full, applying
-// back-pressure to the draining goroutine so no event is lost. It is factored
-// out of pump so the callback→msg conversion can be unit-tested without a real
-// provider run (see bridge_test.go).
-func newStreamHandler(ch chan tea.Msg, extra func(agentcore.AgentEvent)) runtime.StreamHandler {
-	return runtime.StreamHandler{
-		OnText: func(delta string) {
-			ch <- textDeltaMsg{delta: delta}
-		},
-		OnTurnEnd: func(msg agentcore.AssistantMessage, results []agentcore.ToolResultMessage) {
-			ch <- turnEndMsg{msg: msg, results: results}
-		},
-		OnEvent: func(ev agentcore.AgentEvent) {
-			// Deliver observer events (plugin notifier, SessionEnd/PreCompact hook)
-			// first, then translate into TUI messages.
-			if extra != nil {
-				extra(ev)
-			}
-			switch e := ev.(type) {
-			case agentcore.ToolExecutionStartEvent:
-				ch <- toolStartMsg{id: e.ToolCallID, name: e.ToolName, input: argsToMap(e.Args)}
-			case agentcore.ToolExecutionUpdateEvent:
-				ch <- toolUpdateMsg{id: e.ToolCallID, partial: agentcore.ContentToText(e.PartialResult.Content)}
-			case agentcore.ToolExecutionEndEvent:
-				ch <- toolEndMsg{id: e.ToolCallID, ok: !e.IsError, result: agentcore.ContentToText(e.Result.Content)}
-			case agentcore.SubAgentProgressEvent:
-				ch <- subagentProgressMsg{id: e.ToolCallID, desc: e.Description, activity: e.Activity, tokens: e.Tokens}
-			case agentcore.TelemetryEvent:
-				ch <- telemetryMsg{ev: e}
-			case agentcore.CompactionStartEvent:
-				ch <- compactionStartMsg{}
-			case agentcore.CompactionEvent:
-				ch <- compactionMsg{}
-			}
-		},
-	}
 }
 
 // argsToMap coerces a tool call's untyped Args into a map[string]any. The event
@@ -107,15 +64,6 @@ func unmarshalArgsMap(b []byte) map[string]any {
 	return m
 }
 
-// pump runs the agent loop to completion on the calling goroutine, converting
-// every event to a tea.Msg on ch, and finally sends a runEndMsg carrying the
-// run's result error. It is meant to be launched as a goroutine by startRun.
-func pump(ctx context.Context, ch chan tea.Msg, agentCtx *agentcore.AgentContext, cfg runtime.RunConfig, onEvent func(agentcore.AgentEvent)) {
-	stream := runtime.StartRun(ctx, agentCtx, cfg)
-	_, err := runtime.DrainStream(ctx, stream, newStreamHandler(ch, onEvent))
-	ch <- runEndMsg{err: err}
-}
-
 // waitForEvent returns a tea.Cmd that blocks until the next bridge msg arrives.
 // The Update loop re-issues it after handling each msg (except runEndMsg) to
 // keep pulling events one at a time, so ordering is preserved and the tea
@@ -124,16 +72,4 @@ func waitForEvent(ch chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		return <-ch
 	}
-}
-
-// startRun launches the run pump on a new goroutine and returns the channel it
-// feeds together with the first waitForEvent Cmd. The caller (node #388's model)
-// stores the channel and, on every subsequent event, issues waitForEvent(ch)
-// again to pull the next msg. Returning the channel keeps the bridge
-// self-contained: the model owns the handle and decides when to stop pulling
-// (after runEndMsg).
-func startRun(ctx context.Context, agentCtx *agentcore.AgentContext, cfg runtime.RunConfig, onEvent func(agentcore.AgentEvent)) (chan tea.Msg, tea.Cmd) {
-	ch := newEventChan()
-	go pump(ctx, ch, agentCtx, cfg, onEvent)
-	return ch, waitForEvent(ch)
 }

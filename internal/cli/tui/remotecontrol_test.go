@@ -69,26 +69,6 @@ func TestStartStopRemote(t *testing.T) {
 	s.stopRemote()
 }
 
-// TestBuildConfigInstallsRemoteSeam asserts buildConfig only installs the
-// BeforeToolCall confirm seam while a remote session is present: off by default
-// (up-front trust unchanged), wired once /remote-control is running.
-func TestBuildConfigInstallsRemoteSeam(t *testing.T) {
-	s := newRemoteTestSession(t)
-
-	if cfg := s.buildConfig(); cfg.Batch.ToolExecutorConfig.BeforeToolCall != nil {
-		t.Error("BeforeToolCall should be nil when remote control is off")
-	}
-
-	if _, err := s.startRemote(); err != nil {
-		t.Fatalf("startRemote: %v", err)
-	}
-	defer s.stopRemote()
-
-	if cfg := s.buildConfig(); cfg.Batch.ToolExecutorConfig.BeforeToolCall == nil {
-		t.Error("BeforeToolCall should be installed when remote control is on")
-	}
-}
-
 // TestRemoteConfirmSeamAllowsWhenNoClient verifies the confirm seam is a no-op
 // (returns nil = allow under up-front trust) when no browser is connected, so a
 // running-but-unpaired server never blocks tool calls.

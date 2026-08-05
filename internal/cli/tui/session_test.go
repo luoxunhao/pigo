@@ -91,27 +91,20 @@ func TestBuildConfigAssembly(t *testing.T) {
 		t.Fatalf("newRunSessionWithStore: %v", err)
 	}
 
-	cfg := s.buildConfig()
-	if cfg.Model != "opus-test" {
-		t.Errorf("cfg.Model = %q, want opus-test", cfg.Model)
+	if s.live.Model != "opus-test" {
+		t.Errorf("live.Model = %q, want opus-test", s.live.Model)
 	}
-	if cfg.Provider != "anthropic" {
-		t.Errorf("cfg.Provider = %q, want anthropic", cfg.Provider)
+	if s.live.ProviderName != "anthropic" {
+		t.Errorf("live.ProviderName = %q, want anthropic", s.live.ProviderName)
 	}
-	if cfg.ThinkingLevel != agentcore.ThinkingLevel("high") {
-		t.Errorf("cfg.ThinkingLevel = %q, want high", cfg.ThinkingLevel)
+	if s.live.ThinkingLevel != agentcore.ThinkingLevel("high") {
+		t.Errorf("live.ThinkingLevel = %q, want high", s.live.ThinkingLevel)
 	}
-	if cfg.ContextWindow <= 0 {
-		t.Errorf("cfg.ContextWindow = %d, want a positive default", cfg.ContextWindow)
+	if s.live.ContextWindow <= 0 {
+		t.Errorf("live.ContextWindow = %d, want a positive default", s.live.ContextWindow)
 	}
-	if !cfg.Compaction.Enabled {
-		t.Error("cfg.Compaction.Enabled = false, want true (DefaultCompactionSettings)")
-	}
-	if cfg.Batch.Registry == nil {
-		t.Error("cfg.Batch.Registry is nil, want the assembled tool registry")
-	}
-	if cfg.Stream == nil {
-		t.Error("cfg.Stream is nil, want a stream fn derived from the provider")
+	if s.reg == nil {
+		t.Error("reg is nil, want the assembled tool registry")
 	}
 }
 

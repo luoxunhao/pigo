@@ -48,9 +48,9 @@ type Model struct {
 
 	// history holds previously submitted inputs (prompts and slash commands, in
 	// order), and histIdx is the browse cursor into it: len(history) means "not
-	// browsing — on the live draft", any smaller index points at a recalled entry.
-	// histDraft stashes the in-progress buffer when browsing begins so ↓ past the
-	// newest entry restores it. ↑/↓ walk history when the caret is on the first /
+	// browsing 鈥?on the live draft", any smaller index points at a recalled entry.
+	// histDraft stashes the in-progress buffer when browsing begins so 鈫?past the
+	// newest entry restores it. 鈫?鈫?walk history when the caret is on the first /
 	// last line of the composer, so multi-line editing is unaffected.
 	history   []string
 	histIdx   int
@@ -62,6 +62,12 @@ type Model struct {
 	// runCh is the bridge channel for the in-flight run, or nil when idle. Update
 	// re-issues waitForEvent(runCh) after every bridged msg except runEndMsg.
 	runCh chan tea.Msg
+
+	// permission is the in-flight ACP permission request, or nil when idle.
+	// permissionCh receives session/request_permission requests from the ACP
+	// client pump; waitForPermission turns it into a tea.Cmd.
+	permission   *pendingPermission
+	permissionCh chan tea.Msg
 
 	// startRunFn launches an agent run for the submitted prompt, returning the
 	// bridge channel and the first waitForEvent Cmd (see bridge.startRun). It is
@@ -79,7 +85,7 @@ type Model struct {
 	// interruptFn cancels the in-flight run (the first stage of the two-stage
 	// interrupt, FR-14): pressing Esc / Ctrl+C while running signals the run to
 	// stop rather than quitting the program. It is a seam wired alongside
-	// startRunFn by session assembly (#392) — typically the run ctx's cancel
+	// startRunFn by session assembly (#392) 鈥?typically the run ctx's cancel
 	// func. Until then it may be nil, in which case an interrupt while running is
 	// a safe no-op (the pump keeps draining until it ends on its own).
 	interruptFn func()
@@ -208,8 +214,6 @@ func NewModel(opts Options) Model {
 // constructor path (tests, pure construction) leaves startRunFn nil.
 func (m Model) withSession(s *runSession, history []agentcore.Message) Model {
 	m.session = s
-	m.startRunFn = s.startRun
-	m.interruptFn = s.interrupt
 	// Rebind the registry to the session's own one (assembled against s.live, the
 	// very config the run loop reads via buildConfig) so /model mutates the live
 	// config, /trust reaches the session's trust manager (registered in
@@ -225,9 +229,13 @@ func (m Model) withSession(s *runSession, history []agentcore.Message) Model {
 // can show the branch/dirty state as soon as it resolves; the alt-screen is
 // requested declaratively via the AltScreen field on the View returned by View.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(fetchGitCmd(m.cwd), m.input.Focus(), func() tea.Msg {
+	cmds := []tea.Cmd{fetchGitCmd(m.cwd), m.input.Focus(), func() tea.Msg {
 		return tea.RequestBackgroundColor()
-	})
+	}}
+	if m.permissionCh != nil {
+		cmds = append(cmds, waitForPermission(m.permissionCh))
+	}
+	return tea.Batch(cmds...)
 }
 
 // Update implements tea.Model. It tracks the terminal size, drives the minimal
@@ -242,6 +250,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.relayout()
 		return m, nil
 
+	case permissionRequestedMsg:
+		m.permission = &pendingPermission{
+			req:     msg.req,
+			respond: msg.respond,
+			summary: permissionSummary(msg.req),
+		}
+		return m, waitForPermission(m.permissionCh)
+
 	case gitInfoMsg:
 		m.statusBar.SetGit(msg)
 		return m, nil
@@ -249,7 +265,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.BackgroundColorMsg:
 		// Feed the terminal's real background to the Markdown renderer so glamour
 		// picks a matching light/dark palette WITHOUT issuing its own terminal
-		// query (which would leak its reply into the input — see SetMarkdownDark).
+		// query (which would leak its reply into the input 鈥?see SetMarkdownDark).
 		// Re-flow so any already-finalized assistant block re-renders in the right
 		// palette.
 		SetMarkdownDark(msg.IsDark())
@@ -258,7 +274,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseWheelMsg:
 		// Mouse-wheel scrolling reaches the transcript viewport whether idle or
-		// running, so history stays scrollable with the wheel — not just PgUp/PgDn.
+		// running, so history stays scrollable with the wheel 鈥?not just PgUp/PgDn.
 		// The viewport (MouseWheelEnabled by default) turns the wheel event into a
 		// scroll; enabling MouseModeCellMotion in View is what makes the terminal
 		// deliver these events under the alt-screen at all.
@@ -356,7 +372,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Surface a failed or empty turn so a provider/API error is never silent.
 		// The loop delivers request failures (e.g. a 4xx from the endpoint) as a
 		// terminal assistant message with stopReason error/aborted via TurnEndEvent
-		// — not as the run's result error (runEndMsg.err) — so without this check
+		// 鈥?not as the run's result error (runEndMsg.err) 鈥?so without this check
 		// the TUI would finalize an empty turn and return to the prompt with no
 		// output at all. Mirrors the headless driver and the line-based REPL.
 		switch msg.msg.StopReason {
@@ -387,7 +403,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.toolCards[msg.id] = card
 		m.lastToolCard = card
 		m.transcript.addToolCard(card)
-		m.remoteEcho("\n· " + msg.name + "\n")
+		m.remoteEcho("\n路 " + msg.name + "\n")
 		// A `task` tool call dispatches a sub-agent: open a status-panel row keyed by
 		// the tool-call id (matching the later progress/end events) and record its
 		// start so elapsed can be shown live (SPEC 4.4).
@@ -466,7 +482,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case rebuildDoneMsg:
 		// A manual /rebuild finished: clear the pinned "Preparing conversation
-		// context…" spinner (no run is pumping, so stop it and drop out of the
+		// context鈥? spinner (no run is pumping, so stop it and drop out of the
 		// running state) and report the outcome. rebuild() already applied the
 		// rebuilt messages and set session.compacted on success.
 		m.spinner.unpin()
@@ -511,7 +527,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A prompt arrived from the paired browser (remote-control). Always re-issue
 		// the listener so successive remote prompts keep arriving. While a run is in
 		// flight the prompt is refused with a note (mirroring the local single-run
-		// gate); when idle it is echoed as a user block and run — as a slash command
+		// gate); when idle it is echoed as a user block and run 鈥?as a slash command
 		// if it starts with "/", else a normal prompt.
 		text := strings.TrimSpace(msg.text)
 		if m.running || text == "" {
@@ -537,15 +553,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleKey processes a key press. It resolves the keys the shell owns —
-// two-stage interrupt/quit, prompt submit, transcript scrolling — and delegates
+// handleKey processes a key press. It resolves the keys the shell owns 鈥?// two-stage interrupt/quit, prompt submit, transcript scrolling 鈥?and delegates
 // everything else (character entry, in-buffer cursor movement, Shift+Enter
 // newline) to the input editor while idle. Keys are matched via KeyPressMsg
 // .String() so the mapping is terminal-independent.
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// While an ACP permission request is pending, all keys are decisions.
+	if m.permission != nil {
+		switch msg.String() {
+		case "y":
+			m.respondPermission("allow_once")
+		case "a":
+			m.respondPermission("allow_always")
+		case "n":
+			m.respondPermission("reject_once")
+		case "r":
+			m.respondPermission("reject_always")
+		case "esc", "ctrl+c":
+			m.respondPermission("")
+		}
+		return m, nil
+	}
 	// While idle with the autocomplete popup open, the arrow / Tab / Esc keys
 	// drive the menu instead of the transcript or textarea (FR-15). Enter is left
-	// to the main switch below, which routes through submit → runSlash so the
+	// to the main switch below, which routes through submit 鈫?runSlash so the
 	// selected/typed command runs. These are matched via KeyPressMsg.String() so
 	// the mapping is terminal-independent.
 	if !m.running && m.menu.active {
@@ -570,7 +601,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// While a sub-agent run is streaming, the composer is disabled (no typing until
-	// the run ends), so ↑/↓ drive a selection cursor over the live sub-agent status
+	// the run ends), so 鈫?鈫?drive a selection cursor over the live sub-agent status
 	// rows and Enter expands the selected row to show its accumulated output inline.
 	// Esc is the one-key escape back to the composer: with a row selected it drops
 	// the selection AND re-focuses the input box in a single press, so arrowing into
@@ -620,7 +651,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "super+c":
 		// Cmd+C on macOS is the platform-standard copy: copy the mouse selection
 		// when there is one (clearing it), else the whole input buffer. Unlike
-		// Ctrl+C it never interrupts/quits — Cmd+C means "copy" on macOS. Most
+		// Ctrl+C it never interrupts/quits 鈥?Cmd+C means "copy" on macOS. Most
 		// terminals intercept Cmd+C for their own native copy and never deliver it
 		// here; this branch serves terminals that forward the Super modifier.
 		if !m.sel.empty() {
@@ -678,9 +709,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// Explicit paste key: first try to pull an image off the clipboard (Claude
 		// Code-style image paste); the reply arrives as clipboardImageMsg and, when
 		// no image is present, falls back to an OSC52 text read (tea.ClipboardMsg).
-		// This is intercepted before textarea so its own Ctrl+V binding — which reads
+		// This is intercepted before textarea so its own Ctrl+V binding 鈥?which reads
 		// via an external process and returns an unexported message the model can't
-		// route — is bypassed. The common Cmd+V path does not reach here; it arrives
+		// route 鈥?is bypassed. The common Cmd+V path does not reach here; it arrives
 		// as a bracketed tea.PasteMsg handled in Update.
 		if !m.running {
 			return m, readClipboardImage
@@ -711,7 +742,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// a newline. After the buffer changes, refresh the autocomplete popup so it
 	// opens/filters/closes as the user types a "/name" prefix.
 	if !m.running {
-		// ↑/↓ walk the submitted-prompt history when the caret is at the top / bottom
+		// 鈫?鈫?walk the submitted-prompt history when the caret is at the top / bottom
 		// edge of the composer; otherwise they move the caret within a multi-line
 		// draft (handled by the textarea below).
 		switch msg.String() {
@@ -730,8 +761,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 // submit starts a run for the current buffer: it appends the user block, clears
-// and blurs the editor, flips to running, and — when a run starter is wired —
-// returns the first pump Cmd. With no starter (pre-#392) it records the prompt
+// and blurs the editor, flips to running, and 鈥?when a run starter is wired 鈥?// returns the first pump Cmd. With no starter (pre-#392) it records the prompt
 // and a system note without launching anything, and leaves the editor ready for
 // the next line.
 func (m Model) submit() (tea.Model, tea.Cmd) {
@@ -802,7 +832,7 @@ func (m Model) runSlash(line string) (tea.Model, tea.Cmd) {
 	// /memory is intercepted before registry resolution (like /rebuild): it
 	// prints the persistent-memory + infinite-context report, reading the live
 	// memory store, memory root, session id, and messages that a slash Action
-	// closure (string→string) cannot reach.
+	// closure (string鈫抯tring) cannot reach.
 	if line == "/memory" || strings.HasPrefix(line, "/memory ") {
 		m.transcript.addUser(line)
 		m.input.Clear()
@@ -826,7 +856,7 @@ func (m Model) runSlash(line string) (tea.Model, tea.Cmd) {
 	// /status is intercepted before registry resolution (like /memory): it prints
 	// the shared runtime/context/project/credentials/telemetry report, which reads
 	// the session's live collaborators (live config, trust manager, telemetry
-	// holder, slash registry) that a slash Action closure (string→string) cannot
+	// holder, slash registry) that a slash Action closure (string鈫抯tring) cannot
 	// reach. The rendering lives in the shared status package so the TUI and the
 	// REPL produce byte-identical output.
 	if line == "/status" || strings.HasPrefix(line, "/status ") {
@@ -846,7 +876,7 @@ func (m Model) runSlash(line string) (tea.Model, tea.Cmd) {
 	}
 	// /session is intercepted before registry resolution (like /memory): it prints
 	// the conversation summary (session id, message count, estimated tokens, model/
-	// provider, created time, compaction count) from the live context — state a
+	// provider, created time, compaction count) from the live context 鈥?state a
 	// slash Action closure cannot reach. The rendering is shared with the REPL.
 	if line == "/session" {
 		m.transcript.addUser(line)
@@ -863,30 +893,9 @@ func (m Model) runSlash(line string) (tea.Model, tea.Cmd) {
 		m.relayout()
 		return m, nil
 	}
-	// /rebuild is intercepted before registry resolution (like /exit): it
-	// reconstructs the shared context from a persisted checkpoint (or falls back
-	// to compaction) and replaces the message list in place — work a slash Action
-	// closure cannot do. It reuses the compacting-indicator: the spinner is armed
-	// and pinned to "Preparing conversation context…" while the rebuild runs off
-	// the tea loop, and rebuildDoneMsg clears it and reports the result.
-	if line == "/rebuild" {
-		m.transcript.addUser(line)
-		m.input.Clear()
-		m.menu.close()
-		if m.session == nil {
-			m.transcript.addSystem("(rebuild unavailable: no active session)")
-			m.relayout()
-			return m, nil
-		}
-		m.spinner.begin(time.Now(), m.thinkingLabel())
-		m.spinner.pin("Preparing conversation context")
-		m.running = true
-		m.relayout()
-		return m, tea.Batch(m.session.rebuildCmd(), m.tickSpinner())
-	}
 	// /remote-control is intercepted before registry resolution (like /rebuild):
 	// it starts/stops the LAN mirror server, which owns state (server, bridge,
-	// listener Cmd) a string→string slash Action cannot hold.
+	// listener Cmd) a string鈫抯tring slash Action cannot hold.
 	if line == "/remote-control" || strings.HasPrefix(line, "/remote-control ") {
 		return m.runRemoteControl(line)
 	}
@@ -922,7 +931,7 @@ func (m Model) runSlash(line string) (tea.Model, tea.Cmd) {
 
 // recordHistory appends an submitted input to the browse history (skipping a
 // consecutive duplicate, like a shell) and resets the browse cursor to the live
-// draft, so the next ↑ starts from the most recent entry and any stashed draft is
+// draft, so the next 鈫?starts from the most recent entry and any stashed draft is
 // dropped. A blank entry is never stored.
 func (m *Model) recordHistory(entry string) {
 	entry = strings.TrimSpace(entry)
@@ -934,7 +943,7 @@ func (m *Model) recordHistory(entry string) {
 }
 
 // historyPrev recalls the previous submitted input into the composer, but only
-// when the caret is on the first line — otherwise ↑ moves the caret within a
+// when the caret is on the first line 鈥?otherwise 鈫?moves the caret within a
 // multi-line draft. The first recall stashes the live draft so historyNext can
 // restore it, and the cursor lands past the newest entry (len(history)) initially.
 func (m Model) historyPrev(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -957,9 +966,9 @@ func (m Model) historyPrev(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// historyNext walks forward toward more recent inputs — restoring the stashed
-// draft once it steps past the newest entry — but only while browsing and with
-// the caret on the last line; otherwise ↓ moves the caret within a multi-line
+// historyNext walks forward toward more recent inputs 鈥?restoring the stashed
+// draft once it steps past the newest entry 鈥?but only while browsing and with
+// the caret on the last line; otherwise 鈫?moves the caret within a multi-line
 // draft.
 func (m Model) historyNext(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.histIdx >= len(m.history) || m.input.Line() != m.input.LineCount()-1 {
@@ -1037,7 +1046,7 @@ func (m Model) interruptOrQuit() (tea.Model, tea.Cmd) {
 		if m.interruptFn != nil {
 			m.interruptFn()
 		}
-		m.transcript.addSystem("(interrupting the current run…)")
+		m.transcript.addSystem("(interrupting the current run鈥?")
 		return m, nil
 	}
 	m.shutdownRemote()
@@ -1073,7 +1082,7 @@ var pastePlaceholderRe = regexp.MustCompile(`\[Pasted text #(\d+) \+\d+ lines\]`
 // handlePaste inserts a pasted payload into the editor. A multi-line paste is
 // collapsed to a compact "[Pasted text #N +M lines]" placeholder (the full body
 // stashed in m.pastes for expansion at submit), so a large paste does not flood
-// the composer — mirroring Claude Code. A single-line paste is inserted verbatim.
+// the composer 鈥?mirroring Claude Code. A single-line paste is inserted verbatim.
 func (m Model) handlePaste(content string) (tea.Model, tea.Cmd) {
 	if content == "" {
 		return m, nil
@@ -1171,7 +1180,7 @@ func (m Model) pumpNext() tea.Cmd {
 // View implements tea.Model. It renders the shell on the alt-screen: the
 // scrolling transcript filling the top rows, then the autocomplete popup (when
 // open) and the multi-line input editor, and finally the persistent status bar
-// (#386) on the very bottom row — below the input, per the layout fix. Setting
+// (#386) on the very bottom row 鈥?below the input, per the layout fix. Setting
 // AltScreen on the returned View is how Bubble Tea v2 enters/leaves the alternate
 // screen buffer, so the user's scrollback is restored on quit.
 func (m Model) View() tea.View {
@@ -1244,6 +1253,10 @@ func (m Model) renderContent() string {
 		b.WriteString(menu)
 		b.WriteByte('\n')
 	}
+	if perm := m.permissionView(); perm != "" {
+		b.WriteString(perm)
+		b.WriteByte('\n')
+	}
 	b.WriteString(input)
 	b.WriteByte('\n')
 	// The status bar is the final line, pinned to the very bottom of the shell
@@ -1312,7 +1325,7 @@ func (m Model) selectedText() string {
 // It hands the transcript the full width; the transcript itself spends one column
 // on the scrollbar only while its content overflows (see transcript.reflow), so a
 // short conversation uses the whole width and shows no bar, while a scrolling one
-// reserves the gutter — and that decision re-runs on every streamed line, not just
+// reserves the gutter 鈥?and that decision re-runs on every streamed line, not just
 // on resize. It is called on every resize and after any edit that changes the
 // input height or menu row count.
 func (m *Model) relayout() {
