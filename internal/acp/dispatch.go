@@ -292,6 +292,9 @@ func (d *Dispatcher) HandleNotification(ctx context.Context, method string, para
 		return
 	}
 	if sess := d.manager.Get(req.SessionID); sess != nil {
+		if sess.queueLen() > 0 {
+			d.sendTextChunk(req.SessionID, "Cleared queued prompts.")
+		}
 		sess.Cancel()
 	}
 }
@@ -304,6 +307,9 @@ func (d *Dispatcher) sessionNew(params json.RawMessage) (any, *Error) {
 	}
 	if err := json.Unmarshal(params, &req); err != nil || req.Cwd == "" {
 		return nil, NewError(CodeInvalidParams, "missing cwd")
+	}
+	if !filepath.IsAbs(req.Cwd) {
+		return nil, NewError(CodeInvalidParams, "cwd must be an absolute path")
 	}
 	d.applyAdditionalDirectories(req.AdditionalDirectories)
 	store, err := d.manager.StoreForWorkspace(d.pigoHome, req.Cwd)
@@ -329,16 +335,20 @@ func (d *Dispatcher) sessionLoad(params json.RawMessage) (any, *Error) {
 	var req struct {
 		SessionID  string          `json:"sessionId"`
 		Cwd        string          `json:"cwd"`
+		ModelID    string          `json:"modelId,omitempty"`
 		MCPServers json.RawMessage `json:"mcpServers,omitempty"`
 	}
 	if err := json.Unmarshal(params, &req); err != nil || req.SessionID == "" || req.Cwd == "" {
 		return nil, NewError(CodeInvalidParams, "missing sessionId or cwd")
 	}
+	if !filepath.IsAbs(req.Cwd) {
+		return nil, NewError(CodeInvalidParams, "cwd must be an absolute path")
+	}
 	store, err := d.manager.StoreForWorkspace(d.pigoHome, req.Cwd)
 	if err != nil {
 		return nil, NewError(CodeInternalError, err.Error())
 	}
-	sess, err := d.manager.Load(req.Cwd, req.SessionID, d.model, store)
+	sess, err := d.manager.Load(req.Cwd, req.SessionID, req.ModelID, store)
 	if err != nil {
 		return nil, NewError(CodeInvalidParams, "session not found: "+req.SessionID)
 	}
@@ -377,11 +387,23 @@ func (d *Dispatcher) sessionList(params json.RawMessage) (any, *Error) {
 	var req struct {
 		Cwd    string `json:"cwd"`
 		Cursor string `json:"cursor"`
+		All    bool   `json:"all,omitempty"`
 	}
 	_ = json.Unmarshal(params, &req)
 	var sessions []map[string]any
-	if req.Cwd != "" {
-		store, err := d.manager.StoreForWorkspace(d.pigoHome, req.Cwd)
+	effectiveCwd := req.Cwd
+	if !req.All && effectiveCwd == "" {
+		effectiveCwd = d.lastSessionCwd
+	}
+	switch {
+	case req.All:
+		metas, err := sessionstore.ListAll(d.pigoHome)
+		if err != nil {
+			return nil, NewError(CodeInternalError, err.Error())
+		}
+		sessions = sessionInfos(metas)
+	case effectiveCwd != "":
+		store, err := d.manager.StoreForWorkspace(d.pigoHome, effectiveCwd)
 		if err != nil {
 			return nil, NewError(CodeInternalError, err.Error())
 		}
@@ -390,7 +412,7 @@ func (d *Dispatcher) sessionList(params json.RawMessage) (any, *Error) {
 			return nil, NewError(CodeInternalError, err.Error())
 		}
 		sessions = sessionInfos(metas)
-	} else {
+	default:
 		metas, err := sessionstore.ListAll(d.pigoHome)
 		if err != nil {
 			return nil, NewError(CodeInternalError, err.Error())
@@ -490,6 +512,9 @@ func (d *Dispatcher) sessionConfigOption(params json.RawMessage) (any, *Error) {
 		if req.Value == "" {
 			return nil, NewError(CodeInvalidParams, "missing model value")
 		}
+		if !d.modelAvailable(context.Background(), sess, req.Value) {
+			return nil, NewError(CodeInvalidParams, "unknown modelId: "+req.Value)
+		}
 		sess.Model = req.Value
 	case configIDThoughtLevel:
 		if !validThinkingLevel(req.Value) {
@@ -520,6 +545,9 @@ func (d *Dispatcher) modelSet(params json.RawMessage) (any, *Error) {
 	sess := d.manager.Get(req.SessionID)
 	if sess == nil {
 		return nil, NewError(CodeInvalidParams, "session not found: "+req.SessionID)
+	}
+	if !d.modelAvailable(context.Background(), sess, req.ModelID) {
+		return nil, NewError(CodeInvalidParams, "unknown modelId: "+req.ModelID)
 	}
 	sess.Model = req.ModelID
 	return map[string]any{}, nil

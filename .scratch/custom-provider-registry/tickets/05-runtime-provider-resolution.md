@@ -6,7 +6,7 @@
 
 **Blocked by:** #3
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] `model/set` 与 `session/set_config_option` 接受 custom 模型 id
 - [ ] session/prompt 使用注册表 endpoint/key
@@ -15,3 +15,7 @@
 - [ ] 单测覆盖 custom 与内置 provider 两条路径
 
 **Spec:** tasks/spec-custom-provider-registry.md（Runtime Resolution）
+
+## Resolution
+
+已解决（2026-08-06）。RuntimeRunner 按 `custom-<slug>/<modelId>` 动态解析 provider；标题生成、/btw、/compact、/rebuild 复用同一解析，/dream 保持全局；端到端 wire 测试验证 model/set 后 prompt 使用注册表端点。

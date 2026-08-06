@@ -6,9 +6,13 @@
 
 **Blocked by:** None — can start immediately
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] `/compact` 无参数时使用默认压缩设置
 - [ ] `/compact <instructions>` 将自定义说明传给压缩管线
 - [ ] 输出包含压缩前后 token 与摘要
 - [ ] 覆盖有/无自定义说明的测试
+
+## Resolution
+
+已解决（2026-08-06）。`/compact [instructions...]` 将自定义说明传入压缩管线，输出 token 变化与摘要；单元与 wire 测试覆盖。

@@ -6,7 +6,7 @@
 
 **Blocked by:** #1
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] upsert 支持缺省 providerId 自动生成，空 apiKey 保留旧值
 - [ ] list 返回 provider 元数据与 `apiKeyConfigured`，不回显 key
@@ -15,3 +15,7 @@
 - [ ] ACP wire 测试覆盖 upsert/list/delete
 
 **Spec:** tasks/spec-custom-provider-registry.md（ACP Methods / Security）
+
+## Resolution
+
+已解决（2026-08-06）。`pigo/providers/upsert|list|delete` 已实现：自动生成 id、空 apiKey 保留旧值、list 不回显 key、delete 幂等，`_meta` 声明 `pigo.providers`；wire 测试覆盖。

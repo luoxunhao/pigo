@@ -372,7 +372,7 @@ func TestCompactAndSessionCommands(t *testing.T) {
 		t.Fatalf("compact without config error = %v", rpcErr)
 	}
 	text, rpcErr := buildCommands()["session"](ctx, disp, sess, "")
-	if rpcErr != nil || !strings.Contains(text, "session:") {
+	if rpcErr != nil || !strings.Contains(text, "Session:") {
 		t.Fatalf("session command = %q, err %v", text, rpcErr)
 	}
 }

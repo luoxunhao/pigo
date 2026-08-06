@@ -6,9 +6,13 @@
 
 **Blocked by:** None — can start immediately
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] `session/list` 空 `cwd` 使用最近会话 cwd 过滤，而非全局列表
 - [ ] pigo 内部客户端显式传 `cwd`，需要全项目列表时有明确入口
 - [ ] `session/new` 与 `session/load` 拒绝相对路径，返回 `invalidParams`
 - [ ] 覆盖 scoping、路径校验与内部客户端调用的测试
+
+## Resolution
+
+已解决（2026-08-06）。`session/list` 空 `cwd` 使用最近会话 cwd，`all=true` 提供全项目入口；`session/new`/`session/load` 校验绝对路径；wire 测试覆盖。

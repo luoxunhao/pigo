@@ -6,7 +6,7 @@
 
 **Blocked by:** #1, #3
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] `pigo/models` 不再返回完整 `PresetCatalog`
 - [ ] 已配置内置 provider 的模型仍可见
@@ -15,3 +15,7 @@
 - [ ] 单测覆盖过滤与空配置场景
 
 **Spec:** tasks/spec-custom-provider-registry.md（pigo/models Filtering）
+
+## Resolution
+
+已解决（2026-08-06）。`pigo/models` 与会话模型选项只展示已配置内置 provider 和自定义缓存模型；`session/new` 包含自定义模型；测试覆盖过滤与空配置场景。

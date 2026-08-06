@@ -6,9 +6,13 @@
 
 **Blocked by:** None — can start immediately
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] `session/load` 默认恢复 metadata 中的模型
 - [ ] 显式传入覆盖模型时允许覆盖
 - [ ] 恢复后的 models/configOptions 反映持久化模型
 - [ ] 覆盖无元数据与显式覆盖场景的测试
+
+## Resolution
+
+已解决（2026-08-06）。`session/load` 默认恢复 metadata 中的模型，请求显式传 `modelId` 时覆盖；测试覆盖恢复与覆盖场景。

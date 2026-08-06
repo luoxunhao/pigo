@@ -6,7 +6,7 @@
 
 **Blocked by:** None — can start immediately
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] `[[providers]]` 支持 id/name/base_url/api_key/protocol/models 读写
 - [ ] 旧顶层 `model/provider/base_url/api_key/protocol` 仍可加载，legacy 写入不破坏 providers
@@ -15,3 +15,7 @@
 - [ ] 单测覆盖配置兼容、slug 稳定性与 key 清洗
 
 **Spec:** tasks/spec-custom-provider-registry.md（Config Shape / Provider ID / Security）
+
+## Resolution
+
+已解决（2026-08-06）。config.toml 支持 `[[providers]]` 读写、legacy flat 兼容、`custom-<slug>` 稳定 id 与 key 清洗；`go test ./internal/cli/config` 全绿。

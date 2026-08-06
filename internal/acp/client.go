@@ -115,14 +115,27 @@ func (c *Client) LoadSession(ctx context.Context, sessionID, cwd string) (string
 	return resp.SessionID, nil
 }
 
-// ListSessions returns the stored session summaries for a workspace (empty cwd
-// lists all projects).
+// ListSessions returns the stored session summaries for a workspace. An empty
+// cwd asks the server to use the most recent session cwd, matching pi-acp.
 func (c *Client) ListSessions(ctx context.Context, cwd string) ([]map[string]any, error) {
-	params := map[string]any{}
-	if cwd != "" {
-		params["cwd"] = cwd
-	}
+	params := map[string]any{"cwd": cwd}
 	raw, err := c.transport.SendRequest(ctx, MethodSessionList, params)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Sessions, nil
+}
+
+// ListAllSessions returns every stored session across all projects. It is the
+// explicit all-projects entry point on top of the pi-acp default scoping.
+func (c *Client) ListAllSessions(ctx context.Context) ([]map[string]any, error) {
+	raw, err := c.transport.SendRequest(ctx, MethodSessionList, map[string]any{"all": true})
 	if err != nil {
 		return nil, err
 	}

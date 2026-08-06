@@ -6,7 +6,7 @@
 
 **Blocked by:** #1
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] 支持 openai/responses/anthropic/gemini 四种端点映射
 - [ ] 认证头按协议正确（Bearer / x-api-key+version / x-goog-api-key）
@@ -15,3 +15,7 @@
 - [ ] ACP wire 测试覆盖请求、响应与失败
 
 **Spec:** tasks/spec-custom-provider-registry.md（ACP Methods / Endpoint Mapping and Auth）
+
+## Resolution
+
+已解决（2026-08-06）。`pigo/models/discover` 支持四种协议端点映射与标准认证头，返回 providerId/providerName/models，无副作用，并在 `initialize._meta` 声明能力；ACP wire 测试覆盖。

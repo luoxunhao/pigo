@@ -357,7 +357,27 @@ func cmdDream(ctx context.Context, d *Dispatcher, sess *AcpSession, args string)
 
 // cmdSession prints the live session summary (alias of /status for parity).
 func cmdSession(ctx context.Context, d *Dispatcher, sess *AcpSession, args string) (string, *Error) {
-	return sessionStatusText(sess), nil
+	var b strings.Builder
+	fmt.Fprintf(&b, "Session: %s\n", sess.ID)
+	if tr := sess.Store.TranscriptStore(); tr != nil {
+		fmt.Fprintf(&b, "Session file: %s\n", filepath.Join(tr.Dir(), session.FileName(sess.ID)))
+	}
+	fmt.Fprintf(&b, "Messages: %d\n", len(sess.Messages))
+	in, out := sessionTokenTotals(sess)
+	if in+out > 0 {
+		fmt.Fprintf(&b, "Tokens: in %d, out %d, total %d\n", in, out, in+out)
+	}
+	return strings.TrimSpace(b.String()), nil
+}
+
+func sessionTokenTotals(sess *AcpSession) (in, out int) {
+	for _, m := range sess.Messages {
+		if am, ok := m.(agentcore.AssistantMessage); ok && am.Usage != nil {
+			in += am.Usage.InputTokens
+			out += am.Usage.OutputTokens
+		}
+	}
+	return in, out
 }
 
 // cmdCompact runs manual compaction against the session history.
@@ -385,7 +405,7 @@ func cmdCompact(ctx context.Context, d *Dispatcher, sess *AcpSession, args strin
 		compaction.DefaultCompactionSettings,
 		-1,
 		nil,
-		"",
+		strings.TrimSpace(args),
 		provider.StreamConfig{APIKey: apiKey},
 	)
 	if err != nil {
@@ -400,7 +420,11 @@ func cmdCompact(ctx context.Context, d *Dispatcher, sess *AcpSession, args strin
 		return "", NewError(CodeInternalError, err.Error())
 	}
 	after := compaction.EstimateContextTokens(rebuilt).Tokens
-	return fmt.Sprintf("compacted: %d -> %d tokens, summarized %d messages", before, after, res.FirstKeptIndex), nil
+	msg := fmt.Sprintf("compacted: %d -> %d tokens, summarized %d messages", before, after, res.FirstKeptIndex)
+	if strings.TrimSpace(res.Summary) != "" {
+		msg += "\n" + strings.TrimSpace(res.Summary)
+	}
+	return msg, nil
 }
 
 // cmdHelp lists the commands routed through pigo/command.

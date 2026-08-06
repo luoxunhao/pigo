@@ -6,7 +6,7 @@
 
 **Blocked by:** #2, #3, #5, #6
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] ACP wire 测试覆盖 discover/upsert/list/delete
 - [ ] custom 模型设置后下一次 prompt 使用注册表端点
@@ -14,3 +14,7 @@
 - [ ] 所有响应与错误日志无明文 key
 
 **Spec:** tasks/spec-custom-provider-registry.md（Testing / Security）
+
+## Resolution
+
+已解决（2026-08-06）。ACP wire 测试覆盖 discover/upsert/list/delete、model/set→prompt、启动解析与 key 不泄漏；`go build ./...`、相关包 vet 与测试全绿。

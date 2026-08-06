@@ -53,7 +53,7 @@ func sessionInfos(metas []sessionstore.Metadata) []map[string]any {
 func validThinkingLevel(s string) bool {
 	switch agentcore.ThinkingLevel(s) {
 	case agentcore.ThinkingOff, agentcore.ThinkingMinimal, agentcore.ThinkingLow,
-		agentcore.ThinkingMedium, agentcore.ThinkingHigh, agentcore.ThinkingXHigh, agentcore.ThinkingMax:
+		agentcore.ThinkingMedium, agentcore.ThinkingHigh, agentcore.ThinkingXHigh:
 		return true
 	default:
 		return false

@@ -557,6 +557,9 @@ func TestModelSetChangesNextTurn(t *testing.T) {
 
 	runner := &fakeRunner{}
 	disp, _ := newTestDispatcher(t, runner, server)
+	creds := provider.NewCredentialStore(nil)
+	creds.SetOverride("deepseek", "sk-test")
+	disp.SetCredentialStore(creds)
 	srv := NewServer(server, disp)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -589,7 +592,7 @@ func TestModelSetChangesNextTurn(t *testing.T) {
 		if prompt == "first" {
 			if _, err := client.SendRequest(ctx, MethodModelSet, map[string]any{
 				"sessionId": newResp.SessionID,
-				"modelId":   "deepseek/deepseek-v4",
+				"modelId":   "deepseek/deepseek-v4-pro",
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -599,7 +602,7 @@ func TestModelSetChangesNextTurn(t *testing.T) {
 	runner.mu.Lock()
 	models := append([]string{}, runner.models...)
 	runner.mu.Unlock()
-	want := []string{"openrouter/free", "deepseek/deepseek-v4"}
+	want := []string{"openrouter/free", "deepseek/deepseek-v4-pro"}
 	if len(models) != 2 || models[0] != want[0] || models[1] != want[1] {
 		t.Fatalf("models seen by runner = %v, want %v", models, want)
 	}

@@ -18,7 +18,12 @@ func TestSessionListDeleteAndConfigOptions(t *testing.T) {
 	if err := os.MkdirAll(ws, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	client, stop := StartInProcess(&fakeRunner{}, home, "openrouter/free", "sys", ws, nil, nil)
+	client, stop := StartInProcess(&RuntimeRunner{
+		Provider:     fakeProvider{},
+		ProviderName: "deepseek",
+		Model:        "deepseek/deepseek-v4-pro",
+		APIKey:       "sk-test",
+	}, home, "deepseek/deepseek-v4-pro", "sys", ws, nil, nil)
 	defer stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -43,7 +48,7 @@ func TestSessionListDeleteAndConfigOptions(t *testing.T) {
 	if err := client.SetConfigOption(ctx, sessionID, configIDThoughtLevel, "low"); err != nil {
 		t.Fatal(err)
 	}
-	if err := client.SetConfigOption(ctx, sessionID, configIDModel, "deepseek/deepseek-v4"); err != nil {
+	if err := client.SetConfigOption(ctx, sessionID, configIDModel, "deepseek/deepseek-v4-pro"); err != nil {
 		t.Fatal(err)
 	}
 	if err := client.DeleteSession(ctx, sessionID); err != nil {
