@@ -68,25 +68,48 @@ func (d *Dispatcher) pigoStatus(params json.RawMessage) (any, *Error) {
 	return map[string]any{"text": sessionStatusText(sess)}, nil
 }
 
-// pigoModels returns the current model plus the built-in preset catalog so a
-// client can render a model picker without knowing pigo's registry internals.
+// pigoModels returns the current model plus only the providers that are
+// actually configured (built-ins with credentials plus saved custom providers),
+// so clients never see an unusable full catalog.
 func (d *Dispatcher) pigoModels(params json.RawMessage) (any, *Error) {
-	models := make([]any, 0, len(provider.PresetCatalog))
+	ctx := context.Background()
+	models := make([]any, 0, len(provider.PresetCatalog)+8)
 	seen := map[string]bool{}
-	for _, p := range provider.PresetCatalog {
-		key := p.Provider + "/" + p.ID
+	for _, m := range provider.PresetCatalog {
+		if !providerConfigured(ctx, m.Provider, d.credStore) {
+			continue
+		}
+		key := m.Provider + "/" + m.ID
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
 		models = append(models, map[string]any{
-			"provider":    p.Provider,
-			"modelId":     p.ID,
-			"displayName": p.Label(),
+			"provider":    m.Provider,
+			"modelId":     m.ID,
+			"displayName": m.Label(),
 		})
 	}
+	for _, p := range d.customProviderList() {
+		for _, m := range p.Models {
+			key := p.ID + "/" + m.ModelID
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			models = append(models, map[string]any{
+				"provider":    p.ID,
+				"modelId":     m.ModelID,
+				"displayName": m.Name,
+			})
+		}
+	}
+	current := d.model
+	if current == "" {
+		current = "openrouter/free"
+	}
 	return map[string]any{
-		"currentModelId": d.model,
+		"currentModelId": current,
 		"models":         models,
 	}, nil
 }
@@ -216,12 +239,16 @@ func (d *Dispatcher) generateTitle(sess *AcpSession, firstPrompt string) {
 		return
 	}
 	rr, ok := d.runner.(*RuntimeRunner)
-	if !ok || rr.Provider == nil {
+	if !ok || rr == nil {
+		return
+	}
+	prov, _, apiKey, wireModel, err := d.providerForModel(sess)
+	if err != nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	stream, err := provider.StreamFnFromProvider(rr.Provider)(ctx, rr.Model, provider.LlmContext{
+	stream, err := provider.StreamFnFromProvider(prov)(ctx, wireModel, provider.LlmContext{
 		SystemPrompt: "You generate short coding-agent session titles. Reply with a single line, at most 40 characters, no quotes, no period.",
 		Messages: agentcore.MessageList{
 			agentcore.UserMessage{
@@ -229,7 +256,7 @@ func (d *Dispatcher) generateTitle(sess *AcpSession, firstPrompt string) {
 				Content:   agentcore.ContentList{agentcore.NewTextContent("Summarize this task in one short title: " + firstPrompt)},
 			},
 		},
-	}, provider.StreamConfig{APIKey: rr.APIKey, ThinkingLevel: rr.ThinkingLevel})
+	}, provider.StreamConfig{APIKey: apiKey, ThinkingLevel: rr.ThinkingLevel})
 	if err != nil {
 		return
 	}

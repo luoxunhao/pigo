@@ -41,6 +41,7 @@ type Dispatcher struct {
 	runner          SessionRunner
 	registry        *runtime.SlashRegistry
 	credStore       *provider.CredentialStore
+	providers       *CustomProviders
 	lastSessionCwd  string
 	cwd             string
 	runMu           map[string]*sync.Mutex
@@ -74,6 +75,10 @@ func NewDispatcher(manager *SessionManager, transport Transport, pigoHome, model
 // SetCredentialStore wires the credential store used to decide which preset
 // providers appear in ACP model options.
 func (d *Dispatcher) SetCredentialStore(store *provider.CredentialStore) { d.credStore = store }
+
+// SetCustomProviders wires the shared custom provider registry used by model
+// listing, provider management, and runtime resolution.
+func (d *Dispatcher) SetCustomProviders(p *CustomProviders) { d.providers = p }
 
 // SetSlashRegistry wires the full slash registry so external clients see and
 // can invoke user templates, skills, and plugin commands.
@@ -245,10 +250,18 @@ func (d *Dispatcher) HandleRequest(ctx context.Context, id RequestID, method str
 		return d.pigoStatus(params)
 	case MethodPigoModels:
 		return d.pigoModels(params)
+	case MethodPigoModelsDiscover:
+		return d.pigoModelsDiscover(params)
 	case MethodPigoConfig:
 		return d.pigoConfig(params)
 	case MethodPigoMessages:
 		return d.pigoMessages(params)
+	case MethodPigoProvidersUpsert:
+		return d.pigoProvidersUpsert(params)
+	case MethodPigoProvidersList:
+		return d.pigoProvidersList(params)
+	case MethodPigoProvidersDelete:
+		return d.pigoProvidersDelete(params)
 	case MethodPigoRewind, MethodPigoFork, MethodPigoTree, MethodPigoGoal, MethodPigoBtw, MethodPigoDream, MethodPigoRemoteControl:
 		return nil, NewError(CodeNotImplemented, method+" is not implemented yet")
 	default:
@@ -492,7 +505,7 @@ func (d *Dispatcher) sessionConfigOption(params json.RawMessage) (any, *Error) {
 	}
 	d.sendConfigOptionsUpdate(sess)
 	return map[string]any{
-		"configOptions": sessionConfigOptions(context.Background(), sess, d.credStore),
+		"configOptions": sessionConfigOptions(context.Background(), sess, d.credStore, d.customProviderList()),
 	}, nil
 }
 

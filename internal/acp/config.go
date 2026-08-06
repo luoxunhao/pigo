@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/smallnest/pigo/internal/agentcore"
+	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/provider"
 	"github.com/smallnest/pigo/internal/runtime"
 )
@@ -28,13 +29,13 @@ var thinkingModes = []map[string]any{
 	{"id": string(agentcore.ThinkingMax), "name": "Max"},
 }
 
-func sessionModels(ctx context.Context, sess *AcpSession, creds *provider.CredentialStore) map[string]any {
+func sessionModels(ctx context.Context, sess *AcpSession, creds *provider.CredentialStore, custom []config.ProviderConfig) map[string]any {
 	current := sess.Model
 	if current == "" {
 		current = "openrouter/free"
 	}
-	available := make([]map[string]any, 0, len(provider.PresetCatalog)+1)
-	seen := make(map[string]bool, len(provider.PresetCatalog)+1)
+	available := make([]map[string]any, 0, len(provider.PresetCatalog)+8)
+	seen := make(map[string]bool, len(provider.PresetCatalog)+8)
 	for _, m := range provider.PresetCatalog {
 		if !providerConfigured(ctx, m.Provider, creds) {
 			continue
@@ -48,6 +49,20 @@ func sessionModels(ctx context.Context, sess *AcpSession, creds *provider.Creden
 			"name":        m.Label(),
 			"description": nil,
 		})
+	}
+	for _, p := range custom {
+		for _, m := range p.Models {
+			id := p.ID + "/" + m.ModelID
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			available = append(available, map[string]any{
+				"modelId":     id,
+				"name":        m.Name,
+				"description": nil,
+			})
+		}
 	}
 	if !seen[current] {
 		available = append(available, map[string]any{
@@ -73,8 +88,8 @@ func sessionModes(sess *AcpSession) map[string]any {
 	}
 }
 
-func sessionConfigOptions(ctx context.Context, sess *AcpSession, creds *provider.CredentialStore) []map[string]any {
-	models := sessionModels(ctx, sess, creds)
+func sessionConfigOptions(ctx context.Context, sess *AcpSession, creds *provider.CredentialStore, custom []config.ProviderConfig) []map[string]any {
+	models := sessionModels(ctx, sess, creds, custom)
 	modes := sessionModes(sess)
 	modelOptions := make([]map[string]any, 0)
 	if raw, ok := models["availableModels"].([]map[string]any); ok {

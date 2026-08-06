@@ -2,7 +2,9 @@ package acp
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"strings"
 
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/agenttool"
@@ -29,6 +31,9 @@ type RuntimeRunner struct {
 	// Snap is the rewind journal shared with the write/edit tools. When nil the
 	// runner discovers it from the tool set.
 	Snap *agenttool.FileSnapshotRecorder
+	// CustomProviders is the shared custom provider registry used to resolve
+	// model ids of the form custom-<slug>/<modelId> at run time.
+	CustomProviders *CustomProviders
 }
 
 // Run executes one prompt turn. It appends the user message to a copy of the
@@ -38,6 +43,10 @@ type RuntimeRunner struct {
 func (r *RuntimeRunner) Run(ctx context.Context, prompt string, images []agentcore.Content, history agentcore.MessageList, sysPrompt, model, thinking string, beforeToolCall agentcore.BeforeToolCallFunc, onEvent func(agentcore.AgentEvent), hooks TurnHooks) (agentcore.MessageList, *agentcore.AssistantMessage, error) {
 	if model == "" {
 		model = r.Model
+	}
+	prov, providerName, apiKey, wireModel, err := r.ResolveForModel(model)
+	if err != nil {
+		return nil, nil, err
 	}
 	level := r.ThinkingLevel
 	if thinking != "" {
@@ -65,12 +74,12 @@ func (r *RuntimeRunner) Run(ctx context.Context, prompt string, images []agentco
 
 	cfg := runtime.RunConfig{
 		LoopConfig: runtime.LoopConfig{
-			Model:         model,
-			Provider:      r.ProviderName,
-			APIKey:        r.APIKey,
+			Model:         wireModel,
+			Provider:      providerName,
+			APIKey:        apiKey,
 			ThinkingLevel: level,
-			Stream:        provider.StreamFnFromProvider(r.Provider),
-			ContextWindow: r.effectiveContextWindow(model),
+			Stream:        provider.StreamFnFromProvider(prov),
+			ContextWindow: r.effectiveContextWindow(wireModel, prov),
 			Compaction:    r.effectiveCompaction(),
 		},
 		Batch: agenttool.BatchConfig{
@@ -90,12 +99,35 @@ func (r *RuntimeRunner) Run(ctx context.Context, prompt string, images []agentco
 		Run:     cfg,
 		OnEvent: onEvent,
 	}
-	err := runtime.RunHeadless(ctx, agentCtx, headless)
+	err = runtime.RunHeadless(ctx, agentCtx, headless)
 	if snap := r.snapshotRecorder(); err == nil && snap != nil {
 		snap.Commit("", "acp turn")
 	}
 	last := agentcore.LastAssistantOf(agentCtx.Messages)
 	return agentCtx.Messages, last, err
+}
+
+// ResolveForModel returns the provider, provider name, API key, and wire model
+// id for a session model id. Custom ids are resolved from the registry; every
+// other id uses the startup provider.
+func (r *RuntimeRunner) ResolveForModel(model string) (provider.Provider, string, string, string, error) {
+	if model == "" {
+		model = r.Model
+	}
+	if providerID, modelID, ok := splitCustomModelID(model); ok {
+		if r.CustomProviders == nil {
+			return nil, "", "", "", fmt.Errorf("custom provider registry is not configured")
+		}
+		prov, entry, err := r.CustomProviders.Resolve(providerID, modelID)
+		if err != nil {
+			return nil, "", "", "", err
+		}
+		return prov, entry.ID, entry.APIKey, modelID, nil
+	}
+	if r.Provider == nil {
+		return nil, "", "", "", fmt.Errorf("no provider configured")
+	}
+	return r.Provider, r.ProviderName, r.APIKey, model, nil
 }
 
 func (r *RuntimeRunner) effectiveCompaction() compaction.CompactionSettings {
@@ -105,19 +137,33 @@ func (r *RuntimeRunner) effectiveCompaction() compaction.CompactionSettings {
 	return compaction.DefaultCompactionSettings
 }
 
-func (r *RuntimeRunner) effectiveContextWindow(model string) int {
+func (r *RuntimeRunner) effectiveContextWindow(model string, prov provider.Provider) int {
 	if r.ContextWindow > 0 {
 		return r.ContextWindow
 	}
-	if r.Provider == nil {
+	if prov == nil {
 		return 0
 	}
-	for _, m := range r.Provider.Models() {
+	for _, m := range prov.Models() {
 		if m.ID == model && m.ContextWindow > 0 {
 			return m.ContextWindow
 		}
 	}
 	return 0
+}
+
+// providerForModel exposes the runtime resolution to slash commands and title
+// generation through the dispatcher.
+func (d *Dispatcher) providerForModel(sess *AcpSession) (provider.Provider, string, string, string, error) {
+	rr, ok := d.runner.(*RuntimeRunner)
+	if !ok || rr == nil {
+		return nil, "", "", "", fmt.Errorf("runtime runner is not available")
+	}
+	model := sess.Model
+	if strings.TrimSpace(model) == "" {
+		model = rr.Model
+	}
+	return rr.ResolveForModel(model)
 }
 
 // snapshotRecorder returns the rewind journal shared by the tool set, using

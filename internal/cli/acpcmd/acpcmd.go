@@ -14,6 +14,7 @@ import (
 	"github.com/smallnest/pigo/internal/acp"
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/cli"
+	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/cli/prompts"
 	"github.com/smallnest/pigo/internal/cli/run"
 	"github.com/smallnest/pigo/internal/sessionstore"
@@ -102,17 +103,27 @@ func Run(ctx context.Context, opts Options, stdin io.Reader, stdout, stderr io.W
 		Provider:      env.Provider,
 		ProviderName:  env.ProviderName,
 		Model:         opts.Model,
-		APIKey:        opts.APIKey,
+		APIKey:        env.APIKey,
 		ThinkingLevel: opts.ThinkingLevel,
 		Tools:         env.Tools,
 	}
+	providers := acp.NewCustomProviders(config.FileConfigPath())
+	_ = providers.Load()
+	runner.CustomProviders = providers
 	dreamCfg := &acp.DreamConfig{
 		Model:         opts.Model,
 		BaseURL:       opts.BaseURL,
 		Protocol:      opts.Protocol,
 		ProviderName:  env.ProviderName,
-		APIKey:        opts.APIKey,
+		APIKey:        env.APIKey,
 		ThinkingLevel: opts.ThinkingLevel,
+	}
+	if providerID, _, ok := config.SplitCustomModelID(opts.Model); ok {
+		if entry, found := providers.Get(providerID); found {
+			dreamCfg.BaseURL = entry.BaseURL
+			dreamCfg.Protocol = entry.Protocol
+			dreamCfg.ProviderName = entry.ID
+		}
 	}
 
 	if err := acp.ServeStdioWithRegistry(ctx, runner, home, opts.Model, env.SysPrompt, cwd, mgr, dreamCfg, reg, stdin, stdout); err != nil {

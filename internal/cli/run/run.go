@@ -16,6 +16,7 @@ import (
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/agenttool"
 	"github.com/smallnest/pigo/internal/builtinskills"
+	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/hooks"
 	"github.com/smallnest/pigo/internal/memory"
 	"github.com/smallnest/pigo/internal/plugin"
@@ -32,6 +33,7 @@ type Env struct {
 	Tools        []agentcore.AgentTool
 	Provider     provider.Provider
 	ProviderName string
+	APIKey       string
 	SysPrompt    string
 
 	// Skills is the discovered skill set (loaded once here, empty under
@@ -66,10 +68,11 @@ type Env struct {
 // returns an error rather than exiting so the caller owns exit-code mapping.
 func SetupEnv(model, baseURL, protocol, providerName, apiKey string, noTools, noSkills bool, systemPrompt string, appendSystemPrompt []string, memEnabled bool) (Env, error) {
 	cwd, _ := os.Getwd()
-	prov, resolvedName, err := provider.ResolveProvider(model, baseURL, protocol, providerName, os.Getenv)
+	prov, resolvedName, resolvedKey, wireModel, err := resolveStartupProvider(model, baseURL, protocol, providerName, apiKey)
 	if err != nil {
 		return Env{}, err
 	}
+	model = wireModel
 	appends, err := resolveAppendInstructions(appendSystemPrompt)
 	if err != nil {
 		return Env{}, err
@@ -101,7 +104,7 @@ func SetupEnv(model, baseURL, protocol, providerName, apiKey string, noTools, no
 		// override a child would get an empty key whenever auth comes from config.toml
 		// or --api-key (not an env var), leaving every sub-agent unauthenticated.
 		childCreds := provider.NewCredentialStore(nil)
-		childCreds.SetOverride(resolvedName, apiKey)
+		childCreds.SetOverride(resolvedName, resolvedKey)
 		factory := func() runtime.RunConfig {
 			childTools := BuiltinToolsExcept(cwd, false, "task")
 			return runtime.RunConfig{
@@ -153,11 +156,58 @@ func SetupEnv(model, baseURL, protocol, providerName, apiKey string, noTools, no
 		Tools:        tools,
 		Provider:     prov,
 		ProviderName: resolvedName,
+		APIKey:       resolvedKey,
 		SysPrompt:    sysPrompt,
 		Skills:       skills,
 		Plugins:      mgr,
 		Memory:       memStore,
 	}, nil
+}
+
+// resolveStartupProvider resolves the startup provider, supporting a default
+// model of the form custom-<slug>/<modelId> from the config provider registry.
+func resolveStartupProvider(model, baseURL, protocol, providerName, apiKey string) (provider.Provider, string, string, string, error) {
+	if providerID, modelID, ok := config.SplitCustomModelID(model); ok {
+		cfg, err := config.LoadFileConfig(config.FileConfigPath())
+		if err != nil {
+			return nil, "", "", "", err
+		}
+		entry, ok := cfg.CustomProvider(providerID)
+		if !ok {
+			return nil, "", "", "", fmt.Errorf("custom provider %q not found in config", providerID)
+		}
+		models := make([]provider.Model, 0, len(entry.Models))
+		for _, m := range entry.Models {
+			models = append(models, provider.Model{
+				Provider:    entry.ID,
+				ID:          m.ModelID,
+				DisplayName: m.Name,
+			})
+		}
+		prov, err := provider.ResolveCustomProvider(entry.ID, entry.BaseURL, entry.Protocol, models)
+		if err != nil {
+			return nil, "", "", "", err
+		}
+		key := apiKey
+		if key == "" {
+			key = entry.APIKey
+		}
+		if key == "" && !localEndpoint(entry.BaseURL) {
+			return nil, "", "", "", fmt.Errorf("custom provider %q: missing API key", providerID)
+		}
+		return prov, entry.ID, key, modelID, nil
+	}
+	prov, name, err := provider.ResolveProvider(model, baseURL, protocol, providerName, os.Getenv)
+	if err != nil {
+		return nil, "", "", "", err
+	}
+	return prov, name, apiKey, model, nil
+}
+
+// localEndpoint reports whether a base URL points at a local, keyless endpoint.
+func localEndpoint(baseURL string) bool {
+	b := strings.ToLower(baseURL)
+	return strings.Contains(b, "localhost") || strings.Contains(b, "127.0.0.1") || strings.HasPrefix(b, "http://")
 }
 
 // hasReadTool reports whether the read tool is present in the tool set. Skills

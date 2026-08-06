@@ -40,6 +40,10 @@ type FileConfig struct {
 	NoSkills      bool   `toml:"no_skills"`
 	Approve       bool   `toml:"approve"`
 	SystemPrompt  string `toml:"system_prompt"`
+	// Providers is the custom provider registry: endpoint/key/protocol plus a
+	// cached model list. It is additive to the flat fields above, which remain
+	// the compatibility layer for the selected default provider.
+	Providers []ProviderConfig `toml:"providers"`
 	// Prompts is the config.toml `prompts` array: paths (files or dirs) to load
 	// prompt templates from at the settings tier (mirrors pi's settings prompts).
 	Prompts []string `toml:"prompts"`

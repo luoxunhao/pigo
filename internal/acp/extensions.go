@@ -365,12 +365,16 @@ func cmdCompact(ctx context.Context, d *Dispatcher, sess *AcpSession, args strin
 	if d.compactCfg == nil {
 		return "", NewError(CodeNotImplemented, "compact is not configured")
 	}
+	prov, providerName, apiKey, wireModel, err := d.providerForModel(sess)
+	if err != nil {
+		return "", NewError(CodeInternalError, err.Error())
+	}
 	msgs := sess.Messages
 	before := compaction.EstimateContextTokens(msgs).Tokens
-	stream := provider.StreamFnFromProvider(d.compactCfg.Provider)
+	stream := provider.StreamFnFromProvider(prov)
 	model := provider.Model{
-		Provider:      d.compactCfg.ProviderName,
-		ID:            d.compactCfg.Model,
+		Provider:      providerName,
+		ID:            wireModel,
 		ContextWindow: d.compactCfg.ContextWindow,
 	}
 	res, err := compaction.Compact(
@@ -382,7 +386,7 @@ func cmdCompact(ctx context.Context, d *Dispatcher, sess *AcpSession, args strin
 		-1,
 		nil,
 		"",
-		provider.StreamConfig{APIKey: d.compactCfg.APIKey},
+		provider.StreamConfig{APIKey: apiKey},
 	)
 	if err != nil {
 		return "", NewError(CodeInternalError, err.Error())
@@ -496,14 +500,19 @@ func cmdRebuild(ctx context.Context, d *Dispatcher, sess *AcpSession, args strin
 	if d.compactCfg == nil {
 		return "", NewError(CodeNotImplemented, "rebuild is not configured")
 	}
+	prov, providerName, apiKey, wireModel, err := d.providerForModel(sess)
+	if err != nil {
+		return "", NewError(CodeInternalError, err.Error())
+	}
 	msgs := sess.Messages
 	before := compaction.EstimateContextTokens(msgs).Tokens
 	cfg := runtime.RunConfig{
 		LoopConfig: runtime.LoopConfig{
-			Model:         d.compactCfg.Model,
-			Provider:      d.compactCfg.ProviderName,
+			Model:         wireModel,
+			Provider:      providerName,
 			ThinkingLevel: d.compactCfg.ThinkingLevel,
-			Stream:        provider.StreamFnFromProvider(d.compactCfg.Provider),
+			APIKey:        apiKey,
+			Stream:        provider.StreamFnFromProvider(prov),
 			ContextWindow: d.compactCfg.ContextWindow,
 			Compaction:    compaction.DefaultCompactionSettings,
 		},

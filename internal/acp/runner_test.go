@@ -2,10 +2,16 @@ package acp
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/smallnest/pigo/internal/agentcore"
+	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/provider"
 )
 
@@ -75,7 +81,64 @@ func TestRuntimeRunnerDefaultsAutoCompaction(t *testing.T) {
 	if !r.effectiveCompaction().Enabled {
 		t.Fatal("default auto-compaction must be enabled")
 	}
-	if got := r.effectiveContextWindow("fake-model"); got != 128000 {
+	if got := r.effectiveContextWindow("fake-model", fakeProvider{}); got != 128000 {
 		t.Fatalf("context window = %d, want 128000", got)
 	}
 }
+
+func TestRuntimeRunnerCustomProviderUsesRegistryEndpoint(t *testing.T) {
+	var gotAuth, gotModel string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotModel = body.Model
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, customOpenAISSE)
+	}))
+	defer srv.Close()
+
+	reg := NewCustomProviders(filepath.Join(t.TempDir(), "config.toml"))
+	if _, err := reg.Upsert(config.ProviderConfig{
+		ID:       "custom-gw",
+		Name:     "GW",
+		BaseURL:  srv.URL,
+		APIKey:   "sk-custom",
+		Protocol: "openai",
+		Models:   []config.ProviderModelConfig{{ModelID: "m1", Name: "M1"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runner := &RuntimeRunner{
+		Provider:        fakeProvider{},
+		ProviderName:    "fake",
+		Model:           "custom-gw/m1",
+		CustomProviders: reg,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, last, err := runner.Run(ctx, "hi", nil, nil, "sys", "custom-gw/m1", "", nil, func(agentcore.AgentEvent) {}, TurnHooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last == nil || agentcore.ContentToText(last.Content) != "Hello" {
+		t.Fatalf("last = %+v", last)
+	}
+	if gotAuth != "Bearer sk-custom" {
+		t.Errorf("auth = %q, want Bearer sk-custom", gotAuth)
+	}
+	if gotModel != "m1" {
+		t.Errorf("wire model = %q, want m1", gotModel)
+	}
+}
+
+const customOpenAISSE = `data: {"id":"c1","model":"m1","choices":[{"delta":{"content":"Hello"}}]}
+
+data: {"id":"c1","model":"m1","choices":[{"delta":{},"finish_reason":"stop"}]}
+
+data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2}}
+
+data: [DONE]
+`

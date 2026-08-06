@@ -111,7 +111,7 @@ func (v *IntOrString) UnmarshalTOML(data any) error {
 // recall = 1200), modeled as a map.
 type CheckpointConfig struct {
 	Thresholds []string       `toml:"thresholds"`
-	Reserved   IntOrString    `toml:"reserved"`
+	Reserved   *IntOrString   `toml:"reserved"`
 	PushCaps   map[string]int `toml:"push_caps"`
 }
 
@@ -245,7 +245,7 @@ func ParseMaxContext(s string) (MaxContext, error) {
 type MemorySettings struct {
 	Memory               ResolvedMemory
 	CheckpointThresholds []float64
-	CheckpointReserved   IntOrString
+	CheckpointReserved   *IntOrString
 	CheckpointPushCaps   map[string]int
 	MaxContext           MaxContext
 }

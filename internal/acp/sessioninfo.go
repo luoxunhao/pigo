@@ -24,8 +24,8 @@ func (d *Dispatcher) sessionPayload(sess *AcpSession) map[string]any {
 	ctx := context.Background()
 	return map[string]any{
 		"sessionId":     sess.ID,
-		"configOptions": sessionConfigOptions(ctx, sess, d.credStore),
-		"models":        sessionModels(ctx, sess, d.credStore),
+		"configOptions": sessionConfigOptions(ctx, sess, d.credStore, d.customProviderList()),
+		"models":        sessionModels(ctx, sess, d.credStore, d.customProviderList()),
 		"modes":         sessionModes(sess),
 		"_meta": map[string]any{
 			"pigo.startupInfo": startupInfoText(d.version, sess, d.commandCount()),
@@ -107,7 +107,7 @@ func (d *Dispatcher) sendTextChunk(sessionID, text string) {
 func (d *Dispatcher) sendConfigOptionsUpdate(sess *AcpSession) {
 	d.sendSessionUpdate(sess.ID, map[string]any{
 		"sessionUpdate": "config_option_update",
-		"configOptions": sessionConfigOptions(context.Background(), sess, d.credStore),
+		"configOptions": sessionConfigOptions(context.Background(), sess, d.credStore, d.customProviderList()),
 	})
 }
 

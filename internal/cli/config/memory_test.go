@@ -75,7 +75,7 @@ func TestParseThresholdFraction(t *testing.T) {
 		{"0%", 0, false},   // out of range (must be >0)
 		{"120%", 0, false}, // out of range (>100%)
 		{"-10%", 0, false},
-		{"80", 0, false},  // missing %
+		{"80", 0, false}, // missing %
 		{"abc%", 0, false},
 	}
 	for _, c := range cases {
@@ -179,7 +179,7 @@ max_context = "300K"
 	if got := cfg.Checkpoint.ResolveThresholds(); !reflect.DeepEqual(got, []float64{0.50, 0.70}) {
 		t.Errorf("thresholds = %v, want [0.5 0.7]", got)
 	}
-	if !cfg.Checkpoint.Reserved.Set || !cfg.Checkpoint.Reserved.IsInt || cfg.Checkpoint.Reserved.Int != 4096 {
+	if cfg.Checkpoint.Reserved == nil || !cfg.Checkpoint.Reserved.Set || !cfg.Checkpoint.Reserved.IsInt || cfg.Checkpoint.Reserved.Int != 4096 {
 		t.Errorf("reserved = %+v, want int 4096", cfg.Checkpoint.Reserved)
 	}
 	if cfg.Checkpoint.PushCaps["memory"] != 800 || cfg.Checkpoint.PushCaps["recall"] != 1200 {
@@ -203,7 +203,7 @@ func TestLoadFileConfig_ReservedString(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadFileConfig: %v", err)
 	}
-	if !cfg.Checkpoint.Reserved.Set || cfg.Checkpoint.Reserved.IsInt || cfg.Checkpoint.Reserved.Str != "10%" {
+	if cfg.Checkpoint.Reserved == nil || !cfg.Checkpoint.Reserved.Set || cfg.Checkpoint.Reserved.IsInt || cfg.Checkpoint.Reserved.Str != "10%" {
 		t.Errorf("reserved = %+v, want string 10%%", cfg.Checkpoint.Reserved)
 	}
 }
@@ -220,7 +220,7 @@ func TestResolveMemorySettings_Defaults(t *testing.T) {
 	if ms.MaxContext.IsSet() {
 		t.Errorf("default max_context should be unset")
 	}
-	if ms.CheckpointReserved.Set {
+	if ms.CheckpointReserved != nil {
 		t.Errorf("default reserved should be unset")
 	}
 }
