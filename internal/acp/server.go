@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"os"
 )
 
 // VersionValue is the pigo version advertised during initialize. cmd/pigo
@@ -107,13 +108,18 @@ func buildInitializeResponse(version string) map[string]any {
 	return map[string]any{
 		"protocolVersion": ProtocolVersion,
 		"agentCapabilities": map[string]any{
-			"loadSession":        true,
-			"promptCapabilities": map[string]any{},
+			"loadSession": true,
+			"promptCapabilities": map[string]any{
+				"image":           true,
+				"audio":           false,
+				"embeddedContext": os.Getenv("PIGO_ACP_ENABLE_EMBEDDED_CONTEXT") == "true",
+			},
 			"sessionCapabilities": map[string]any{
 				"close":  map[string]any{},
 				"list":   map[string]any{},
 				"delete": map[string]any{},
 			},
+			"mcpCapabilities": map[string]any{"http": false, "sse": false},
 			"_meta": map[string]any{
 				"pigo.extensions": true,
 				"pigo.event":      true,
@@ -127,6 +133,7 @@ func buildInitializeResponse(version string) map[string]any {
 		"authMethods": []any{},
 		"agentInfo": map[string]any{
 			"name":    "pigo",
+			"title":   "pigo ACP",
 			"version": version,
 		},
 	}

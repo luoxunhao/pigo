@@ -23,13 +23,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/session"
+	"github.com/smallnest/pigo/internal/sessionstore"
 )
 
 // defaultTranscriptBudget bounds the total bytes of session transcript text fed
@@ -57,27 +57,96 @@ type SessionSource interface {
 	Load(id string) (session.SessionHeader, agentcore.MessageList, error)
 }
 
-// resolveSessionStore opens the default session store rooted at
-// $PIGO_HOME/sessions (else ~/.pigo/sessions), mirroring
-// headless.SessionStore's resolution. It is duplicated here rather than imported
-// to keep internal/dream free of a dependency on the CLI assembly layer, exactly
-// as ResolveMemoryRoot duplicates the memory-root resolution. A resolution
-// failure yields a nil source and no error: distillation then degrades to a
-// no-op rather than failing the whole dream run.
-func resolveSessionStore() (SessionSource, error) {
-	dir := os.Getenv("PIGO_HOME")
-	if dir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, nil
-		}
-		dir = filepath.Join(home, ".pigo")
+// projectSessionSource is a read-only SessionSource over every project-scoped
+// store plus any not-yet-migrated legacy flat sessions. New sessions live only
+// in the project-scoped store (the unified single-write path); the legacy flat
+// directory stays readable so old sessions can still be distilled until they
+// are migrated on resume.
+type projectSessionSource struct {
+	pigoHome string
+	byID     map[string]session.SessionHeader
+	stores   map[string]*sessionstore.Store
+}
+
+// List implements SessionSource. Headers are deduplicated by id (project-scoped
+// wins) and ordered most-recent-first.
+func (s *projectSessionSource) List() ([]session.SessionHeader, error) {
+	out := make([]session.SessionHeader, 0, len(s.byID))
+	for _, h := range s.byID {
+		out = append(out, h)
 	}
-	store, err := session.NewStore(filepath.Join(dir, "sessions"))
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].UpdatedAt.After(out[j].UpdatedAt)
+	})
+	return out, nil
+}
+
+// Load implements SessionSource, reading from the session's project store and
+// falling back to the legacy flat store for not-yet-migrated sessions.
+func (s *projectSessionSource) Load(id string) (session.SessionHeader, agentcore.MessageList, error) {
+	h, ok := s.byID[id]
+	if !ok {
+		return session.SessionHeader{}, nil, fmt.Errorf("session %q not found", id)
+	}
+	store, err := s.storeFor(h.Cwd)
+	if err != nil {
+		return session.SessionHeader{}, nil, err
+	}
+	if _, header, msgs, err := store.Load(id); err == nil {
+		return header, msgs, nil
+	}
+	legacy, err := session.NewStore(filepath.Join(s.pigoHome, "sessions"))
+	if err != nil {
+		return session.SessionHeader{}, nil, err
+	}
+	return legacy.Load(id)
+}
+
+func (s *projectSessionSource) storeFor(workspace string) (*sessionstore.Store, error) {
+	if st, ok := s.stores[workspace]; ok {
+		return st, nil
+	}
+	st, err := sessionstore.OpenForWorkspace(s.pigoHome, workspace)
+	if err != nil {
+		return nil, err
+	}
+	s.stores[workspace] = st
+	return st, nil
+}
+
+// resolveSessionStore returns a read-only view over all project-scoped stores
+// (the single source of truth for new sessions) plus legacy flat sessions that
+// have not been migrated yet. A resolution failure yields a nil source and no
+// error: distillation then degrades to a no-op rather than failing the whole
+// dream run.
+func resolveSessionStore() (SessionSource, error) {
+	home, err := sessionstore.PigoHome()
 	if err != nil {
 		return nil, nil
 	}
-	return store, nil
+	src := &projectSessionSource{pigoHome: home, byID: map[string]session.SessionHeader{}, stores: map[string]*sessionstore.Store{}}
+	metas, err := sessionstore.ListAll(home)
+	if err != nil {
+		return nil, nil
+	}
+	for _, m := range metas {
+		src.byID[m.SessionID] = session.SessionHeader{
+			ID:        m.SessionID,
+			UpdatedAt: m.LastActiveAt,
+			Model:     m.ModelName,
+			Cwd:       m.WorkspacePath,
+		}
+	}
+	if legacy, err := session.NewStore(filepath.Join(home, "sessions")); err == nil {
+		if headers, err := legacy.List(); err == nil {
+			for _, h := range headers {
+				if _, ok := src.byID[h.ID]; !ok {
+					src.byID[h.ID] = h
+				}
+			}
+		}
+	}
+	return src, nil
 }
 
 // sessionMatchesProject reports whether a session belongs to the project rooted

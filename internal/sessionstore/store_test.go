@@ -207,3 +207,184 @@ func TestSeparateProjectsIsolateSessions(t *testing.T) {
 		t.Fatalf("project B leaked sessions: %+v", lb)
 	}
 }
+
+func TestAppendBranchUpdatesMetadataAndPreservesTree(t *testing.T) {
+	home := t.TempDir()
+	ws := filepath.Join(home, "ws")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenForWorkspace(home, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	meta := NewMetadata("sess-branch", "Branch", "pigo", "m", ws)
+	header := session.SessionHeader{ID: "sess-branch", CreatedAt: now, UpdatedAt: now, Model: "m", Provider: "p", Cwd: ws}
+	first := agentcore.MessageList{
+		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("q1")}},
+		agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant, Content: agentcore.ContentList{agentcore.NewTextContent("a1")}},
+	}
+	if err := store.Create(meta, header, first); err != nil {
+		t.Fatal(err)
+	}
+	_, entries, err := store.TranscriptStore().LoadEntries("sess-branch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf := entries[len(entries)-1].ID
+
+	header.UpdatedAt = now.Add(time.Hour)
+	second := agentcore.MessageList{
+		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("q2")}},
+		agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant, Content: agentcore.ContentList{agentcore.NewTextContent("a2")}},
+	}
+	newLeaf, err := store.AppendBranch("sess-branch", header, leaf, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newLeaf == "" || newLeaf == leaf {
+		t.Fatalf("AppendBranch returned leaf %q, want a new id", newLeaf)
+	}
+	meta2, err := store.LoadMetadata("sess-branch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Create seeds zero counts; AppendBranch counts only the appended batch, so
+	// the metadata reflects the branch write (2 messages, 1 user turn).
+	if meta2.MessageCount != 2 {
+		t.Errorf("MessageCount = %d, want 2", meta2.MessageCount)
+	}
+	if meta2.TurnCount != 1 {
+		t.Errorf("TurnCount = %d, want 1", meta2.TurnCount)
+	}
+	if !meta2.LastActiveAt.Equal(header.UpdatedAt) {
+		t.Errorf("LastActiveAt = %v, want %v", meta2.LastActiveAt, header.UpdatedAt)
+	}
+	// The tree survives: the second chain descends from the first leaf, so both
+	// branches are still present in the single transcript file.
+	_, all, err := store.TranscriptStore().LoadEntries("sess-branch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 4 {
+		t.Fatalf("transcript has %d entries, want 4", len(all))
+	}
+	if all[2].ParentID != leaf {
+		t.Errorf("branch entry parent = %q, want %q", all[2].ParentID, leaf)
+	}
+}
+
+func TestImportEntriesRoundTripsTree(t *testing.T) {
+	home := t.TempDir()
+	ws := filepath.Join(home, "ws")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenForWorkspace(home, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	src, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	header := session.SessionHeader{ID: "legacy-sess", CreatedAt: now, UpdatedAt: now, Model: "m", Provider: "p", Cwd: ws}
+	msgs := agentcore.MessageList{
+		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("q")}},
+		agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant, Content: agentcore.ContentList{agentcore.NewTextContent("a")}},
+	}
+	if err := src.Save(header, msgs); err != nil {
+		t.Fatal(err)
+	}
+	_, entries, err := src.LoadEntries(header.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	meta := NewMetadata(header.ID, "Imported", "pigo", header.Model, ws)
+	meta.CreatedAt = header.CreatedAt
+	meta.LastActiveAt = header.UpdatedAt
+	meta.MessageCount = len(entries)
+	if err := store.ImportEntries(meta, header, entries); err != nil {
+		t.Fatal(err)
+	}
+
+	_, h2, msgs2, err := store.Load(header.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h2.ID != header.ID || len(msgs2) != 2 {
+		t.Fatalf("imported session mismatch: id=%q msgs=%d", h2.ID, len(msgs2))
+	}
+	_, imported, err := store.TranscriptStore().LoadEntries(header.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, e := range imported {
+		if e.ID != entries[i].ID || e.ParentID != entries[i].ParentID {
+			t.Errorf("entry[%d] tree metadata not preserved: got (%q,%q) want (%q,%q)",
+				i, e.ID, e.ParentID, entries[i].ID, entries[i].ParentID)
+		}
+	}
+	if err := store.ImportEntries(meta, header, entries); err == nil {
+		t.Fatal("ImportEntries must reject an existing session id")
+	}
+}
+
+func TestListAllScansProjects(t *testing.T) {
+	home := t.TempDir()
+	wsA := filepath.Join(home, "project-a")
+	wsB := filepath.Join(home, "project-b")
+	if err := os.MkdirAll(wsA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(wsB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	storeA, err := OpenForWorkspace(home, wsA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeB, err := OpenForWorkspace(home, wsB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	older := time.Now().UTC().Add(-2 * time.Hour)
+	newer := time.Now().UTC()
+	metaA := NewMetadata("sess-a", "A", "pigo", "m", wsA)
+	metaA.CreatedAt = older
+	metaA.LastActiveAt = older
+	metaB := NewMetadata("sess-b", "B", "pigo", "m", wsB)
+	metaB.CreatedAt = newer
+	metaB.LastActiveAt = newer
+	headerA := session.SessionHeader{ID: "sess-a", CreatedAt: older, UpdatedAt: older, Cwd: wsA}
+	headerB := session.SessionHeader{ID: "sess-b", CreatedAt: newer, UpdatedAt: newer, Cwd: wsB}
+	if err := storeA.Create(metaA, headerA, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := storeB.Create(metaB, headerB, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := ListAll(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("ListAll returned %d sessions, want 2", len(all))
+	}
+	if all[0].SessionID != "sess-b" || all[1].SessionID != "sess-a" {
+		t.Errorf("ListAll order = [%s, %s], want [sess-b, sess-a]", all[0].SessionID, all[1].SessionID)
+	}
+
+	empty, err := ListAll(filepath.Join(home, "empty"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("ListAll on empty home returned %d sessions, want 0", len(empty))
+	}
+}

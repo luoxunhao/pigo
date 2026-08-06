@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/smallnest/pigo/internal/acp"
+	"github.com/smallnest/pigo/internal/cli/headless"
 	"github.com/smallnest/pigo/internal/sessionstore"
 	"github.com/smallnest/pigo/internal/trust"
 )
@@ -27,6 +28,13 @@ func RunACP(opts Options) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
+	}
+	if opts.ResumeID != "" {
+		// Migrate a legacy flat session into the project-scoped store once so
+		// the ACP server can load it and every subsequent write has one home.
+		if err := headless.EnsureProjectSession(home, cwd, opts.ResumeID); err != nil {
+			return err
+		}
 	}
 	mgr, err := trust.NewManager(trust.DefaultPath())
 	if err != nil {

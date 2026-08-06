@@ -15,7 +15,7 @@ import (
 
 type bridgeFakeRunner struct{}
 
-func (bridgeFakeRunner) Run(ctx context.Context, prompt string, history agentcore.MessageList, sysPrompt, model, thinking string, beforeToolCall agentcore.BeforeToolCallFunc, onEvent func(agentcore.AgentEvent)) (agentcore.MessageList, *agentcore.AssistantMessage, error) {
+func (bridgeFakeRunner) Run(ctx context.Context, prompt string, images []agentcore.Content, history agentcore.MessageList, sysPrompt, model, thinking string, beforeToolCall agentcore.BeforeToolCallFunc, onEvent func(agentcore.AgentEvent), hooks acp.TurnHooks) (agentcore.MessageList, *agentcore.AssistantMessage, error) {
 	partial := agentcore.AssistantMessage{
 		RoleField:  agentcore.RoleAssistant,
 		Content:    agentcore.ContentList{agentcore.NewTextContent("hello")},
@@ -24,8 +24,10 @@ func (bridgeFakeRunner) Run(ctx context.Context, prompt string, history agentcor
 	onEvent(agentcore.MessageUpdateEvent{Message: partial, AssistantMessageEvent: provider.StreamTextEvent{Partial: partial}})
 	onEvent(agentcore.ToolExecutionStartEvent{ToolCallID: "call-1", ToolName: "bash", Args: map[string]any{"command": "echo hi"}})
 	onEvent(agentcore.ToolExecutionEndEvent{ToolCallID: "call-1", ToolName: "bash", Result: agentcore.AgentToolResult{Content: agentcore.ContentList{agentcore.NewTextContent("hi")}}})
+	content := agentcore.ContentList{agentcore.NewTextContent(prompt)}
+	content = append(content, images...)
 	msgs := append(append(agentcore.MessageList{}, history...),
-		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent(prompt)}},
+		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: content},
 		partial,
 	)
 	return msgs, &partial, nil

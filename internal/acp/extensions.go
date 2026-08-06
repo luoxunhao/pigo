@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,11 +32,15 @@ func buildCommands() map[string]commandFunc {
 	return map[string]commandFunc{
 		"model":          cmdModel,
 		"think":          cmdThink,
+		"steering":       cmdSteering,
+		"follow-up":      cmdFollowUp,
 		"trust":          cmdTrust,
 		"status":         cmdStatus,
 		"compact":        cmdCompact,
 		"session":        cmdSession,
 		"help":           cmdHelp,
+		"name":           cmdName,
+		"changelog":      cmdChangelog,
 		"copy":           cmdCopy,
 		"export":         cmdExport,
 		"import":         cmdImport,
@@ -69,6 +75,86 @@ func cmdThink(ctx context.Context, d *Dispatcher, sess *AcpSession, args string)
 	}
 	sess.Thinking = args
 	return "thinking set to " + args, nil
+}
+
+func cmdSteering(ctx context.Context, d *Dispatcher, sess *AcpSession, args string) (string, *Error) {
+	return setDeliveryMode(&sess.SteeringMode, "steering", args)
+}
+
+func cmdFollowUp(ctx context.Context, d *Dispatcher, sess *AcpSession, args string) (string, *Error) {
+	return setDeliveryMode(&sess.FollowUpMode, "follow-up", args)
+}
+
+func setDeliveryMode(mode *string, name, args string) (string, *Error) {
+	if *mode == "" {
+		*mode = "one-at-a-time"
+	}
+	args = strings.TrimSpace(args)
+	if args == "" {
+		return name + " mode: " + *mode, nil
+	}
+	if args != "all" && args != "one-at-a-time" {
+		return "", NewError(CodeInvalidParams, "usage: /"+name+" all|one-at-a-time")
+	}
+	*mode = args
+	return name + " mode set to " + args, nil
+}
+
+func cmdName(ctx context.Context, d *Dispatcher, sess *AcpSession, args string) (string, *Error) {
+	name := strings.TrimSpace(args)
+	if name == "" {
+		return "usage: /name <name>", nil
+	}
+	meta, err := sess.Store.LoadMetadata(sess.ID)
+	if err != nil {
+		return "", NewError(CodeInternalError, err.Error())
+	}
+	meta.SessionName = name
+	if err := sess.Store.SaveMetadata(meta); err != nil {
+		return "", NewError(CodeInternalError, err.Error())
+	}
+	d.sendSessionUpdate(sess.ID, map[string]any{
+		"sessionUpdate": "session_info_update",
+		"title":         name,
+		"updatedAt":     time.Now().UTC().Format(time.RFC3339),
+	})
+	return "Session name set: " + name, nil
+}
+
+func cmdChangelog(ctx context.Context, d *Dispatcher, sess *AcpSession, args string) (string, *Error) {
+	path := findChangelogPath()
+	if path == "" {
+		return "Changelog not found (couldn't locate pigo installation).", nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", NewError(CodeInternalError, err.Error())
+	}
+	text := string(data)
+	if len(text) > 20000 {
+		text = text[:20000] + "\n\n...(truncated)..."
+	}
+	return text, nil
+}
+
+func findChangelogPath() string {
+	if exe, err := os.Executable(); err == nil {
+		candidates := []string{
+			filepath.Join(filepath.Dir(exe), "CHANGELOG.md"),
+			filepath.Join(filepath.Dir(exe), "..", "CHANGELOG.md"),
+		}
+		for _, p := range candidates {
+			if info, err := os.Stat(p); err == nil && !info.IsDir() {
+				return p
+			}
+		}
+	}
+	for _, p := range []string{"CHANGELOG.md", "../CHANGELOG.md"} {
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			return p
+		}
+	}
+	return ""
 }
 
 func cmdTrust(ctx context.Context, d *Dispatcher, sess *AcpSession, args string) (string, *Error) {
@@ -315,9 +401,12 @@ func cmdCompact(ctx context.Context, d *Dispatcher, sess *AcpSession, args strin
 
 // cmdHelp lists the commands routed through pigo/command.
 func cmdHelp(ctx context.Context, d *Dispatcher, sess *AcpSession, args string) (string, *Error) {
-	names := make([]string, 0, len(d.commands))
-	for name := range d.commands {
-		names = append(names, name)
+	cmds := availableCommandsPayload(d.commands, d.registry)
+	names := make([]string, 0, len(cmds))
+	for _, c := range cmds {
+		if name, _ := c["name"].(string); name != "" {
+			names = append(names, name)
+		}
 	}
 	sort.Strings(names)
 	var b strings.Builder
@@ -348,15 +437,35 @@ func cmdCopy(ctx context.Context, d *Dispatcher, sess *AcpSession, args string) 
 	return "copied last reply to clipboard", nil
 }
 
-// cmdExport writes the session transcript to a JSONL file.
+// cmdExport writes the session transcript to a file. It defaults to a
+// self-contained HTML export and emits an ACP resource_link, matching pi-acp;
+// an explicit .jsonl path keeps pigo's JSONL/import workflow.
 func cmdExport(ctx context.Context, d *Dispatcher, sess *AcpSession, args string) (string, *Error) {
 	path := strings.TrimSpace(args)
 	if path == "" {
-		path = sess.ID + ".jsonl"
+		path = filepath.Join(sess.Cwd, sess.ID+".html")
 	}
 	n, err := sess.Store.TranscriptStore().Export(sess.ID, path)
 	if err != nil {
 		return "", NewError(CodeInternalError, err.Error())
+	}
+	abs, _ := filepath.Abs(path)
+	if strings.HasSuffix(strings.ToLower(path), ".html") || strings.HasSuffix(strings.ToLower(path), ".htm") {
+		d.sendTextChunk(sess.ID, "Session exported: ")
+		uri := "file://" + filepath.ToSlash(abs)
+		if !strings.HasPrefix(filepath.ToSlash(abs), "/") {
+			uri = "file:///" + filepath.ToSlash(abs)
+		}
+		d.sendSessionUpdate(sess.ID, map[string]any{
+			"sessionUpdate": "agent_message_chunk",
+			"content": map[string]any{
+				"type":     "resource_link",
+				"name":     filepath.Base(path),
+				"uri":      uri,
+				"mimeType": "text/html",
+				"title":    "Session exported",
+			},
+		})
 	}
 	return fmt.Sprintf("exported %d entries to %s", n, path), nil
 }
@@ -463,7 +572,7 @@ func cmdBtw(ctx context.Context, d *Dispatcher, sess *AcpSession, args string) (
 		return "usage: /btw <prompt>", nil
 	}
 	history := append(agentcore.MessageList{}, sess.Messages...)
-	_, last, err := d.runner.Run(ctx, prompt, history, sess.Header.SystemPrompt, sess.Model, sess.Thinking, nil, nil)
+	_, last, err := d.runner.Run(ctx, prompt, nil, history, sess.Header.SystemPrompt, sess.Model, sess.Thinking, nil, nil, TurnHooks{})
 	if err != nil {
 		return "", NewError(CodeInternalError, err.Error())
 	}
@@ -484,9 +593,17 @@ func sessionStatusText(sess *AcpSession) string {
 	if thinking == "" {
 		thinking = "default"
 	}
+	steering := sess.SteeringMode
+	if steering == "" {
+		steering = "one-at-a-time"
+	}
+	followUp := sess.FollowUpMode
+	if followUp == "" {
+		followUp = "one-at-a-time"
+	}
 	return fmt.Sprintf(
-		"session: %s\nmodel: %s\nthinking: %s\ncwd: %s\nmessages: %d\nturns: %d",
-		sess.ID, sess.Model, thinking, sess.Cwd, len(sess.Messages), turns,
+		"session: %s\nmodel: %s\nthinking: %s\nsteering: %s\nfollow-up: %s\ncwd: %s\nmessages: %d\nturns: %d",
+		sess.ID, sess.Model, thinking, steering, followUp, sess.Cwd, len(sess.Messages), turns,
 	)
 }
 

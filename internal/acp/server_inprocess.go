@@ -6,6 +6,7 @@ import (
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/agenttool"
 	"github.com/smallnest/pigo/internal/memory"
+	"github.com/smallnest/pigo/internal/provider"
 	"github.com/smallnest/pigo/internal/trust"
 )
 
@@ -29,9 +30,15 @@ func newDispatcher(runner SessionRunner, transport Transport, pigoHome, model, s
 		snap = rr.snapshotRecorder()
 	}
 	disp := NewDispatcher(NewSessionManager(runner), transport, pigoHome, model, sysPrompt, broker, snap)
+	disp.SetCwd(cwd)
 	disp.SetRunner(runner)
 	disp.SetDreamConfig(dreamCfg)
 	if rr, ok := runner.(*RuntimeRunner); ok {
+		creds := provider.NewCredentialStore(nil)
+		if rr.APIKey != "" {
+			creds.SetOverride(rr.ProviderName, rr.APIKey)
+		}
+		disp.SetCredentialStore(creds)
 		disp.SetCompactConfig(&CompactConfig{
 			Provider:      rr.Provider,
 			ProviderName:  rr.ProviderName,

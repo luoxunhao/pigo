@@ -25,7 +25,7 @@ type fakeRunner struct {
 	models     []string
 }
 
-func (f *fakeRunner) Run(ctx context.Context, prompt string, history agentcore.MessageList, sysPrompt, model, thinking string, beforeToolCall agentcore.BeforeToolCallFunc, onEvent func(agentcore.AgentEvent)) (agentcore.MessageList, *agentcore.AssistantMessage, error) {
+func (f *fakeRunner) Run(ctx context.Context, prompt string, images []agentcore.Content, history agentcore.MessageList, sysPrompt, model, thinking string, beforeToolCall agentcore.BeforeToolCallFunc, onEvent func(agentcore.AgentEvent), hooks TurnHooks) (agentcore.MessageList, *agentcore.AssistantMessage, error) {
 	f.startOnce.Do(func() {
 		if f.started != nil {
 			close(f.started)
@@ -54,8 +54,10 @@ func (f *fakeRunner) Run(ctx context.Context, prompt string, history agentcore.M
 	if f.waitCancel {
 		msg.StopReason = agentcore.StopReasonAborted
 	}
+	content := agentcore.ContentList{agentcore.NewTextContent(prompt)}
+	content = append(content, images...)
 	msgs := append(append(agentcore.MessageList{}, history...),
-		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent(prompt)}},
+		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: content},
 		msg,
 	)
 	if f.waitCancel {

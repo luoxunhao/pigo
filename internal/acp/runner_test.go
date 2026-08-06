@@ -13,7 +13,7 @@ type fakeProvider struct{}
 
 func (fakeProvider) Name() string { return "fake" }
 func (fakeProvider) Models() []provider.Model {
-	return []provider.Model{{Provider: "fake", ID: "fake-model"}}
+	return []provider.Model{{Provider: "fake", ID: "fake-model", ContextWindow: 128000}}
 }
 
 func (fakeProvider) StreamCompletion(ctx context.Context, req provider.CompletionRequest) (*provider.AssistantMessageEventStream, error) {
@@ -41,9 +41,9 @@ func TestRuntimeRunnerRunsPrompt(t *testing.T) {
 		ProviderName: "fake",
 		Model:        "fake-model",
 	}
-	msgs, last, err := runner.Run(ctx, "hello", nil, "you are pigo", "fake-model", "", nil, func(ev agentcore.AgentEvent) {
+	msgs, last, err := runner.Run(ctx, "hello", nil, nil, "you are pigo", "fake-model", "", nil, func(ev agentcore.AgentEvent) {
 		events = append(events, ev)
-	})
+	}, TurnHooks{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,5 +63,19 @@ func TestRuntimeRunnerRunsPrompt(t *testing.T) {
 	}
 	if !sawText {
 		t.Fatalf("no stream text event observed: %+v", events)
+	}
+}
+
+func TestRuntimeRunnerDefaultsAutoCompaction(t *testing.T) {
+	r := &RuntimeRunner{
+		Provider:     fakeProvider{},
+		ProviderName: "fake",
+		Model:        "fake-model",
+	}
+	if !r.effectiveCompaction().Enabled {
+		t.Fatal("default auto-compaction must be enabled")
+	}
+	if got := r.effectiveContextWindow("fake-model"); got != 128000 {
+		t.Fatalf("context window = %d, want 128000", got)
 	}
 }

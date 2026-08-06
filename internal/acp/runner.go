@@ -6,6 +6,7 @@ import (
 
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/agenttool"
+	"github.com/smallnest/pigo/internal/compaction"
 	"github.com/smallnest/pigo/internal/provider"
 	"github.com/smallnest/pigo/internal/runtime"
 )
@@ -19,6 +20,12 @@ type RuntimeRunner struct {
 	APIKey        string
 	ThinkingLevel agentcore.ThinkingLevel
 	Tools         []agentcore.AgentTool
+	// Compaction is the auto-compaction policy used for every ACP-driven run.
+	// The zero value selects compaction.DefaultCompactionSettings.
+	Compaction compaction.CompactionSettings
+	// ContextWindow overrides the model's advertised context window. Zero
+	// resolves the window from the provider's model catalog.
+	ContextWindow int
 	// Snap is the rewind journal shared with the write/edit tools. When nil the
 	// runner discovers it from the tool set.
 	Snap *agenttool.FileSnapshotRecorder
@@ -28,7 +35,7 @@ type RuntimeRunner struct {
 // history, runs the loop, and returns the resulting message list plus the
 // final assistant message. Agent events are streamed through onEvent as they
 // are emitted by the loop.
-func (r *RuntimeRunner) Run(ctx context.Context, prompt string, history agentcore.MessageList, sysPrompt, model, thinking string, beforeToolCall agentcore.BeforeToolCallFunc, onEvent func(agentcore.AgentEvent)) (agentcore.MessageList, *agentcore.AssistantMessage, error) {
+func (r *RuntimeRunner) Run(ctx context.Context, prompt string, images []agentcore.Content, history agentcore.MessageList, sysPrompt, model, thinking string, beforeToolCall agentcore.BeforeToolCallFunc, onEvent func(agentcore.AgentEvent), hooks TurnHooks) (agentcore.MessageList, *agentcore.AssistantMessage, error) {
 	if model == "" {
 		model = r.Model
 	}
@@ -38,9 +45,11 @@ func (r *RuntimeRunner) Run(ctx context.Context, prompt string, history agentcor
 	}
 	msgs := make(agentcore.MessageList, 0, len(history)+1)
 	msgs = append(msgs, history...)
+	content := agentcore.ContentList{agentcore.NewTextContent(prompt)}
+	content = append(content, images...)
 	msgs = append(msgs, agentcore.UserMessage{
 		RoleField: agentcore.RoleUser,
-		Content:   agentcore.ContentList{agentcore.NewTextContent(prompt)},
+		Content:   content,
 	})
 
 	agentCtx := &agentcore.AgentContext{
@@ -61,10 +70,18 @@ func (r *RuntimeRunner) Run(ctx context.Context, prompt string, history agentcor
 			APIKey:        r.APIKey,
 			ThinkingLevel: level,
 			Stream:        provider.StreamFnFromProvider(r.Provider),
+			ContextWindow: r.effectiveContextWindow(model),
+			Compaction:    r.effectiveCompaction(),
 		},
 		Batch: agenttool.BatchConfig{
 			ToolExecutorConfig: agenttool.ToolExecutorConfig{Registry: reg, BeforeToolCall: beforeToolCall},
 		},
+	}
+	if hooks.Steering != nil {
+		cfg.GetSteeringMessages = hooks.Steering
+	}
+	if hooks.FollowUp != nil {
+		cfg.GetFollowUpMessages = hooks.FollowUp
 	}
 
 	headless := runtime.HeadlessConfig{
@@ -79,6 +96,28 @@ func (r *RuntimeRunner) Run(ctx context.Context, prompt string, history agentcor
 	}
 	last := agentcore.LastAssistantOf(agentCtx.Messages)
 	return agentCtx.Messages, last, err
+}
+
+func (r *RuntimeRunner) effectiveCompaction() compaction.CompactionSettings {
+	if r.Compaction.Enabled || r.Compaction.ReserveTokens > 0 || r.Compaction.KeepRecentTokens > 0 {
+		return r.Compaction
+	}
+	return compaction.DefaultCompactionSettings
+}
+
+func (r *RuntimeRunner) effectiveContextWindow(model string) int {
+	if r.ContextWindow > 0 {
+		return r.ContextWindow
+	}
+	if r.Provider == nil {
+		return 0
+	}
+	for _, m := range r.Provider.Models() {
+		if m.ID == model && m.ContextWindow > 0 {
+			return m.ContextWindow
+		}
+	}
+	return 0
 }
 
 // snapshotRecorder returns the rewind journal shared by the tool set, using

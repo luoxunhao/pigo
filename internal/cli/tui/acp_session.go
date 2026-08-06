@@ -11,6 +11,7 @@ import (
 	"github.com/smallnest/pigo/internal/acp"
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/cli"
+	"github.com/smallnest/pigo/internal/cli/headless"
 	"github.com/smallnest/pigo/internal/runtime"
 	"github.com/smallnest/pigo/internal/sessionstore"
 	"github.com/smallnest/pigo/internal/trust"
@@ -27,6 +28,13 @@ func RunACP(opts Options) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
+	}
+	if opts.ResumeID != "" {
+		// Migrate a legacy flat session into the project-scoped store once so
+		// the ACP server can load it and every subsequent write has one home.
+		if err := headless.EnsureProjectSession(home, cwd, opts.ResumeID); err != nil {
+			return err
+		}
 	}
 	mgr, err := trust.NewManager(trust.DefaultPath())
 	if err != nil {
@@ -69,10 +77,27 @@ func RunACP(opts Options) error {
 		return err
 	}
 
-	s, history, err := newRunSession(opts)
+	proj, err := sessionstore.OpenForWorkspace(home, cwd)
 	if err != nil {
 		return err
 	}
+	_, header, _, err := proj.Load(sessionID)
+	if err != nil {
+		return err
+	}
+	s, history, err := newRunSessionWithStore(proj.TranscriptStore(), opts)
+	if err != nil {
+		return err
+	}
+	// The ACP server owns persistence for this session; the TUI's runSession
+	// only supplies display state and must never write a second transcript.
+	s.acpBacked = true
+	s.store = nil
+	s.header = header
+	if header.SystemPrompt != "" {
+		s.agentCtx.SystemPrompt = header.SystemPrompt
+	}
+	s.hookDeps.SessionID = sessionID
 	m := NewModel(opts).withACPSession(s, history, client, sessionID)
 	p := tea.NewProgram(m)
 	_, err = p.Run()

@@ -4,12 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/agenttool"
+	"github.com/smallnest/pigo/internal/provider"
+	"github.com/smallnest/pigo/internal/runtime"
+	"github.com/smallnest/pigo/internal/sessionstore"
 	"github.com/smallnest/pigo/internal/trust"
 )
 
@@ -34,6 +39,10 @@ type Dispatcher struct {
 	compactCfg      *CompactConfig
 	memoryCfg       *MemoryConfig
 	runner          SessionRunner
+	registry        *runtime.SlashRegistry
+	credStore       *provider.CredentialStore
+	lastSessionCwd  string
+	cwd             string
 	runMu           map[string]*sync.Mutex
 	runMuOnce       sync.Once
 	extraRootsMu    sync.Mutex
@@ -50,7 +59,7 @@ func NewDispatcher(manager *SessionManager, transport Transport, pigoHome, model
 		pigoHome:  pigoHome,
 		model:     model,
 		sysPrompt: sysPrompt,
-		mapper:    newEventMapper(),
+		mapper:    newEventMapper(""),
 		broker:    broker,
 		commands:  buildCommands(),
 		snap:      snap,
@@ -60,6 +69,21 @@ func NewDispatcher(manager *SessionManager, transport Transport, pigoHome, model
 	}
 	d.runMu = make(map[string]*sync.Mutex)
 	return d
+}
+
+// SetCredentialStore wires the credential store used to decide which preset
+// providers appear in ACP model options.
+func (d *Dispatcher) SetCredentialStore(store *provider.CredentialStore) { d.credStore = store }
+
+// SetSlashRegistry wires the full slash registry so external clients see and
+// can invoke user templates, skills, and plugin commands.
+func (d *Dispatcher) SetSlashRegistry(reg *runtime.SlashRegistry) { d.registry = reg }
+
+// SetCwd wires the workspace cwd used for tool-location resolution and startup
+// info. In-process callers set it from the session workspace.
+func (d *Dispatcher) SetCwd(cwd string) {
+	d.cwd = cwd
+	d.mapper.SetCwd(cwd)
 }
 
 // SetDreamConfig wires the /dream command settings.
@@ -141,12 +165,17 @@ func (d *Dispatcher) runRemotePrompt(sessionID, text string) {
 	if sess == nil {
 		return
 	}
-	lock := d.lockFor(sessionID)
-	lock.Lock()
-	defer lock.Unlock()
+	p := &queuedPrompt{text: applyGoal(sess, text), done: make(chan struct{})}
+	if !sess.tryRun(p) {
+		sess.waitForTurn(p)
+		if p.delivered {
+			<-p.done
+			return
+		}
+	}
 	hook := d.beforeToolCall(sessionID)
 	onEvent := d.eventSink(sessionID)
-	_, _ = d.manager.Run(context.Background(), sess, applyGoal(sess, text), hook, onEvent)
+	_, _ = d.manager.Run(context.Background(), sess, p.text, nil, hook, onEvent, TurnHooks{})
 }
 
 func (d *Dispatcher) lockFor(sessionID string) *sync.Mutex {
@@ -204,6 +233,10 @@ func (d *Dispatcher) HandleRequest(ctx context.Context, id RequestID, method str
 		return d.sessionDelete(params)
 	case MethodSessionClose:
 		return d.sessionClose(params)
+	case MethodSessionMode:
+		return d.sessionMode(params)
+	case MethodSessionConfigOpt:
+		return d.sessionConfigOption(params)
 	case MethodModelSet:
 		return d.modelSet(params)
 	case MethodPigoCommand:
@@ -252,8 +285,9 @@ func (d *Dispatcher) HandleNotification(ctx context.Context, method string, para
 
 func (d *Dispatcher) sessionNew(params json.RawMessage) (any, *Error) {
 	var req struct {
-		Cwd                   string   `json:"cwd"`
-		AdditionalDirectories []string `json:"additionalDirectories,omitempty"`
+		Cwd                   string          `json:"cwd"`
+		AdditionalDirectories []string        `json:"additionalDirectories,omitempty"`
+		MCPServers            json.RawMessage `json:"mcpServers,omitempty"`
 	}
 	if err := json.Unmarshal(params, &req); err != nil || req.Cwd == "" {
 		return nil, NewError(CodeInvalidParams, "missing cwd")
@@ -267,20 +301,22 @@ func (d *Dispatcher) sessionNew(params json.RawMessage) (any, *Error) {
 	if err != nil {
 		return nil, NewError(CodeInternalError, err.Error())
 	}
-	return map[string]any{
-		"sessionId":     sess.ID,
-		"configOptions": []any{},
-		"models": map[string]any{
-			"currentModelId":  sess.Model,
-			"availableModels": []any{},
-		},
-	}, nil
+	if len(req.MCPServers) > 0 && string(req.MCPServers) != "null" {
+		if err := saveMCPServers(sess, req.MCPServers); err != nil {
+			return nil, NewError(CodeInternalError, err.Error())
+		}
+	}
+	d.lastSessionCwd = req.Cwd
+	d.SetCwd(req.Cwd)
+	go d.announceSession(sess, true)
+	return d.sessionPayload(sess), nil
 }
 
 func (d *Dispatcher) sessionLoad(params json.RawMessage) (any, *Error) {
 	var req struct {
-		SessionID string `json:"sessionId"`
-		Cwd       string `json:"cwd"`
+		SessionID  string          `json:"sessionId"`
+		Cwd        string          `json:"cwd"`
+		MCPServers json.RawMessage `json:"mcpServers,omitempty"`
 	}
 	if err := json.Unmarshal(params, &req); err != nil || req.SessionID == "" || req.Cwd == "" {
 		return nil, NewError(CodeInvalidParams, "missing sessionId or cwd")
@@ -293,14 +329,14 @@ func (d *Dispatcher) sessionLoad(params json.RawMessage) (any, *Error) {
 	if err != nil {
 		return nil, NewError(CodeInvalidParams, "session not found: "+req.SessionID)
 	}
-	resp := map[string]any{
-		"sessionId":     sess.ID,
-		"configOptions": []any{},
-		"models": map[string]any{
-			"currentModelId":  sess.Model,
-			"availableModels": []any{},
-		},
+	if len(req.MCPServers) > 0 && string(req.MCPServers) != "null" {
+		_ = saveMCPServers(sess, req.MCPServers)
 	}
+	d.lastSessionCwd = req.Cwd
+	d.SetCwd(req.Cwd)
+	go d.replaySession(sess)
+	go d.announceSession(sess, false)
+	resp := d.sessionPayload(sess)
 	if tr := sess.Store.TranscriptStore(); tr != nil {
 		if _, entries, err := tr.LoadEntries(sess.ID); err == nil {
 			messages := make([]any, 0, len(entries))
@@ -313,38 +349,6 @@ func (d *Dispatcher) sessionLoad(params json.RawMessage) (any, *Error) {
 	return resp, nil
 }
 
-func (d *Dispatcher) sessionList(params json.RawMessage) (any, *Error) {
-	var req struct {
-		Cwd string `json:"cwd"`
-	}
-	if err := json.Unmarshal(params, &req); err != nil || req.Cwd == "" {
-		return nil, NewError(CodeInvalidParams, "missing cwd")
-	}
-	store, err := d.manager.StoreForWorkspace(d.pigoHome, req.Cwd)
-	if err != nil {
-		return nil, NewError(CodeInternalError, err.Error())
-	}
-	metas, err := store.List()
-	if err != nil {
-		return nil, NewError(CodeInternalError, err.Error())
-	}
-	sessions := make([]any, 0, len(metas))
-	for _, m := range metas {
-		sessions = append(sessions, map[string]any{
-			"sessionId":       m.SessionID,
-			"title":           m.SessionName,
-			"cwd":             m.WorkspacePath,
-			"model":           m.ModelName,
-			"createdAt":       m.CreatedAt,
-			"updatedAt":       m.LastActiveAt,
-			"messageCount":    m.MessageCount,
-			"toolCallCount":   m.ToolCallCount,
-			"parentSessionId": m.ParentSessionID,
-		})
-	}
-	return map[string]any{"sessions": sessions, "nextCursor": nil}, nil
-}
-
 func (d *Dispatcher) sessionClose(params json.RawMessage) (any, *Error) {
 	var req struct {
 		SessionID string `json:"sessionId"`
@@ -354,6 +358,142 @@ func (d *Dispatcher) sessionClose(params json.RawMessage) (any, *Error) {
 	}
 	d.manager.Close(req.SessionID)
 	return map[string]any{}, nil
+}
+
+func (d *Dispatcher) sessionList(params json.RawMessage) (any, *Error) {
+	var req struct {
+		Cwd    string `json:"cwd"`
+		Cursor string `json:"cursor"`
+	}
+	_ = json.Unmarshal(params, &req)
+	var sessions []map[string]any
+	if req.Cwd != "" {
+		store, err := d.manager.StoreForWorkspace(d.pigoHome, req.Cwd)
+		if err != nil {
+			return nil, NewError(CodeInternalError, err.Error())
+		}
+		metas, err := store.List()
+		if err != nil {
+			return nil, NewError(CodeInternalError, err.Error())
+		}
+		sessions = sessionInfos(metas)
+	} else {
+		metas, err := sessionstore.ListAll(d.pigoHome)
+		if err != nil {
+			return nil, NewError(CodeInternalError, err.Error())
+		}
+		sessions = sessionInfos(metas)
+	}
+	offset, _ := strconv.Atoi(req.Cursor)
+	if offset < 0 {
+		offset = 0
+	}
+	end := offset + 50
+	if end > len(sessions) {
+		end = len(sessions)
+	}
+	if offset > len(sessions) {
+		offset = len(sessions)
+	}
+	var next any
+	if end < len(sessions) {
+		next = strconv.Itoa(end)
+	}
+	return map[string]any{
+		"sessions":   sessions[offset:end],
+		"nextCursor": next,
+	}, nil
+}
+
+func (d *Dispatcher) sessionDelete(params json.RawMessage) (any, *Error) {
+	var req struct {
+		SessionID string `json:"sessionId"`
+		Cwd       string `json:"cwd"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil || req.SessionID == "" {
+		return nil, NewError(CodeInvalidParams, "missing sessionId")
+	}
+	d.manager.Close(req.SessionID)
+	metas, err := sessionstore.ListAll(d.pigoHome)
+	if err != nil {
+		return nil, NewError(CodeInternalError, err.Error())
+	}
+	for _, m := range metas {
+		if m.SessionID != req.SessionID {
+			continue
+		}
+		store, err := sessionstore.OpenForWorkspace(d.pigoHome, m.WorkspacePath)
+		if err != nil {
+			return nil, NewError(CodeInternalError, err.Error())
+		}
+		if err := store.Delete(req.SessionID); err != nil {
+			return nil, NewError(CodeInternalError, err.Error())
+		}
+		return map[string]any{}, nil
+	}
+	_ = os.Remove(filepath.Join(d.pigoHome, "sessions", req.SessionID+".jsonl"))
+	return map[string]any{}, nil
+}
+
+func (d *Dispatcher) sessionMode(params json.RawMessage) (any, *Error) {
+	var req struct {
+		SessionID string `json:"sessionId"`
+		ModeID    string `json:"modeId"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil || req.SessionID == "" || req.ModeID == "" {
+		return nil, NewError(CodeInvalidParams, "missing sessionId or modeId")
+	}
+	if !validThinkingLevel(req.ModeID) {
+		return nil, NewError(CodeInvalidParams, "unknown modeId: "+req.ModeID)
+	}
+	sess := d.manager.Get(req.SessionID)
+	if sess == nil {
+		return nil, NewError(CodeInvalidParams, "session not found: "+req.SessionID)
+	}
+	sess.Thinking = req.ModeID
+	d.sendSessionUpdate(req.SessionID, map[string]any{
+		"sessionUpdate": "current_mode_update",
+		"currentModeId": req.ModeID,
+	})
+	d.sendConfigOptionsUpdate(sess)
+	return map[string]any{}, nil
+}
+
+func (d *Dispatcher) sessionConfigOption(params json.RawMessage) (any, *Error) {
+	var req struct {
+		SessionID string `json:"sessionId"`
+		ConfigID  string `json:"configId"`
+		Value     string `json:"value"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil || req.SessionID == "" || req.ConfigID == "" {
+		return nil, NewError(CodeInvalidParams, "missing sessionId or configId")
+	}
+	sess := d.manager.Get(req.SessionID)
+	if sess == nil {
+		return nil, NewError(CodeInvalidParams, "session not found: "+req.SessionID)
+	}
+	switch req.ConfigID {
+	case configIDModel:
+		if req.Value == "" {
+			return nil, NewError(CodeInvalidParams, "missing model value")
+		}
+		sess.Model = req.Value
+	case configIDThoughtLevel:
+		if !validThinkingLevel(req.Value) {
+			return nil, NewError(CodeInvalidParams, "unknown thinking level: "+req.Value)
+		}
+		sess.Thinking = req.Value
+		d.sendSessionUpdate(req.SessionID, map[string]any{
+			"sessionUpdate": "current_mode_update",
+			"currentModeId": req.Value,
+		})
+	default:
+		return nil, NewError(CodeInvalidParams, "unknown config option: "+req.ConfigID)
+	}
+	d.sendConfigOptionsUpdate(sess)
+	return map[string]any{
+		"configOptions": sessionConfigOptions(context.Background(), sess, d.credStore),
+	}, nil
 }
 
 func (d *Dispatcher) modelSet(params json.RawMessage) (any, *Error) {
@@ -373,7 +513,7 @@ func (d *Dispatcher) modelSet(params json.RawMessage) (any, *Error) {
 }
 
 func (d *Dispatcher) runPrompt(ctx context.Context, id RequestID, params json.RawMessage) {
-	sessionID, text, ok := parsePromptParams(params)
+	sessionID, text, images, ok := parsePromptParams(params)
 	if !ok {
 		_ = d.transport.SendResponse(ctx, id, nil, NewError(CodeInvalidParams, "missing sessionId or prompt text"))
 		return
@@ -384,10 +524,40 @@ func (d *Dispatcher) runPrompt(ctx context.Context, id RequestID, params json.Ra
 		return
 	}
 
-	lock := d.lockFor(sessionID)
-	lock.Lock()
-	defer lock.Unlock()
-	last, err := d.manager.Run(ctx, sess, applyGoal(sess, text), d.beforeToolCall(sessionID), d.eventSink(sessionID))
+	if strings.HasPrefix(strings.TrimSpace(text), "/") {
+		prompt, handled, message, rpcErr := d.resolveSlash(sess, text)
+		if rpcErr != nil {
+			_ = d.transport.SendResponse(ctx, id, nil, rpcErr)
+			return
+		}
+		if handled {
+			d.sendTextChunk(sessionID, message)
+			_ = d.transport.SendResponse(ctx, id, map[string]any{"stopReason": "end_turn"}, nil)
+			return
+		}
+		text = prompt
+	}
+
+	p := &queuedPrompt{
+		text:   applyGoal(sess, text),
+		images: images,
+		done:   make(chan struct{}),
+	}
+	if !sess.tryRun(p) {
+		d.sendQueued(sessionID, sess.queueLen())
+		sess.waitForTurn(p)
+		if p.delivered {
+			<-p.done
+			if p.runErr != nil {
+				_ = d.transport.SendResponse(ctx, id, nil, NewError(CodeInternalError, p.runErr.Error()))
+				return
+			}
+			_ = d.transport.SendResponse(ctx, id, map[string]any{"stopReason": p.stopReason}, nil)
+			return
+		}
+	}
+
+	last, err := d.manager.Run(ctx, sess, p.text, p.images, d.beforeToolCall(sessionID), d.eventSink(sessionID), TurnHooks{})
 	if err != nil {
 		if err == ErrTurnCancelled {
 			_ = d.transport.SendResponse(ctx, id, map[string]any{"stopReason": "cancelled"}, nil)
@@ -434,15 +604,28 @@ func (d *Dispatcher) pigoCommand(params json.RawMessage) (any, *Error) {
 		return nil, NewError(CodeInvalidParams, "session not found: "+req.SessionID)
 	}
 	name, args := parseCommandLine(req.Command)
-	cmd, ok := d.commands[name]
-	if !ok {
-		return nil, NewError(CodeMethodNotFound, "unknown command: /"+name)
+	if cmd, ok := d.commands[name]; ok {
+		text, rpcErr := cmd(context.Background(), d, sess, args)
+		if rpcErr != nil {
+			return nil, rpcErr
+		}
+		return map[string]any{"text": text, "notifications": []any{}}, nil
 	}
-	text, rpcErr := cmd(context.Background(), d, sess, args)
-	if rpcErr != nil {
-		return nil, rpcErr
+	if d.registry != nil {
+		if c, ok := d.registry.Lookup(name); ok {
+			switch {
+			case c.Action != nil:
+				return map[string]any{"text": c.Action(args), "notifications": []any{}}, nil
+			case c.Run != nil:
+				message, prompt := c.Run(args)
+				return map[string]any{"text": message, "prompt": prompt, "notifications": []any{}}, nil
+			case c.Expand != nil:
+				expanded := c.Expand(args)
+				return map[string]any{"text": expanded, "prompt": expanded, "notifications": []any{}}, nil
+			}
+		}
 	}
-	return map[string]any{"text": text, "notifications": []any{}}, nil
+	return nil, NewError(CodeMethodNotFound, "unknown command: /"+name)
 }
 
 func (d *Dispatcher) pigoStatus(params json.RawMessage) (any, *Error) {
@@ -459,27 +642,38 @@ func (d *Dispatcher) pigoStatus(params json.RawMessage) (any, *Error) {
 	return map[string]any{"text": sessionStatusText(sess)}, nil
 }
 
-func parsePromptParams(params json.RawMessage) (sessionID, text string, ok bool) {
+func parsePromptParams(params json.RawMessage) (sessionID, text string, images []agentcore.Content, ok bool) {
 	var req struct {
 		SessionID string `json:"sessionId"`
 		Prompt    []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-			URI  string `json:"uri"`
+			Type     string `json:"type"`
+			Text     string `json:"text"`
+			Data     string `json:"data"`
+			MimeType string `json:"mimeType"`
+			URI      string `json:"uri"`
 		} `json:"prompt"`
 	}
 	if err := json.Unmarshal(params, &req); err != nil {
-		return "", "", false
+		return "", "", nil, false
 	}
 	if req.SessionID == "" {
-		return "", "", false
+		return "", "", nil, false
 	}
 	for _, block := range req.Prompt {
-		if block.Type == "text" || block.Type == "" {
+		switch block.Type {
+		case "text", "":
 			text += block.Text
-			continue
-		}
-		if block.Type == "resource_link" {
+		case "image":
+			if block.Data != "" {
+				mime := block.MimeType
+				if mime == "" {
+					mime = "image/png"
+				}
+				images = append(images, agentcore.NewImageContent(block.Data, mime))
+			}
+		case "resource":
+			text += "[resource: " + block.URI + "]"
+		case "resource_link":
 			path := strings.TrimPrefix(block.URI, "file://")
 			if path != "" {
 				if data, err := os.ReadFile(path); err == nil {
@@ -489,7 +683,9 @@ func parsePromptParams(params json.RawMessage) (sessionID, text string, ok bool)
 					text += "\n\n<resource_link:" + path + ">\n" + string(data) + "\n</resource_link>"
 				}
 			}
+		case "audio":
+			text += "[audio not supported]"
 		}
 	}
-	return req.SessionID, text, true
+	return req.SessionID, text, images, true
 }

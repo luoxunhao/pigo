@@ -101,6 +101,10 @@ type runSession struct {
 	// and invalidates the branch prefix. persist() honors this by re-saving the
 	// flattened context linearly and resetting the branch cursor, then clears it.
 	compacted bool
+	// acpBacked marks a session driven through the in-process ACP server. The
+	// server already persists every run to the project-scoped store, so the TUI
+	// must not write a second copy; persist() becomes a no-op.
+	acpBacked bool
 
 	// cancelRun cancels the in-flight run's context; startRun sets it and the
 	// two-stage interrupt (Model.interruptFn 鈫?interrupt) calls it. It is nil
@@ -127,11 +131,11 @@ type runSession struct {
 // It is the production entry; newRunSessionWithStore holds the store-agnostic
 // core so tests can drive it against a temp-dir store.
 func newRunSession(opts Options) (*runSession, []agentcore.Message, error) {
-	store, err := headless.SessionStore()
+	proj, err := headless.ProjectStore()
 	if err != nil {
 		return nil, nil, err
 	}
-	return newRunSessionWithStore(store, opts)
+	return newRunSessionWithStore(proj.TranscriptStore(), opts)
 }
 
 // newRunSessionWithStore is the store-agnostic core of newRunSession: given an
@@ -295,6 +299,11 @@ func chainTUIEvent(prev, next func(agentcore.AgentEvent)) func(agentcore.AgentEv
 // than a linear rewrite) keeps history intact. A no-op when nothing new was
 // produced, so an idle turn-end never regenerates entry ids.
 func (s *runSession) persist() error {
+	// ACP-driven sessions are persisted by the server; writing here would
+	// duplicate the transcript (the double-write this refactor removes).
+	if s.acpBacked || s.store == nil {
+		return nil
+	}
 	// A compaction during the run rewrote Messages into a summary + recent tail,
 	// so the append-a-tail branch model no longer holds: the prefix changed and
 	// the slice may be shorter than persisted. Re-save the flattened context

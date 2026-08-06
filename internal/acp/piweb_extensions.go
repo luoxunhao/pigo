@@ -13,19 +13,6 @@ import (
 	"github.com/smallnest/pigo/internal/provider"
 )
 
-func (d *Dispatcher) sessionDelete(params json.RawMessage) (any, *Error) {
-	var req struct {
-		SessionID string `json:"sessionId"`
-	}
-	if err := json.Unmarshal(params, &req); err != nil || req.SessionID == "" {
-		return nil, NewError(CodeInvalidParams, "missing sessionId")
-	}
-	if err := d.manager.DeleteEverywhere(req.SessionID); err != nil {
-		return nil, NewError(CodeInternalError, err.Error())
-	}
-	return map[string]any{}, nil
-}
-
 // pigoModels returns the current model plus the built-in preset catalog so a
 // client can render a model picker without knowing pigo's registry internals.
 func (d *Dispatcher) pigoModels(params json.RawMessage) (any, *Error) {

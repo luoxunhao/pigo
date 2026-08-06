@@ -35,6 +35,8 @@ const (
 	MethodSessionClose      = "session/close"
 	MethodSessionPrompt     = "session/prompt"
 	MethodSessionCancel     = "session/cancel"
+	MethodSessionMode       = "session/set_mode"
+	MethodSessionConfigOpt  = "session/set_config_option"
 	MethodModelSet          = "model/set"
 	MethodRequestPermission = "session/request_permission"
 

@@ -23,14 +23,52 @@ type AcpSession struct {
 	Header session.SessionHeader
 	// Messages is the in-memory history; Persisted is how many of those
 	// messages are already on disk, so a run only appends its tail.
-	Messages  agentcore.MessageList
+	Messages agentcore.MessageList
+	// Persisted is how many of Messages are already on disk; CurLeaf is the
+	// on-disk entry id the next turn descends from. Together they let a run
+	// append only its tail as a new branch, preserving the session tree on the
+	// single project-scoped store.
 	Persisted int
+	CurLeaf   string
 	Model     string
 	Thinking  string
 	Goal      string
+	// SteeringMode and FollowUpMode are the session-level delivery policies for
+	// the pending queue: "one-at-a-time" (default) or "all".
+	SteeringMode string
+	FollowUpMode string
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
+
+	// turnMu guards the pending queue and the single-run turn slot. A prompt
+	// arriving while a turn is active is queued; steering/follow-up hooks pop
+	// it inside the running turn, and any leftovers become the next run.
+	turnMu     sync.Mutex
+	turnCond   *sync.Cond
+	turnActive bool
+	queue      []*queuedPrompt
+	delivered  []*queuedPrompt
+}
+
+// queuedPrompt is one session/prompt waiting to be delivered by the pending
+// queue. done is closed when the consuming run finishes (or the queue is
+// cancelled), at which point stopReason/runErr hold the run's outcome.
+type queuedPrompt struct {
+	text       string
+	images     []agentcore.Content
+	done       chan struct{}
+	delivered  bool
+	stopReason string
+	runErr     error
+}
+
+// TurnHooks are the runtime-loop seams a session manager installs for pending
+// queue delivery. They mirror runtime.RunConfig's GetSteeringMessages and
+// GetFollowUpMessages.
+type TurnHooks struct {
+	Steering func(ctx context.Context) []agentcore.AgentMessage
+	FollowUp func(ctx context.Context, agentCtx *agentcore.AgentContext) []agentcore.AgentMessage
 }
 
 // SetCancel installs the cancel handle of the running turn.
@@ -45,8 +83,113 @@ func (s *AcpSession) Cancel() {
 	s.mu.Lock()
 	c := s.cancel
 	s.mu.Unlock()
+	s.turnMu.Lock()
+	for _, p := range s.queue {
+		p.delivered = true
+		p.stopReason = "cancelled"
+		close(p.done)
+	}
+	s.queue = nil
+	if s.turnCond != nil {
+		s.turnCond.Broadcast()
+	}
+	s.turnMu.Unlock()
 	if c != nil {
 		c()
+	}
+}
+
+// tryRun claims the single turn slot. It returns true when the caller becomes
+// the running turn; otherwise the prompt is queued and the caller must wait.
+func (s *AcpSession) tryRun(p *queuedPrompt) bool {
+	s.turnMu.Lock()
+	defer s.turnMu.Unlock()
+	s.initTurnQueueLocked()
+	if !s.turnActive {
+		s.turnActive = true
+		return true
+	}
+	s.queue = append(s.queue, p)
+	return false
+}
+
+// waitForTurn blocks until p is delivered by steering/follow-up or becomes the
+// head of the queue when the running turn finishes.
+func (s *AcpSession) waitForTurn(p *queuedPrompt) {
+	s.turnMu.Lock()
+	defer s.turnMu.Unlock()
+	s.initTurnQueueLocked()
+	for {
+		if p.delivered {
+			return
+		}
+		if !s.turnActive && len(s.queue) > 0 && s.queue[0] == p {
+			s.queue = s.queue[1:]
+			s.turnActive = true
+			return
+		}
+		s.turnCond.Wait()
+	}
+}
+
+// queueLen returns the number of prompts waiting in the pending queue.
+func (s *AcpSession) queueLen() int {
+	s.turnMu.Lock()
+	defer s.turnMu.Unlock()
+	return len(s.queue)
+}
+
+// popSteering pops pending prompts for steering delivery at a tool boundary.
+func (s *AcpSession) popSteering(all bool) []*queuedPrompt {
+	return s.popQueue(all)
+}
+
+// popFollowUp pops pending prompts for follow-up delivery at a settle point.
+func (s *AcpSession) popFollowUp(all bool) []*queuedPrompt {
+	return s.popQueue(all)
+}
+
+func (s *AcpSession) popQueue(all bool) []*queuedPrompt {
+	s.turnMu.Lock()
+	defer s.turnMu.Unlock()
+	s.initTurnQueueLocked()
+	if len(s.queue) == 0 {
+		return nil
+	}
+	n := 1
+	if all {
+		n = len(s.queue)
+	}
+	items := append([]*queuedPrompt(nil), s.queue[:n]...)
+	s.queue = s.queue[n:]
+	for _, p := range items {
+		p.delivered = true
+	}
+	s.delivered = append(s.delivered, items...)
+	s.turnCond.Broadcast()
+	return items
+}
+
+// finishTurn releases the turn slot and resolves every prompt delivered during
+// the run. Leftover queue entries wake the next runner.
+func (s *AcpSession) finishTurn(stopReason string, runErr error) {
+	s.turnMu.Lock()
+	s.turnActive = false
+	for _, p := range s.delivered {
+		p.stopReason = stopReason
+		p.runErr = runErr
+		close(p.done)
+	}
+	s.delivered = nil
+	if s.turnCond != nil {
+		s.turnCond.Broadcast()
+	}
+	s.turnMu.Unlock()
+}
+
+func (s *AcpSession) initTurnQueueLocked() {
+	if s.turnCond == nil {
+		s.turnCond = sync.NewCond(&s.turnMu)
 	}
 }
 
@@ -54,7 +197,7 @@ func (s *AcpSession) Cancel() {
 // owns the run context; it receives the accumulated history and returns the
 // full post-run message list plus the final assistant message.
 type SessionRunner interface {
-	Run(ctx context.Context, prompt string, history agentcore.MessageList, sysPrompt, model, thinking string, beforeToolCall agentcore.BeforeToolCallFunc, onEvent func(agentcore.AgentEvent)) (agentcore.MessageList, *agentcore.AssistantMessage, error)
+	Run(ctx context.Context, prompt string, images []agentcore.Content, history agentcore.MessageList, sysPrompt, model, thinking string, beforeToolCall agentcore.BeforeToolCallFunc, onEvent func(agentcore.AgentEvent), hooks TurnHooks) (agentcore.MessageList, *agentcore.AssistantMessage, error)
 }
 
 // SessionManager owns the live ACP sessions and the project-scoped stores they
@@ -125,6 +268,10 @@ func (m *SessionManager) Load(cwd, sessionID, model string, store *sessionstore.
 	if model == "" {
 		model = meta.ModelName
 	}
+	curLeaf := ""
+	if _, entries, err := store.TranscriptStore().LoadEntries(sessionID); err == nil && len(entries) > 0 {
+		curLeaf = entries[len(entries)-1].ID
+	}
 	sess := &AcpSession{
 		ID:        sessionID,
 		Cwd:       cwd,
@@ -132,9 +279,13 @@ func (m *SessionManager) Load(cwd, sessionID, model string, store *sessionstore.
 		Header:    header,
 		Messages:  msgs,
 		Persisted: len(msgs),
+		CurLeaf:   curLeaf,
 		Model:     model,
 	}
 	m.mu.Lock()
+	if old, ok := m.sessions[sessionID]; ok {
+		old.Cancel()
+	}
 	m.sessions[sessionID] = sess
 	m.mu.Unlock()
 	return sess, nil
@@ -177,12 +328,29 @@ func (m *SessionManager) DeleteEverywhere(sessionID string) error {
 // onEvent, persists the newly produced messages, and returns the final
 // assistant message. A cancellation surfaces as an error whose context is
 // cancelled; the caller maps that to ACP's cancelled stop reason.
-func (m *SessionManager) Run(ctx context.Context, sess *AcpSession, prompt string, beforeToolCall agentcore.BeforeToolCallFunc, onEvent func(agentcore.AgentEvent)) (*agentcore.AssistantMessage, error) {
+func (m *SessionManager) Run(ctx context.Context, sess *AcpSession, prompt string, images []agentcore.Content, beforeToolCall agentcore.BeforeToolCallFunc, onEvent func(agentcore.AgentEvent), hooks TurnHooks) (*agentcore.AssistantMessage, error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	sess.SetCancel(cancel)
 	defer sess.SetCancel(nil)
 
-	messages, last, err := m.runner.Run(runCtx, prompt, sess.Messages, sess.Header.SystemPrompt, sess.Model, sess.Thinking, beforeToolCall, onEvent)
+	if sess.SteeringMode == "" {
+		sess.SteeringMode = "one-at-a-time"
+	}
+	if sess.FollowUpMode == "" {
+		sess.FollowUpMode = "one-at-a-time"
+	}
+	if hooks.Steering == nil {
+		hooks.Steering = func(ctx context.Context) []agentcore.AgentMessage {
+			return queuedToMessages(sess.popSteering(sess.SteeringMode == "all"))
+		}
+	}
+	if hooks.FollowUp == nil {
+		hooks.FollowUp = func(ctx context.Context, agentCtx *agentcore.AgentContext) []agentcore.AgentMessage {
+			return queuedToMessages(sess.popFollowUp(sess.FollowUpMode == "all"))
+		}
+	}
+
+	messages, last, err := m.runner.Run(runCtx, prompt, images, sess.Messages, sess.Header.SystemPrompt, sess.Model, sess.Thinking, beforeToolCall, onEvent, hooks)
 	if err != nil && runCtx.Err() != nil {
 		err = ErrTurnCancelled
 	}
@@ -197,11 +365,40 @@ func (m *SessionManager) Run(ctx context.Context, sess *AcpSession, prompt strin
 	if len(tail) > 0 {
 		now := time.Now().UTC()
 		sess.Header.UpdatedAt = now
-		if perr := sess.Store.Append(sess.ID, now, tail); perr != nil {
+		leaf, perr := sess.Store.AppendBranch(sess.ID, sess.Header, sess.CurLeaf, tail)
+		if perr != nil {
 			return last, perr
 		}
+		sess.CurLeaf = leaf
 		sess.Persisted = len(messages)
 	}
 	sess.Messages = messages
+
+	stop := "end_turn"
+	switch {
+	case err == ErrTurnCancelled:
+		stop = "cancelled"
+	case last != nil:
+		switch last.StopReason {
+		case agentcore.StopReasonLength:
+			stop = "max_tokens"
+		case agentcore.StopReasonAborted:
+			stop = "cancelled"
+		}
+	}
+	sess.finishTurn(stop, err)
 	return last, err
+}
+
+func queuedToMessages(items []*queuedPrompt) []agentcore.AgentMessage {
+	out := make([]agentcore.AgentMessage, 0, len(items))
+	for _, p := range items {
+		content := agentcore.ContentList{agentcore.NewTextContent(p.text)}
+		content = append(content, p.images...)
+		out = append(out, agentcore.UserMessage{
+			RoleField: agentcore.RoleUser,
+			Content:   content,
+		})
+	}
+	return out
 }
