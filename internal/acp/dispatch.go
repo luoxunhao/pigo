@@ -591,57 +591,6 @@ func applyGoal(sess *AcpSession, text string) string {
 	return "Current goal: " + sess.Goal + "\n\n" + text
 }
 
-func (d *Dispatcher) pigoCommand(params json.RawMessage) (any, *Error) {
-	var req struct {
-		SessionID string `json:"sessionId"`
-		Command   string `json:"command"`
-	}
-	if err := json.Unmarshal(params, &req); err != nil || req.SessionID == "" || req.Command == "" {
-		return nil, NewError(CodeInvalidParams, "missing sessionId or command")
-	}
-	sess := d.manager.Get(req.SessionID)
-	if sess == nil {
-		return nil, NewError(CodeInvalidParams, "session not found: "+req.SessionID)
-	}
-	name, args := parseCommandLine(req.Command)
-	if cmd, ok := d.commands[name]; ok {
-		text, rpcErr := cmd(context.Background(), d, sess, args)
-		if rpcErr != nil {
-			return nil, rpcErr
-		}
-		return map[string]any{"text": text, "notifications": []any{}}, nil
-	}
-	if d.registry != nil {
-		if c, ok := d.registry.Lookup(name); ok {
-			switch {
-			case c.Action != nil:
-				return map[string]any{"text": c.Action(args), "notifications": []any{}}, nil
-			case c.Run != nil:
-				message, prompt := c.Run(args)
-				return map[string]any{"text": message, "prompt": prompt, "notifications": []any{}}, nil
-			case c.Expand != nil:
-				expanded := c.Expand(args)
-				return map[string]any{"text": expanded, "prompt": expanded, "notifications": []any{}}, nil
-			}
-		}
-	}
-	return nil, NewError(CodeMethodNotFound, "unknown command: /"+name)
-}
-
-func (d *Dispatcher) pigoStatus(params json.RawMessage) (any, *Error) {
-	var req struct {
-		SessionID string `json:"sessionId"`
-	}
-	if err := json.Unmarshal(params, &req); err != nil || req.SessionID == "" {
-		return nil, NewError(CodeInvalidParams, "missing sessionId")
-	}
-	sess := d.manager.Get(req.SessionID)
-	if sess == nil {
-		return nil, NewError(CodeInvalidParams, "session not found: "+req.SessionID)
-	}
-	return map[string]any{"text": sessionStatusText(sess)}, nil
-}
-
 func parsePromptParams(params json.RawMessage) (sessionID, text string, images []agentcore.Content, ok bool) {
 	var req struct {
 		SessionID string `json:"sessionId"`

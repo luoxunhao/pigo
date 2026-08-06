@@ -13,6 +13,61 @@ import (
 	"github.com/smallnest/pigo/internal/provider"
 )
 
+// pigoCommand runs a slash command through the command registry. Commands are
+// shared across ACP clients; the response carries rendered text plus any
+// follow-up prompt produced by an expand/run style command.
+func (d *Dispatcher) pigoCommand(params json.RawMessage) (any, *Error) {
+	var req struct {
+		SessionID string `json:"sessionId"`
+		Command   string `json:"command"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil || req.SessionID == "" || req.Command == "" {
+		return nil, NewError(CodeInvalidParams, "missing sessionId or command")
+	}
+	sess := d.manager.Get(req.SessionID)
+	if sess == nil {
+		return nil, NewError(CodeInvalidParams, "session not found: "+req.SessionID)
+	}
+	name, args := parseCommandLine(req.Command)
+	if cmd, ok := d.commands[name]; ok {
+		text, rpcErr := cmd(context.Background(), d, sess, args)
+		if rpcErr != nil {
+			return nil, rpcErr
+		}
+		return map[string]any{"text": text, "notifications": []any{}}, nil
+	}
+	if d.registry != nil {
+		if c, ok := d.registry.Lookup(name); ok {
+			switch {
+			case c.Action != nil:
+				return map[string]any{"text": c.Action(args), "notifications": []any{}}, nil
+			case c.Run != nil:
+				message, prompt := c.Run(args)
+				return map[string]any{"text": message, "prompt": prompt, "notifications": []any{}}, nil
+			case c.Expand != nil:
+				expanded := c.Expand(args)
+				return map[string]any{"text": expanded, "prompt": expanded, "notifications": []any{}}, nil
+			}
+		}
+	}
+	return nil, NewError(CodeMethodNotFound, "unknown command: /"+name)
+}
+
+// pigoStatus returns a rendered session status line for any ACP client.
+func (d *Dispatcher) pigoStatus(params json.RawMessage) (any, *Error) {
+	var req struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil || req.SessionID == "" {
+		return nil, NewError(CodeInvalidParams, "missing sessionId")
+	}
+	sess := d.manager.Get(req.SessionID)
+	if sess == nil {
+		return nil, NewError(CodeInvalidParams, "session not found: "+req.SessionID)
+	}
+	return map[string]any{"text": sessionStatusText(sess)}, nil
+}
+
 // pigoModels returns the current model plus the built-in preset catalog so a
 // client can render a model picker without knowing pigo's registry internals.
 func (d *Dispatcher) pigoModels(params json.RawMessage) (any, *Error) {
