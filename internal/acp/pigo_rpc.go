@@ -68,109 +68,116 @@ func (d *Dispatcher) pigoStatus(params json.RawMessage) (any, *Error) {
 	return map[string]any{"text": sessionStatusText(sess)}, nil
 }
 
-// pigoModels returns the current model plus only the providers that are
-// actually configured (built-ins with credentials plus saved custom providers),
-// so clients never see an unusable full catalog.
+// pigoModels returns the current model plus the configured model list with
+// runtime metadata. It never consults PresetCatalog or a provider registry.
 func (d *Dispatcher) pigoModels(params json.RawMessage) (any, *Error) {
-	ctx := context.Background()
-	models := make([]any, 0, len(provider.PresetCatalog)+8)
-	seen := map[string]bool{}
-	for _, m := range provider.PresetCatalog {
-		if !providerConfigured(ctx, m.Provider, d.credStore) {
-			continue
-		}
-		key := m.Provider + "/" + m.ID
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
+	configured := d.configuredModelList()
+	models := make([]map[string]any, 0, len(configured))
+	for _, m := range configured {
 		models = append(models, map[string]any{
-			"provider":    m.Provider,
-			"modelId":     m.ID,
-			"displayName": m.Label(),
+			"provider":       m.Provider,
+			"modelId":        m.ModelID,
+			"name":           configuredModelName(m),
+			"contextWindow":  m.ContextWindow,
+			"maxTokens":      m.MaxTokens,
+			"thinkingLevels": m.ThinkingLevels,
+			"supportsImages": m.SupportsImages,
 		})
 	}
-	for _, p := range d.customProviderList() {
-		for _, m := range p.Models {
-			key := p.ID + "/" + m.ModelID
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			models = append(models, map[string]any{
-				"provider":    p.ID,
-				"modelId":     m.ModelID,
-				"displayName": m.Name,
-			})
-		}
-	}
-	current := d.model
-	if current == "" {
-		current = "openrouter/free"
-	}
 	return map[string]any{
-		"currentModelId": current,
+		"currentModelId": d.model,
 		"models":         models,
 	}, nil
 }
 
-// pigoConfig reads or writes pigo's config.toml. API keys are never echoed
-// back; the response only reports whether one is configured. Writes report
-// needsRestart because provider resolution happens at process startup.
+// pigoConfig reads or writes the configured model list. API keys are never
+// echoed back; each model reports only whether one is configured.
 func (d *Dispatcher) pigoConfig(params json.RawMessage) (any, *Error) {
 	var req struct {
-		Model         *string `json:"model,omitempty"`
-		BaseURL       *string `json:"baseUrl,omitempty"`
-		APIKey        *string `json:"apiKey,omitempty"`
-		Protocol      *string `json:"protocol,omitempty"`
-		Provider      *string `json:"provider,omitempty"`
-		ThinkingLevel *string `json:"thinkingLevel,omitempty"`
+		Model       *string               `json:"model,omitempty"`
+		Models      *[]config.ModelConfig `json:"models,omitempty"`
+		UpsertModel *config.ModelConfig   `json:"upsertModel,omitempty"`
+		DeleteModel *string               `json:"deleteModel,omitempty"`
 	}
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, NewError(CodeInvalidParams, "invalid params")
 	}
-	path := config.FileConfigPath()
-	cfg, err := config.LoadFileConfig(path)
-	if err != nil {
-		return nil, NewError(CodeInternalError, err.Error())
+	if d.models == nil {
+		return nil, NewError(CodeInternalError, "configured model store is not available")
 	}
 
-	wrote := req.Model != nil || req.BaseURL != nil || req.APIKey != nil ||
-		req.Protocol != nil || req.Provider != nil || req.ThinkingLevel != nil
-	if wrote {
-		if req.Model != nil {
-			cfg.Model = *req.Model
+	if req.Models != nil {
+		for _, m := range *req.Models {
+			if rpcErr := validateModelConfig(m); rpcErr != nil {
+				return nil, rpcErr
+			}
 		}
-		if req.BaseURL != nil {
-			cfg.BaseURL = *req.BaseURL
+		if err := d.models.Replace(*req.Models); err != nil {
+			return nil, NewError(CodeInternalError, err.Error())
 		}
-		if req.APIKey != nil {
-			cfg.APIKey = *req.APIKey
+	}
+	if req.UpsertModel != nil {
+		if rpcErr := validateModelConfig(*req.UpsertModel); rpcErr != nil {
+			return nil, rpcErr
 		}
-		if req.Protocol != nil {
-			cfg.Protocol = *req.Protocol
+		if _, err := d.models.Upsert(*req.UpsertModel); err != nil {
+			return nil, NewError(CodeInternalError, err.Error())
 		}
-		if req.Provider != nil {
-			cfg.Provider = *req.Provider
+	}
+	if req.DeleteModel != nil {
+		key := strings.TrimSpace(*req.DeleteModel)
+		if err := d.models.Delete(key); err != nil {
+			return nil, NewError(CodeInternalError, err.Error())
 		}
-		if req.ThinkingLevel != nil {
-			cfg.ThinkingLevel = *req.ThinkingLevel
+		if d.models.CurrentModel() == key {
+			if err := d.models.SetModel(""); err != nil {
+				return nil, NewError(CodeInternalError, err.Error())
+			}
 		}
-		if err := config.SaveFileConfig(path, cfg); err != nil {
+	}
+	if req.Model != nil {
+		model := strings.TrimSpace(*req.Model)
+		if model != "" {
+			if _, ok := d.models.Find(model); !ok {
+				return nil, NewError(CodeInvalidParams, "unknown modelId: "+model)
+			}
+		}
+		if err := d.models.SetModel(model); err != nil {
 			return nil, NewError(CodeInternalError, err.Error())
 		}
 	}
 
+	models := make([]map[string]any, 0)
+	for _, m := range d.models.List() {
+		models = append(models, configuredModelResponse(m))
+	}
 	return map[string]any{
-		"model":            cfg.Model,
-		"baseUrl":          cfg.BaseURL,
-		"protocol":         cfg.Protocol,
-		"provider":         cfg.Provider,
-		"thinkingLevel":    cfg.ThinkingLevel,
-		"apiKeyConfigured": cfg.APIKey != "",
-		"configPath":       path,
-		"needsRestart":     wrote,
+		"model":  d.models.CurrentModel(),
+		"models": models,
 	}, nil
+}
+
+func validateModelConfig(m config.ModelConfig) *Error {
+	if strings.TrimSpace(m.Provider) == "" || strings.TrimSpace(m.ModelID) == "" ||
+		strings.TrimSpace(m.BaseURL) == "" || strings.TrimSpace(m.Protocol) == "" {
+		return NewError(CodeInvalidParams, "model requires provider, modelId, baseUrl, protocol")
+	}
+	return nil
+}
+
+func configuredModelResponse(m config.ModelConfig) map[string]any {
+	return map[string]any{
+		"provider":         m.Provider,
+		"modelId":          m.ModelID,
+		"name":             m.Name,
+		"baseUrl":          m.BaseURL,
+		"protocol":         m.Protocol,
+		"apiKeyConfigured": m.APIKey != "",
+		"contextWindow":    m.ContextWindow,
+		"maxTokens":        m.MaxTokens,
+		"thinkingLevels":   m.ThinkingLevels,
+		"supportsImages":   m.SupportsImages,
+	}
 }
 
 // pigoMessages pages through a session's persisted transcript. before is the

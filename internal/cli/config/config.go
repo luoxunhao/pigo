@@ -29,21 +29,16 @@ import (
 // absent (zero-value) field leaves the corresponding default/flag untouched.
 // Keys are snake_case to read naturally in TOML.
 type FileConfig struct {
-	Model         string `toml:"model"`
-	BaseURL       string `toml:"base_url"`
-	APIKey        string `toml:"api_key"`
-	Protocol      string `toml:"protocol"`
-	Provider      string `toml:"provider"`
-	ThinkingLevel string `toml:"thinking_level"`
-	OutputFormat  string `toml:"output_format"`
-	NoTools       bool   `toml:"no_tools"`
-	NoSkills      bool   `toml:"no_skills"`
-	Approve       bool   `toml:"approve"`
-	SystemPrompt  string `toml:"system_prompt"`
-	// Providers is the custom provider registry: endpoint/key/protocol plus a
-	// cached model list. It is additive to the flat fields above, which remain
-	// the compatibility layer for the selected default provider.
-	Providers []ProviderConfig `toml:"providers"`
+	Model        string `toml:"model"`
+	OutputFormat string `toml:"output_format"`
+	NoTools      bool   `toml:"no_tools"`
+	NoSkills     bool   `toml:"no_skills"`
+	Approve      bool   `toml:"approve"`
+	SystemPrompt string `toml:"system_prompt"`
+	// Models is the configured model list: each entry carries its own endpoint,
+	// credential, protocol, and runtime metadata. It is the only source for the
+	// model menu under the model-config-rework design.
+	Models []ModelConfig `toml:"models" json:"models"`
 	// Prompts is the config.toml `prompts` array: paths (files or dirs) to load
 	// prompt templates from at the settings tier (mirrors pi's settings prompts).
 	Prompts []string `toml:"prompts"`

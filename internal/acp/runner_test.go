@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -100,22 +99,15 @@ func TestRuntimeRunnerCustomProviderUsesRegistryEndpoint(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	reg := NewCustomProviders(filepath.Join(t.TempDir(), "config.toml"))
-	if _, err := reg.Upsert(config.ProviderConfig{
-		ID:       "custom-gw",
-		Name:     "GW",
-		BaseURL:  srv.URL,
-		APIKey:   "sk-custom",
-		Protocol: "openai",
-		Models:   []config.ProviderModelConfig{{ModelID: "m1", Name: "M1"}},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	models := newConfiguredModels(t, config.ModelConfig{
+		Provider: "custom-gw", ModelID: "m1", Name: "M1",
+		BaseURL: srv.URL, APIKey: "sk-custom", Protocol: "openai",
+	})
 	runner := &RuntimeRunner{
-		Provider:        fakeProvider{},
-		ProviderName:    "fake",
-		Model:           "custom-gw/m1",
-		CustomProviders: reg,
+		Provider:         fakeProvider{},
+		ProviderName:     "fake",
+		Model:            "custom-gw/m1",
+		ConfiguredModels: models,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

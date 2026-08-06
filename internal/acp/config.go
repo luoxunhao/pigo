@@ -28,62 +28,100 @@ var thinkingModes = []map[string]any{
 	{"id": string(agentcore.ThinkingXHigh), "name": "Thinking: xhigh"},
 }
 
-func sessionModels(ctx context.Context, sess *AcpSession, creds *provider.CredentialStore, custom []config.ProviderConfig) map[string]any {
-	current := sess.Model
-	if current == "" {
-		current = "openrouter/free"
-	}
-	available := make([]map[string]any, 0, len(provider.PresetCatalog)+8)
-	seen := make(map[string]bool, len(provider.PresetCatalog)+8)
-	for _, m := range provider.PresetCatalog {
-		if !providerConfigured(ctx, m.Provider, creds) {
-			continue
-		}
-		if seen[m.ID] {
-			continue
-		}
-		seen[m.ID] = true
+// sessionModels builds the ACP model list strictly from the configured model
+// list. There is no fallback: a model not present in config is not offered.
+func sessionModels(ctx context.Context, sess *AcpSession, models []config.ModelConfig) map[string]any {
+	available := make([]map[string]any, 0, len(models))
+	for _, m := range models {
 		available = append(available, map[string]any{
-			"modelId":     m.ID,
-			"name":        m.Label(),
-			"description": nil,
+			"modelId":        m.Key(),
+			"name":           configuredModelName(m),
+			"description":    nil,
+			"contextWindow":  m.ContextWindow,
+			"maxTokens":      m.MaxTokens,
+			"thinkingLevels": m.ThinkingLevels,
+			"supportsImages": m.SupportsImages,
 		})
 	}
-	for _, p := range custom {
-		for _, m := range p.Models {
-			id := p.ID + "/" + m.ModelID
-			if seen[id] {
-				continue
-			}
-			seen[id] = true
-			available = append(available, map[string]any{
-				"modelId":     id,
-				"name":        m.Name,
-				"description": nil,
-			})
-		}
-	}
 	return map[string]any{
-		"currentModelId":  current,
+		"currentModelId":  sess.Model,
 		"availableModels": available,
 	}
 }
 
-func sessionModes(sess *AcpSession) map[string]any {
+func configuredModelName(m config.ModelConfig) string {
+	if m.Name != "" {
+		return m.Name
+	}
+	return m.Key()
+}
+
+func sessionModes(sess *AcpSession, model *config.ModelConfig) map[string]any {
 	current := sess.Thinking
 	if current == "" {
 		current = string(agentcore.ThinkingMedium)
 	}
+	modes := thinkingModes
+	if model != nil && len(model.ThinkingLevels) > 0 {
+		allowed := make(map[string]bool, len(model.ThinkingLevels))
+		for _, l := range model.ThinkingLevels {
+			allowed[strings.ToLower(strings.TrimSpace(l))] = true
+		}
+		modes = nil
+		for _, m := range thinkingModes {
+			if id, _ := m["id"].(string); allowed[id] {
+				modes = append(modes, m)
+			}
+		}
+		if len(modes) == 0 {
+			modes = thinkingModes
+		}
+	}
+	if !containsMode(modes, current) {
+		current = defaultMode(modes)
+	}
 	return map[string]any{
 		"currentModeId":  current,
-		"availableModes": thinkingModes,
+		"availableModes": modes,
 	}
 }
 
-func sessionConfigOptions(ctx context.Context, sess *AcpSession, creds *provider.CredentialStore, custom []config.ProviderConfig) []map[string]any {
-	models := sessionModels(ctx, sess, creds, custom)
-	modes := sessionModes(sess)
-	return configOptionsFromModels(models, modes)
+func containsMode(modes []map[string]any, id string) bool {
+	for _, m := range modes {
+		if mid, _ := m["id"].(string); mid == id {
+			return true
+		}
+	}
+	return false
+}
+
+func defaultMode(modes []map[string]any) string {
+	if len(modes) > 0 {
+		if id, _ := modes[0]["id"].(string); id != "" {
+			return id
+		}
+	}
+	return string(agentcore.ThinkingMedium)
+}
+
+func sessionConfigOptions(ctx context.Context, sess *AcpSession, models []config.ModelConfig) []map[string]any {
+	modelMap := sessionModels(ctx, sess, models)
+	current := currentConfiguredModel(sess, models)
+	modes := sessionModes(sess, current)
+	return configOptionsFromModels(modelMap, modes)
+}
+
+func currentConfiguredModel(sess *AcpSession, models []config.ModelConfig) *config.ModelConfig {
+	for i := range models {
+		if models[i].Key() == sess.Model {
+			return &models[i]
+		}
+	}
+	return nil
+}
+
+func (d *Dispatcher) currentConfiguredModel(sess *AcpSession) *config.ModelConfig {
+	return currentConfiguredModel(sess, d.configuredModelList())
 }
 
 // configOptionsFromModels builds the ACP config option list. The model option
@@ -99,13 +137,15 @@ func configOptionsFromModels(models, modes map[string]any) []map[string]any {
 			})
 		}
 	}
-	modeOptions := make([]map[string]any, 0, len(thinkingModes))
-	for _, m := range thinkingModes {
-		modeOptions = append(modeOptions, map[string]any{
-			"value":       m["id"],
-			"name":        m["name"],
-			"description": nil,
-		})
+	modeOptions := make([]map[string]any, 0)
+	if raw, ok := modes["availableModes"].([]map[string]any); ok {
+		for _, m := range raw {
+			modeOptions = append(modeOptions, map[string]any{
+				"value":       m["id"],
+				"name":        m["name"],
+				"description": nil,
+			})
+		}
 	}
 	opts := make([]map[string]any, 0, 2)
 	if len(modelOptions) > 0 {
@@ -131,34 +171,13 @@ func configOptionsFromModels(models, modes map[string]any) []map[string]any {
 	return opts
 }
 
-// modelAvailable reports whether a model id is in the session's available
-// model list (configured built-ins plus custom provider cache).
+// modelAvailable reports whether a model id is in the configured model list.
 func (d *Dispatcher) modelAvailable(ctx context.Context, sess *AcpSession, modelID string) bool {
-	models := sessionModels(ctx, sess, d.credStore, d.customProviderList())
-	raw, ok := models["availableModels"].([]map[string]any)
-	if !ok {
+	if d.models == nil {
 		return false
 	}
-	for _, m := range raw {
-		if id, _ := m["modelId"].(string); id == modelID {
-			return true
-		}
-	}
-	// Accept provider/modelId for built-in providers: pigo allows any model id
-	// under a configured provider, matching its "any valid id for a known
-	// provider still works" contract. Custom providers must match the cache
-	// exactly, so they are handled by the exact match above.
-	if strings.HasPrefix(modelID, "custom-") {
-		return false
-	}
-	providerName, _, found := strings.Cut(modelID, "/")
-	if !found || strings.TrimSpace(providerName) == "" {
-		return false
-	}
-	if _, known := provider.LookupProviderSpec(providerName); known && providerConfigured(ctx, providerName, d.credStore) {
-		return true
-	}
-	return false
+	_, ok := d.models.Find(modelID)
+	return ok
 }
 
 func providerConfigured(ctx context.Context, name string, creds *provider.CredentialStore) bool {

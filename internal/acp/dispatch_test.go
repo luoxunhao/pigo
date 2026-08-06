@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/smallnest/pigo/internal/agentcore"
+	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/provider"
 	"github.com/smallnest/pigo/internal/sessionstore"
 )
@@ -286,6 +288,9 @@ func TestSessionListAndLoadMessages(t *testing.T) {
 
 	runner := &fakeRunner{}
 	disp, _ := newTestDispatcher(t, runner, server)
+	disp.SetConfiguredModels(newConfiguredModels(t, config.ModelConfig{
+		Provider: "test", ModelID: "provider", Name: "Test", BaseURL: "https://x", Protocol: "openai",
+	}))
 	srv := NewServer(server, disp)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -386,6 +391,9 @@ func TestPigoWebExtensions(t *testing.T) {
 
 	runner := &fakeRunner{}
 	disp, _ := newTestDispatcher(t, runner, server)
+	disp.SetConfiguredModels(newConfiguredModels(t, config.ModelConfig{
+		Provider: "test", ModelID: "provider", Name: "Test", BaseURL: "https://x", Protocol: "openai",
+	}))
 	srv := NewServer(server, disp)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -412,14 +420,13 @@ func TestPigoWebExtensions(t *testing.T) {
 		t.Fatal(err)
 	}
 	var cfgResp struct {
-		Model        string `json:"model"`
-		NeedsRestart bool   `json:"needsRestart"`
-		APIKeyConfig bool   `json:"apiKeyConfigured"`
+		Model  string           `json:"model"`
+		Models []map[string]any `json:"models"`
 	}
 	if err := json.Unmarshal(raw, &cfgResp); err != nil {
 		t.Fatal(err)
 	}
-	if !cfgResp.NeedsRestart || cfgResp.Model != "test/provider" || cfgResp.APIKeyConfig {
+	if strings.Contains(string(raw), "needsRestart") || cfgResp.Model != "test/provider" || len(cfgResp.Models) != 1 {
 		t.Fatalf("config response = %+v", cfgResp)
 	}
 
@@ -557,9 +564,9 @@ func TestModelSetChangesNextTurn(t *testing.T) {
 
 	runner := &fakeRunner{}
 	disp, _ := newTestDispatcher(t, runner, server)
-	creds := provider.NewCredentialStore(nil)
-	creds.SetOverride("deepseek", "sk-test")
-	disp.SetCredentialStore(creds)
+	disp.SetConfiguredModels(newConfiguredModels(t, config.ModelConfig{
+		Provider: "deepseek", ModelID: "deepseek-v4-pro", BaseURL: "https://api.deepseek.com", Protocol: "openai",
+	}))
 	srv := NewServer(server, disp)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

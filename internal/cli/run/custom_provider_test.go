@@ -6,17 +6,15 @@ import (
 	"testing"
 
 	"github.com/smallnest/pigo/internal/cli/config"
+	"github.com/smallnest/pigo/internal/provider"
 )
 
-func writeCustomConfig(t *testing.T, provider config.ProviderConfig) string {
+func writeCustomConfig(t *testing.T, model string, models ...config.ModelConfig) string {
 	t.Helper()
 	root := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", root)
 	path := filepath.Join(root, "pigo", "config.toml")
-	cfg := config.FileConfig{
-		Model:     provider.ID + "/m1",
-		Providers: []config.ProviderConfig{provider},
-	}
+	cfg := config.FileConfig{Model: model, Models: models}
 	if err := config.SaveFileConfig(path, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -24,13 +22,9 @@ func writeCustomConfig(t *testing.T, provider config.ProviderConfig) string {
 }
 
 func TestResolveStartupProviderCustom(t *testing.T) {
-	writeCustomConfig(t, config.ProviderConfig{
-		ID:       "custom-gw",
-		Name:     "GW",
-		BaseURL:  "https://gw.example/v1",
-		APIKey:   "sk-config",
-		Protocol: "openai",
-		Models:   []config.ProviderModelConfig{{ModelID: "m1", Name: "M1"}},
+	writeCustomConfig(t, "custom-gw/m1", config.ModelConfig{
+		Provider: "custom-gw", ModelID: "m1", Name: "M1",
+		BaseURL: "https://gw.example/v1", APIKey: "sk-config", Protocol: "openai",
 	})
 	prov, name, key, wireModel, err := resolveStartupProvider("custom-gw/m1", "", "", "", "")
 	if err != nil {
@@ -45,12 +39,9 @@ func TestResolveStartupProviderCustom(t *testing.T) {
 }
 
 func TestResolveStartupProviderCustomFlagKeyWins(t *testing.T) {
-	writeCustomConfig(t, config.ProviderConfig{
-		ID:       "custom-gw",
-		Name:     "GW",
-		BaseURL:  "https://gw.example/v1",
-		APIKey:   "sk-config",
-		Protocol: "openai",
+	writeCustomConfig(t, "custom-gw/m1", config.ModelConfig{
+		Provider: "custom-gw", ModelID: "m1",
+		BaseURL: "https://gw.example/v1", APIKey: "sk-config", Protocol: "openai",
 	})
 	_, _, key, _, err := resolveStartupProvider("custom-gw/m1", "", "", "", "sk-flag")
 	if err != nil {
@@ -63,31 +54,37 @@ func TestResolveStartupProviderCustomFlagKeyWins(t *testing.T) {
 
 func TestResolveStartupProviderCustomMissingProvider(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	_, _, _, _, err := resolveStartupProvider("custom-missing/m1", "", "", "", "")
-	if err == nil || !strings.Contains(err.Error(), "not found") {
+	prov, _, _, _, err := resolveStartupProvider("custom-missing/m1", "", "", "", "")
+	if err != nil {
 		t.Fatalf("error = %v", err)
+	}
+	deferred, ok := prov.(provider.DeferredErrorProvider)
+	if !ok {
+		t.Fatalf("provider type = %T, want DeferredErrorProvider", prov)
+	}
+	if !strings.Contains(deferred.Err.Error(), "not configured") {
+		t.Fatalf("deferred error = %v", deferred.Err)
 	}
 }
 
 func TestResolveStartupProviderCustomMissingKey(t *testing.T) {
-	writeCustomConfig(t, config.ProviderConfig{
-		ID:       "custom-gw",
-		Name:     "GW",
-		BaseURL:  "https://gw.example/v1",
-		Protocol: "openai",
+	writeCustomConfig(t, "custom-gw/m1", config.ModelConfig{
+		Provider: "custom-gw", ModelID: "m1",
+		BaseURL: "https://gw.example/v1", Protocol: "openai",
 	})
-	_, _, _, _, err := resolveStartupProvider("custom-gw/m1", "", "", "", "")
-	if err == nil || !strings.Contains(err.Error(), "missing API key") {
-		t.Fatalf("error = %v", err)
+	prov, name, key, _, err := resolveStartupProvider("custom-gw/m1", "", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "custom-gw" || key != "" || prov.Name() != "custom-gw" {
+		t.Fatalf("resolved = %q %q", name, key)
 	}
 }
 
 func TestResolveStartupProviderCustomLocalNoKey(t *testing.T) {
-	writeCustomConfig(t, config.ProviderConfig{
-		ID:       "custom-ollama",
-		Name:     "Local",
-		BaseURL:  "http://localhost:11434/v1",
-		Protocol: "openai",
+	writeCustomConfig(t, "custom-ollama/m1", config.ModelConfig{
+		Provider: "custom-ollama", ModelID: "m1",
+		BaseURL: "http://localhost:11434/v1", Protocol: "openai",
 	})
 	prov, name, key, wireModel, err := resolveStartupProvider("custom-ollama/m1", "", "", "", "")
 	if err != nil {
@@ -99,14 +96,19 @@ func TestResolveStartupProviderCustomLocalNoKey(t *testing.T) {
 }
 
 func TestResolveStartupProviderNonCustom(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	prov, name, key, wireModel, err := resolveStartupProvider("openrouter/free", "", "", "", "sk-flag")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("error = %v", err)
 	}
-	if name != "openrouter" || key != "sk-flag" || wireModel != "openrouter/free" {
+	if name != "" || key != "" || wireModel != "openrouter/free" {
 		t.Fatalf("resolved = %q %q %q", name, key, wireModel)
 	}
-	if prov == nil {
-		t.Fatal("provider is nil")
+	deferred, ok := prov.(provider.DeferredErrorProvider)
+	if !ok {
+		t.Fatalf("provider type = %T, want DeferredErrorProvider", prov)
+	}
+	if !strings.Contains(deferred.Err.Error(), "not configured") {
+		t.Fatalf("deferred error = %v", deferred.Err)
 	}
 }

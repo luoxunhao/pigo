@@ -27,6 +27,7 @@ type Dispatcher struct {
 	version         string
 	pigoHome        string
 	model           string
+	providerName    string
 	sysPrompt       string
 	mapper          *eventMapper
 	broker          *ACPPermissionBroker
@@ -41,7 +42,7 @@ type Dispatcher struct {
 	runner          SessionRunner
 	registry        *runtime.SlashRegistry
 	credStore       *provider.CredentialStore
-	providers       *CustomProviders
+	models          *ConfiguredModels
 	lastSessionCwd  string
 	cwd             string
 	runMu           map[string]*sync.Mutex
@@ -76,9 +77,13 @@ func NewDispatcher(manager *SessionManager, transport Transport, pigoHome, model
 // providers appear in ACP model options.
 func (d *Dispatcher) SetCredentialStore(store *provider.CredentialStore) { d.credStore = store }
 
-// SetCustomProviders wires the shared custom provider registry used by model
-// listing, provider management, and runtime resolution.
-func (d *Dispatcher) SetCustomProviders(p *CustomProviders) { d.providers = p }
+// SetProviderName wires the startup resolved provider name used to keep the
+// current model visible even when it is not part of the curated preset catalog.
+func (d *Dispatcher) SetProviderName(name string) { d.providerName = name }
+
+// SetConfiguredModels wires the shared configured-model store used by menus,
+// config writes, and runtime resolution.
+func (d *Dispatcher) SetConfiguredModels(m *ConfiguredModels) { d.models = m }
 
 // SetSlashRegistry wires the full slash registry so external clients see and
 // can invoke user templates, skills, and plugin commands.
@@ -256,12 +261,6 @@ func (d *Dispatcher) HandleRequest(ctx context.Context, id RequestID, method str
 		return d.pigoConfig(params)
 	case MethodPigoMessages:
 		return d.pigoMessages(params)
-	case MethodPigoProvidersUpsert:
-		return d.pigoProvidersUpsert(params)
-	case MethodPigoProvidersList:
-		return d.pigoProvidersList(params)
-	case MethodPigoProvidersDelete:
-		return d.pigoProvidersDelete(params)
 	case MethodPigoRewind, MethodPigoFork, MethodPigoTree, MethodPigoGoal, MethodPigoBtw, MethodPigoDream, MethodPigoRemoteControl:
 		return nil, NewError(CodeNotImplemented, method+" is not implemented yet")
 	default:
@@ -351,6 +350,17 @@ func (d *Dispatcher) sessionLoad(params json.RawMessage) (any, *Error) {
 	sess, err := d.manager.Load(req.Cwd, req.SessionID, req.ModelID, store)
 	if err != nil {
 		return nil, NewError(CodeInvalidParams, "session not found: "+req.SessionID)
+	}
+	if meta, metaErr := store.LoadMetadata(req.SessionID); metaErr == nil {
+		if lvl := readSessionThinking(meta); lvl != "" && validThinkingLevel(lvl) {
+			sess.Thinking = lvl
+		}
+	}
+	if !d.modeAllowed(sess, sess.Thinking) {
+		if m, ok := d.models.Find(sess.Model); ok && len(m.ThinkingLevels) > 0 {
+			sess.Thinking = m.ThinkingLevels[0]
+			_ = persistSessionThinking(sess)
+		}
 	}
 	if len(req.MCPServers) > 0 && string(req.MCPServers) != "null" {
 		_ = saveMCPServers(sess, req.MCPServers)
@@ -485,7 +495,11 @@ func (d *Dispatcher) sessionMode(params json.RawMessage) (any, *Error) {
 	if sess == nil {
 		return nil, NewError(CodeInvalidParams, "session not found: "+req.SessionID)
 	}
+	if !d.modeAllowed(sess, req.ModeID) {
+		return nil, NewError(CodeInvalidParams, "modeId not supported by current model: "+req.ModeID)
+	}
 	sess.Thinking = req.ModeID
+	_ = persistSessionThinking(sess)
 	d.sendSessionUpdate(req.SessionID, map[string]any{
 		"sessionUpdate": "current_mode_update",
 		"currentModeId": req.ModeID,
@@ -515,12 +529,16 @@ func (d *Dispatcher) sessionConfigOption(params json.RawMessage) (any, *Error) {
 		if !d.modelAvailable(context.Background(), sess, req.Value) {
 			return nil, NewError(CodeInvalidParams, "unknown modelId: "+req.Value)
 		}
-		sess.Model = req.Value
+		d.applyModelSwitch(sess, req.Value)
 	case configIDThoughtLevel:
 		if !validThinkingLevel(req.Value) {
 			return nil, NewError(CodeInvalidParams, "unknown thinking level: "+req.Value)
 		}
+		if !d.modeAllowed(sess, req.Value) {
+			return nil, NewError(CodeInvalidParams, "thinking level not supported by current model: "+req.Value)
+		}
 		sess.Thinking = req.Value
+		_ = persistSessionThinking(sess)
 		d.sendSessionUpdate(req.SessionID, map[string]any{
 			"sessionUpdate": "current_mode_update",
 			"currentModeId": req.Value,
@@ -530,7 +548,7 @@ func (d *Dispatcher) sessionConfigOption(params json.RawMessage) (any, *Error) {
 	}
 	d.sendConfigOptionsUpdate(sess)
 	return map[string]any{
-		"configOptions": sessionConfigOptions(context.Background(), sess, d.credStore, d.customProviderList()),
+		"configOptions": sessionConfigOptions(context.Background(), sess, d.configuredModelList()),
 	}, nil
 }
 
@@ -549,8 +567,52 @@ func (d *Dispatcher) modelSet(params json.RawMessage) (any, *Error) {
 	if !d.modelAvailable(context.Background(), sess, req.ModelID) {
 		return nil, NewError(CodeInvalidParams, "unknown modelId: "+req.ModelID)
 	}
-	sess.Model = req.ModelID
+	d.applyModelSwitch(sess, req.ModelID)
+	d.sendConfigOptionsUpdate(sess)
 	return map[string]any{}, nil
+}
+
+// applyModelSwitch sets the session model and resets thinking to a supported
+// level when the new model does not support the current one.
+func (d *Dispatcher) applyModelSwitch(sess *AcpSession, modelID string) {
+	sess.Model = modelID
+	if d.models == nil || sess.Thinking == "" {
+		return
+	}
+	m, ok := d.models.Find(modelID)
+	if !ok || len(m.ThinkingLevels) == 0 {
+		return
+	}
+	if !containsString(m.ThinkingLevels, sess.Thinking) {
+		sess.Thinking = m.ThinkingLevels[0]
+		_ = persistSessionThinking(sess)
+		d.sendSessionUpdate(sess.ID, map[string]any{
+			"sessionUpdate": "current_mode_update",
+			"currentModeId": sess.Thinking,
+		})
+	}
+}
+
+// modeAllowed reports whether a thinking level is supported by the current
+// model. Models without an explicit list allow the global levels.
+func (d *Dispatcher) modeAllowed(sess *AcpSession, mode string) bool {
+	if d.models == nil {
+		return true
+	}
+	m, ok := d.models.Find(sess.Model)
+	if !ok || len(m.ThinkingLevels) == 0 {
+		return true
+	}
+	return containsString(m.ThinkingLevels, mode)
+}
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *Dispatcher) runPrompt(ctx context.Context, id RequestID, params json.RawMessage) {

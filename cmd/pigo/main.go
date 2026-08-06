@@ -243,21 +243,6 @@ func applyFileConfig(opts *cliOptions, cfg config.FileConfig, changed func(strin
 	if cfg.Model != "" && !changed("model") {
 		opts.model = cfg.Model
 	}
-	if cfg.BaseURL != "" && !changed("base-url") {
-		opts.baseURL = cfg.BaseURL
-	}
-	if cfg.APIKey != "" && !changed("api-key") {
-		opts.apiKey = cfg.APIKey
-	}
-	if cfg.Protocol != "" && !changed("protocol") {
-		opts.protocol = cfg.Protocol
-	}
-	if cfg.Provider != "" && !changed("provider") {
-		opts.provider = cfg.Provider
-	}
-	if cfg.ThinkingLevel != "" && !changed("thinking-level") {
-		opts.thinkingLevel = cfg.ThinkingLevel
-	}
 	if cfg.OutputFormat != "" && !changed("output-format") {
 		opts.outputFmt = cfg.OutputFormat
 	}

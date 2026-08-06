@@ -167,41 +167,43 @@ func SetupEnv(model, baseURL, protocol, providerName, apiKey string, noTools, no
 // resolveStartupProvider resolves the startup provider, supporting a default
 // model of the form custom-<slug>/<modelId> from the config provider registry.
 func resolveStartupProvider(model, baseURL, protocol, providerName, apiKey string) (provider.Provider, string, string, string, error) {
-	if providerID, modelID, ok := config.SplitCustomModelID(model); ok {
-		cfg, err := config.LoadFileConfig(config.FileConfigPath())
-		if err != nil {
-			return nil, "", "", "", err
-		}
-		entry, ok := cfg.CustomProvider(providerID)
-		if !ok {
-			return nil, "", "", "", fmt.Errorf("custom provider %q not found in config", providerID)
-		}
-		models := make([]provider.Model, 0, len(entry.Models))
-		for _, m := range entry.Models {
-			models = append(models, provider.Model{
-				Provider:    entry.ID,
-				ID:          m.ModelID,
-				DisplayName: m.Name,
-			})
-		}
-		prov, err := provider.ResolveCustomProvider(entry.ID, entry.BaseURL, entry.Protocol, models)
-		if err != nil {
-			return nil, "", "", "", err
-		}
-		key := apiKey
-		if key == "" {
-			key = entry.APIKey
-		}
-		if key == "" && !localEndpoint(entry.BaseURL) {
-			return nil, "", "", "", fmt.Errorf("custom provider %q: missing API key", providerID)
-		}
-		return prov, entry.ID, key, modelID, nil
-	}
-	prov, name, err := provider.ResolveProvider(model, baseURL, protocol, providerName, os.Getenv)
+	cfg, err := config.LoadFileConfig(config.FileConfigPath())
 	if err != nil {
 		return nil, "", "", "", err
 	}
-	return prov, name, apiKey, model, nil
+	model = strings.TrimSpace(model)
+	if model != "" {
+		if entry, ok := cfg.FindModel(model); ok {
+			models := []provider.Model{{
+				Provider:    entry.Provider,
+				ID:          entry.ModelID,
+				DisplayName: entry.Name,
+			}}
+			entryBaseURL := entry.BaseURL
+			if baseURL != "" {
+				entryBaseURL = baseURL
+			}
+			entryProtocol := entry.Protocol
+			if protocol != "" {
+				entryProtocol = protocol
+			}
+			entryAPIKey := entry.APIKey
+			if apiKey != "" {
+				entryAPIKey = apiKey
+			}
+			prov, err := provider.ResolveConfiguredProvider(entry.Provider, entryBaseURL, entryProtocol, models)
+			if err != nil {
+				return nil, "", "", "", err
+			}
+			return prov, entry.Provider, entryAPIKey, entry.ModelID, nil
+		}
+	}
+	_ = providerName
+	errMsg := "no configured model"
+	if model != "" {
+		errMsg = fmt.Sprintf("model %q is not configured", model)
+	}
+	return provider.DeferredErrorProvider{Err: fmt.Errorf("%s", errMsg)}, "", "", model, nil
 }
 
 // localEndpoint reports whether a base URL points at a local, keyless endpoint.

@@ -135,45 +135,6 @@ func TestDiscoverModelListHTTPError(t *testing.T) {
 	}
 }
 
-func TestCustomProvidersUpsertListDelete(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.toml")
-	reg := NewCustomProviders(path)
-	entry, err := reg.Upsert(config.ProviderConfig{
-		Name:     "DeepSeek Proxy",
-		BaseURL:  "https://api.deepseek.com/v1",
-		APIKey:   "sk-secret",
-		Protocol: "openai",
-		Models:   []config.ProviderModelConfig{{ModelID: "deepseek-v4", Name: "DeepSeek V4"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if entry.ID != "custom-deepseek-proxy" {
-		t.Fatalf("id = %q", entry.ID)
-	}
-	updated, err := reg.Upsert(config.ProviderConfig{
-		ID:       entry.ID,
-		Name:     "DeepSeek Proxy 2",
-		BaseURL:  "https://api.deepseek.com/v1",
-		Protocol: "openai",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if updated.APIKey != "sk-secret" {
-		t.Fatalf("empty apiKey should keep existing key, got %q", updated.APIKey)
-	}
-	if len(reg.List()) != 1 {
-		t.Fatalf("list = %+v", reg.List())
-	}
-	if err := reg.Delete(entry.ID); err != nil {
-		t.Fatal(err)
-	}
-	if len(reg.List()) != 0 {
-		t.Fatalf("list after delete = %+v", reg.List())
-	}
-}
-
 func TestPigoModelsDiscoverWire(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer sk-test" {
@@ -194,7 +155,7 @@ func TestPigoModelsDiscoverWire(t *testing.T) {
 	go func() { _ = srvACP.Serve(ctx) }()
 
 	raw, err := client.SendRequest(ctx, MethodPigoModelsDiscover, map[string]any{
-		"name":     "My Gateway",
+		"provider": "My Gateway",
 		"baseUrl":  srv.URL,
 		"apiKey":   "sk-test",
 		"protocol": "openai",
@@ -203,16 +164,17 @@ func TestPigoModelsDiscoverWire(t *testing.T) {
 		t.Fatal(err)
 	}
 	var resp struct {
-		ProviderID   string `json:"providerId"`
-		ProviderName string `json:"providerName"`
-		Models       []struct {
+		Provider string `json:"provider"`
+		BaseURL  string `json:"baseUrl"`
+		Protocol string `json:"protocol"`
+		Models   []struct {
 			ModelID string `json:"modelId"`
 		} `json:"models"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		t.Fatal(err)
 	}
-	if resp.ProviderID != "custom-my-gateway" || resp.ProviderName != "My Gateway" {
+	if resp.Provider != "My Gateway" || resp.BaseURL != srv.URL || resp.Protocol != "openai" {
 		t.Fatalf("provider = %+v", resp)
 	}
 	if len(resp.Models) != 1 || resp.Models[0].ModelID != "m1" {
@@ -220,71 +182,52 @@ func TestPigoModelsDiscoverWire(t *testing.T) {
 	}
 }
 
-func TestPigoProvidersWireLifecycle(t *testing.T) {
+func TestPigoConfigReadWrite(t *testing.T) {
 	client, server := NewChannelPair()
 	defer client.Close()
 	defer server.Close()
 	disp, _ := newTestDispatcher(t, &fakeRunner{}, server)
-	disp.SetCredentialStore(provider.NewCredentialStore(nil))
-	reg := NewCustomProviders(filepath.Join(t.TempDir(), "config.toml"))
-	disp.SetCustomProviders(reg)
+	disp.SetConfiguredModels(newConfiguredModels(t))
 	srvACP := NewServer(server, disp)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	go func() { _ = srvACP.Serve(ctx) }()
 
-	raw, err := client.SendRequest(ctx, MethodPigoProvidersUpsert, map[string]any{
-		"name":     "GW",
-		"baseUrl":  "https://gw.example/v1",
-		"apiKey":   "sk-secret",
-		"protocol": "openai",
-		"models":   []map[string]any{{"modelId": "m1", "name": "M1"}},
+	raw, err := client.SendRequest(ctx, MethodPigoConfig, map[string]any{
+		"model": "a/m1",
+		"models": []map[string]any{
+			{"provider": "a", "modelId": "m1", "baseUrl": "https://a.example/v1", "protocol": "openai", "apiKey": "secret"},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var upsert struct {
-		ProviderID string `json:"providerId"`
+	if strings.Contains(string(raw), "secret") || strings.Contains(string(raw), "needsRestart") {
+		t.Fatalf("config response leaked key or restart: %s", raw)
 	}
-	if err := json.Unmarshal(raw, &upsert); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(upsert.ProviderID, "custom-") {
-		t.Fatalf("providerId = %q", upsert.ProviderID)
-	}
-
-	raw, err = client.SendRequest(ctx, MethodPigoProvidersList, map[string]any{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(raw), "sk-secret") {
-		t.Fatalf("list leaked api key: %s", raw)
-	}
-	var listed struct {
-		Providers []struct {
-			ProviderID       string `json:"providerId"`
+	var resp struct {
+		Model  string `json:"model"`
+		Models []struct {
+			ModelID          string `json:"modelId"`
 			APIKeyConfigured bool   `json:"apiKeyConfigured"`
-		} `json:"providers"`
+		} `json:"models"`
 	}
-	if err := json.Unmarshal(raw, &listed); err != nil {
+	if err := json.Unmarshal(raw, &resp); err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Providers) != 1 || !listed.Providers[0].APIKeyConfigured {
-		t.Fatalf("list = %+v", listed.Providers)
+	if resp.Model != "a/m1" || len(resp.Models) != 1 || !resp.Models[0].APIKeyConfigured {
+		t.Fatalf("config = %+v", resp)
 	}
 
-	if _, err := client.SendRequest(ctx, MethodPigoProvidersDelete, map[string]any{"providerId": upsert.ProviderID}); err != nil {
+	if _, err := client.SendRequest(ctx, MethodPigoConfig, map[string]any{"deleteModel": "a/m1"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.SendRequest(ctx, MethodPigoProvidersDelete, map[string]any{"providerId": upsert.ProviderID}); err != nil {
-		t.Fatalf("second delete should be idempotent: %v", err)
-	}
-	raw, err = client.SendRequest(ctx, MethodPigoProvidersList, map[string]any{})
+	raw, err = client.SendRequest(ctx, MethodPigoConfig, map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), `"providers":[]`) {
-		t.Fatalf("providers after delete = %s", raw)
+	if !strings.Contains(string(raw), `"model":""`) || strings.Contains(string(raw), `"a/m1"`) {
+		t.Fatalf("config after delete = %s", raw)
 	}
 }
 
@@ -293,16 +236,10 @@ func TestPigoModelsFilteringIncludesCustom(t *testing.T) {
 	defer client.Close()
 	defer server.Close()
 	disp, _ := newTestDispatcher(t, &fakeRunner{}, server)
-	disp.SetCredentialStore(provider.NewCredentialStore(nil))
-	reg := NewCustomProviders(filepath.Join(t.TempDir(), "config.toml"))
-	_, _ = reg.Upsert(config.ProviderConfig{
-		ID:       "custom-gw",
-		Name:     "GW",
-		BaseURL:  "https://gw.example/v1",
-		Protocol: "openai",
-		Models:   []config.ProviderModelConfig{{ModelID: "m1", Name: "M1"}},
-	})
-	disp.SetCustomProviders(reg)
+	disp.SetConfiguredModels(newConfiguredModels(t, config.ModelConfig{
+		Provider: "custom-gw", ModelID: "m1", Name: "M1",
+		BaseURL: "https://gw.example/v1", Protocol: "openai",
+	}))
 	srvACP := NewServer(server, disp)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -340,16 +277,10 @@ func TestSessionNewIncludesCustomModels(t *testing.T) {
 	defer client.Close()
 	defer server.Close()
 	disp, _ := newTestDispatcher(t, &fakeRunner{}, server)
-	disp.SetCredentialStore(provider.NewCredentialStore(nil))
-	reg := NewCustomProviders(filepath.Join(t.TempDir(), "config.toml"))
-	_, _ = reg.Upsert(config.ProviderConfig{
-		ID:       "custom-gw",
-		Name:     "GW",
-		BaseURL:  "https://gw.example/v1",
-		Protocol: "openai",
-		Models:   []config.ProviderModelConfig{{ModelID: "m1", Name: "M1"}},
-	})
-	disp.SetCustomProviders(reg)
+	disp.SetConfiguredModels(newConfiguredModels(t, config.ModelConfig{
+		Provider: "custom-gw", ModelID: "m1", Name: "M1",
+		BaseURL: "https://gw.example/v1", Protocol: "openai",
+	}))
 	srvACP := NewServer(server, disp)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -378,22 +309,15 @@ func TestSetModelThenPromptUsesCustomEndpoint(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	reg := NewCustomProviders(filepath.Join(t.TempDir(), "config.toml"))
-	if _, err := reg.Upsert(config.ProviderConfig{
-		ID:       "custom-gw",
-		Name:     "GW",
-		BaseURL:  srv.URL,
-		APIKey:   "sk-custom",
-		Protocol: "openai",
-		Models:   []config.ProviderModelConfig{{ModelID: "m1", Name: "M1"}},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	models := newConfiguredModels(t, config.ModelConfig{
+		Provider: "custom-gw", ModelID: "m1", Name: "M1",
+		BaseURL: srv.URL, APIKey: "sk-custom", Protocol: "openai",
+	})
 	runner := &RuntimeRunner{
-		Provider:        fakeProvider{},
-		ProviderName:    "fake",
-		Model:           "openrouter/free",
-		CustomProviders: reg,
+		Provider:         fakeProvider{},
+		ProviderName:     "fake",
+		Model:            "openrouter/free",
+		ConfiguredModels: models,
 	}
 	home := t.TempDir()
 	ws := filepath.Join(t.TempDir(), "ws")

@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
@@ -10,10 +11,23 @@ import (
 // custom Gemini endpoints currently ride the OpenAI-compatible driver.
 const ProtocolGemini = "gemini"
 
-// ResolveCustomProvider builds a Provider for a UI-saved custom endpoint. The
-// returned provider carries the custom provider id as its name so per-provider
+// DeferredErrorProvider is a Provider that always fails at stream build time
+// with a fixed error. It lets pigo start with an unconfigured model and only
+// surface the error when a request is actually attempted.
+type DeferredErrorProvider struct {
+	Err error
+}
+
+func (p DeferredErrorProvider) Name() string    { return "" }
+func (p DeferredErrorProvider) Models() []Model { return nil }
+func (p DeferredErrorProvider) StreamCompletion(ctx context.Context, req CompletionRequest) (*AssistantMessageEventStream, error) {
+	return nil, p.Err
+}
+
+// ResolveConfiguredProvider builds a Provider from a configured model entry.
+// The returned provider carries the entry's provider name so per-provider
 // API-key overrides and error messages stay stable.
-func ResolveCustomProvider(id, baseURL, protocol string, models []Model) (Provider, error) {
+func ResolveConfiguredProvider(id, baseURL, protocol string, models []Model) (Provider, error) {
 	id = strings.TrimSpace(id)
 	baseURL = strings.TrimSpace(baseURL)
 	if id == "" {

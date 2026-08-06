@@ -27,16 +27,17 @@ func TestACPRealProviderE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config %s: %v", cfgPath, err)
 	}
-	if cfg.APIKey == "" {
-		t.Skipf("no api_key in %s", cfgPath)
-	}
 	model := cfg.Model
 	if model == "" {
 		t.Skipf("no model in %s", cfgPath)
 	}
-	t.Logf("config: %s model=%s provider=%s base_url=%s", cfgPath, model, cfg.Provider, cfg.BaseURL)
+	entry, ok := cfg.FindModel(model)
+	if !ok {
+		t.Skipf("model %q not in %s", model, cfgPath)
+	}
+	t.Logf("config: %s model=%s provider=%s base_url=%s", cfgPath, model, entry.Provider, entry.BaseURL)
 
-	env, err := run.SetupEnv(model, cfg.BaseURL, cfg.Protocol, cfg.Provider, cfg.APIKey, false, true, "", nil, false)
+	env, err := run.SetupEnv(model, entry.BaseURL, entry.Protocol, entry.Provider, entry.APIKey, false, true, "", nil, false)
 	if err != nil {
 		t.Fatalf("SetupEnv: %v", err)
 	}
@@ -44,8 +45,8 @@ func TestACPRealProviderE2E(t *testing.T) {
 		Provider:      env.Provider,
 		ProviderName:  env.ProviderName,
 		Model:         model,
-		APIKey:        cfg.APIKey,
-		ThinkingLevel: agentcore.ThinkingLevel(cfg.ThinkingLevel),
+		APIKey:        env.APIKey,
+		ThinkingLevel: agentcore.ThinkingMedium,
 		Tools:         env.Tools,
 	}
 	home := t.TempDir()

@@ -107,9 +107,9 @@ func Run(ctx context.Context, opts Options, stdin io.Reader, stdout, stderr io.W
 		ThinkingLevel: opts.ThinkingLevel,
 		Tools:         env.Tools,
 	}
-	providers := acp.NewCustomProviders(config.FileConfigPath())
-	_ = providers.Load()
-	runner.CustomProviders = providers
+	configured := acp.NewConfiguredModels(config.FileConfigPath())
+	_ = configured.Load()
+	runner.ConfiguredModels = configured
 	dreamCfg := &acp.DreamConfig{
 		Model:         opts.Model,
 		BaseURL:       opts.BaseURL,
@@ -118,11 +118,11 @@ func Run(ctx context.Context, opts Options, stdin io.Reader, stdout, stderr io.W
 		APIKey:        env.APIKey,
 		ThinkingLevel: opts.ThinkingLevel,
 	}
-	if providerID, _, ok := config.SplitCustomModelID(opts.Model); ok {
-		if entry, found := providers.Get(providerID); found {
+	if _, _, ok := config.SplitModelID(opts.Model); ok {
+		if entry, found := configured.Find(opts.Model); found {
 			dreamCfg.BaseURL = entry.BaseURL
 			dreamCfg.Protocol = entry.Protocol
-			dreamCfg.ProviderName = entry.ID
+			dreamCfg.ProviderName = entry.Provider
 		}
 	}
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/agenttool"
+	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/compaction"
 	"github.com/smallnest/pigo/internal/provider"
 	"github.com/smallnest/pigo/internal/runtime"
@@ -31,9 +32,9 @@ type RuntimeRunner struct {
 	// Snap is the rewind journal shared with the write/edit tools. When nil the
 	// runner discovers it from the tool set.
 	Snap *agenttool.FileSnapshotRecorder
-	// CustomProviders is the shared custom provider registry used to resolve
-	// model ids of the form custom-<slug>/<modelId> at run time.
-	CustomProviders *CustomProviders
+	// ConfiguredModels is the shared configured-model store used to resolve
+	// provider/model_id entries at run time.
+	ConfiguredModels *ConfiguredModels
 }
 
 // Run executes one prompt turn. It appends the user message to a copy of the
@@ -114,15 +115,25 @@ func (r *RuntimeRunner) ResolveForModel(model string) (provider.Provider, string
 	if model == "" {
 		model = r.Model
 	}
-	if providerID, modelID, ok := splitCustomModelID(model); ok {
-		if r.CustomProviders == nil {
-			return nil, "", "", "", fmt.Errorf("custom provider registry is not configured")
+	if _, _, ok := config.SplitModelID(model); ok && r.ConfiguredModels != nil {
+		entry, found := r.ConfiguredModels.Find(model)
+		if !found {
+			return nil, "", "", "", fmt.Errorf("model %q is not configured", model)
 		}
-		prov, entry, err := r.CustomProviders.Resolve(providerID, modelID)
+		wireModel := entry.ModelID
+		if wireModel == "" {
+			_, wireModel, _ = config.SplitModelID(model)
+		}
+		if entry.Protocol == provider.ProtocolGemini {
+			return nil, "", "", "", fmt.Errorf("gemini runtime is not implemented")
+		}
+		prov, err := provider.ResolveConfiguredProvider(entry.Provider, entry.BaseURL, entry.Protocol, []provider.Model{
+			{Provider: entry.Provider, ID: wireModel, DisplayName: entry.Name},
+		})
 		if err != nil {
 			return nil, "", "", "", err
 		}
-		return prov, entry.ID, entry.APIKey, modelID, nil
+		return prov, entry.Provider, entry.APIKey, wireModel, nil
 	}
 	if r.Provider == nil {
 		return nil, "", "", "", fmt.Errorf("no provider configured")

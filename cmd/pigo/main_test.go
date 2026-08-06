@@ -182,37 +182,24 @@ func changedSet(names ...string) func(string) bool {
 func TestApplyFileConfig_FillsUnsetFlags(t *testing.T) {
 	opts := cliOptions{model: "openrouter/free", outputFmt: "text"}
 	cfg := config.FileConfig{
-		Model:         "claude-opus-4-8",
-		BaseURL:       "https://example.com",
-		APIKey:        "sk-test",
-		Protocol:      "anthropic",
-		Provider:      "deepseek",
-		ThinkingLevel: "high",
-		OutputFormat:  "stream-json",
-		NoTools:       true,
-		NoSkills:      true,
-		Approve:       true,
-		SystemPrompt:  "be terse",
+		Model: "opencode-go/deepseek-v4-flash",
+		Models: []config.ModelConfig{{
+			Provider: "opencode-go", ModelID: "deepseek-v4-flash",
+			BaseURL: "https://opencode.ai/zen/go/v1", APIKey: "sk-test", Protocol: "openai",
+		}},
+		OutputFormat: "stream-json",
+		NoTools:      true,
+		NoSkills:     true,
+		Approve:      true,
+		SystemPrompt: "be terse",
 	}
 	applyFileConfig(&opts, cfg, changedSet())
 
-	if opts.model != "claude-opus-4-8" {
-		t.Errorf("model = %q, want claude-opus-4-8", opts.model)
+	if opts.model != "opencode-go/deepseek-v4-flash" {
+		t.Errorf("model = %q, want opencode-go/deepseek-v4-flash", opts.model)
 	}
-	if opts.baseURL != "https://example.com" {
-		t.Errorf("baseURL = %q", opts.baseURL)
-	}
-	if opts.apiKey != "sk-test" {
-		t.Errorf("apiKey = %q", opts.apiKey)
-	}
-	if opts.protocol != "anthropic" {
-		t.Errorf("protocol = %q", opts.protocol)
-	}
-	if opts.provider != "deepseek" {
-		t.Errorf("provider = %q", opts.provider)
-	}
-	if opts.thinkingLevel != "high" {
-		t.Errorf("thinkingLevel = %q", opts.thinkingLevel)
+	if opts.baseURL != "" || opts.apiKey != "" || opts.protocol != "" || opts.provider != "" || opts.thinkingLevel != "" {
+		t.Errorf("flat overrides should not be filled from config: %+v", opts)
 	}
 	if opts.outputFmt != "stream-json" {
 		t.Errorf("outputFmt = %q", opts.outputFmt)

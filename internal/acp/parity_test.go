@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/smallnest/pigo/internal/agentcore"
+	"github.com/smallnest/pigo/internal/cli/config"
 )
 
 func TestSessionListDeleteAndConfigOptions(t *testing.T) {
@@ -18,11 +19,15 @@ func TestSessionListDeleteAndConfigOptions(t *testing.T) {
 	if err := os.MkdirAll(ws, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	models := newConfiguredModels(t, config.ModelConfig{
+		Provider: "deepseek", ModelID: "deepseek-v4-pro", BaseURL: "https://api.deepseek.com", Protocol: "openai",
+	})
 	client, stop := StartInProcess(&RuntimeRunner{
-		Provider:     fakeProvider{},
-		ProviderName: "deepseek",
-		Model:        "deepseek/deepseek-v4-pro",
-		APIKey:       "sk-test",
+		Provider:         fakeProvider{},
+		ProviderName:     "deepseek",
+		Model:            "deepseek/deepseek-v4-pro",
+		APIKey:           "sk-test",
+		ConfiguredModels: models,
 	}, home, "deepseek/deepseek-v4-pro", "sys", ws, nil, nil)
 	defer stop()
 

@@ -129,7 +129,6 @@ func buildInitializeResponse(version string) map[string]any {
 				"pigo.models.discover": true,
 				"pigo.config":          true,
 				"pigo.messages":        true,
-				"pigo.providers":       true,
 			},
 		},
 		"authMethods": []any{},

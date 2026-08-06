@@ -20,13 +20,43 @@ func saveMCPServers(sess *AcpSession, raw json.RawMessage) error {
 	return sess.Store.SaveMetadata(meta)
 }
 
+func persistSessionThinking(sess *AcpSession) error {
+	meta, err := sess.Store.LoadMetadata(sess.ID)
+	if err != nil {
+		return err
+	}
+	raw := map[string]any{}
+	if len(meta.CustomMetadata) > 0 {
+		_ = json.Unmarshal(meta.CustomMetadata, &raw)
+	}
+	if sess.Thinking == "" {
+		delete(raw, "thinkingLevel")
+	} else {
+		raw["thinkingLevel"] = sess.Thinking
+	}
+	meta.CustomMetadata = rawJSONValue(raw)
+	return sess.Store.SaveMetadata(meta)
+}
+
+func readSessionThinking(meta sessionstore.Metadata) string {
+	raw := map[string]any{}
+	if len(meta.CustomMetadata) > 0 {
+		_ = json.Unmarshal(meta.CustomMetadata, &raw)
+	}
+	if s, ok := raw["thinkingLevel"].(string); ok {
+		return s
+	}
+	return ""
+}
+
 func (d *Dispatcher) sessionPayload(sess *AcpSession) map[string]any {
 	ctx := context.Background()
+	configured := d.configuredModelList()
 	return map[string]any{
 		"sessionId":     sess.ID,
-		"configOptions": sessionConfigOptions(ctx, sess, d.credStore, d.customProviderList()),
-		"models":        sessionModels(ctx, sess, d.credStore, d.customProviderList()),
-		"modes":         sessionModes(sess),
+		"configOptions": sessionConfigOptions(ctx, sess, configured),
+		"models":        sessionModels(ctx, sess, configured),
+		"modes":         sessionModes(sess, d.currentConfiguredModel(sess)),
 		"_meta": map[string]any{
 			"pigo.startupInfo": startupInfoText(d.version, sess, d.commandCount()),
 		},
@@ -107,7 +137,7 @@ func (d *Dispatcher) sendTextChunk(sessionID, text string) {
 func (d *Dispatcher) sendConfigOptionsUpdate(sess *AcpSession) {
 	d.sendSessionUpdate(sess.ID, map[string]any{
 		"sessionUpdate": "config_option_update",
-		"configOptions": sessionConfigOptions(context.Background(), sess, d.credStore, d.customProviderList()),
+		"configOptions": sessionConfigOptions(context.Background(), sess, d.configuredModelList()),
 	})
 }
 

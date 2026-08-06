@@ -34,9 +34,10 @@ func newDispatcher(runner SessionRunner, transport Transport, pigoHome, model, s
 	disp.SetRunner(runner)
 	disp.SetDreamConfig(dreamCfg)
 	if rr, ok := runner.(*RuntimeRunner); ok {
-		if rr.CustomProviders != nil {
-			disp.SetCustomProviders(rr.CustomProviders)
+		if rr.ConfiguredModels != nil {
+			disp.SetConfiguredModels(rr.ConfiguredModels)
 		}
+		disp.SetProviderName(rr.ProviderName)
 		creds := provider.NewCredentialStore(nil)
 		if rr.APIKey != "" {
 			creds.SetOverride(rr.ProviderName, rr.APIKey)

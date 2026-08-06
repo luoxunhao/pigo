@@ -52,17 +52,19 @@ func TestLoadFileConfig_EmptyPath(t *testing.T) {
 func TestLoadFileConfig_Valid(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	content := `
-model = "claude-opus-4-8"
-base_url = "https://example.com"
-api_key = "sk-test"
-protocol = "anthropic"
-provider = "deepseek"
-thinking_level = "high"
+model = "opencode-go/deepseek-v4-flash"
 output_format = "stream-json"
 no_tools = true
 no_skills = true
 approve = true
 system_prompt = "be terse"
+
+[[models]]
+provider = "opencode-go"
+model_id = "deepseek-v4-flash"
+base_url = "https://opencode.ai/zen/go/v1"
+api_key = "sk-test"
+protocol = "openai"
 `
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
@@ -72,17 +74,16 @@ system_prompt = "be terse"
 		t.Fatalf("valid file should parse, got %v", err)
 	}
 	want := FileConfig{
-		Model:         "claude-opus-4-8",
-		BaseURL:       "https://example.com",
-		APIKey:        "sk-test",
-		Protocol:      "anthropic",
-		Provider:      "deepseek",
-		ThinkingLevel: "high",
-		OutputFormat:  "stream-json",
-		NoTools:       true,
-		NoSkills:      true,
-		Approve:       true,
-		SystemPrompt:  "be terse",
+		Model: "opencode-go/deepseek-v4-flash",
+		Models: []ModelConfig{{
+			Provider: "opencode-go", ModelID: "deepseek-v4-flash",
+			BaseURL: "https://opencode.ai/zen/go/v1", APIKey: "sk-test", Protocol: "openai",
+		}},
+		OutputFormat: "stream-json",
+		NoTools:      true,
+		NoSkills:     true,
+		Approve:      true,
+		SystemPrompt: "be terse",
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Fatalf("parsed config = %+v, want %+v", cfg, want)

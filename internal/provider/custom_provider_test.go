@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-func TestResolveCustomProviderOpenAI(t *testing.T) {
-	p, err := ResolveCustomProvider("custom-gw", "https://gw.example/v1", "openai",
+func TestResolveConfiguredProviderOpenAI(t *testing.T) {
+	p, err := ResolveConfiguredProvider("custom-gw", "https://gw.example/v1", "openai",
 		[]Model{{Provider: "", ID: "m1", DisplayName: "M1"}})
 	if err != nil {
 		t.Fatal(err)
@@ -20,22 +20,22 @@ func TestResolveCustomProviderOpenAI(t *testing.T) {
 	}
 }
 
-func TestResolveCustomProviderProtocols(t *testing.T) {
+func TestResolveConfiguredProviderProtocols(t *testing.T) {
 	for _, protocol := range []string{"responses", "openai/resp_api", "anthropic", "gemini", ""} {
-		if _, err := ResolveCustomProvider("custom-p", "https://gw.example/v1", protocol, nil); err != nil {
+		if _, err := ResolveConfiguredProvider("custom-p", "https://gw.example/v1", protocol, nil); err != nil {
 			t.Errorf("protocol %q: %v", protocol, err)
 		}
 	}
 }
 
-func TestResolveCustomProviderErrors(t *testing.T) {
-	if _, err := ResolveCustomProvider("", "https://x", "openai", nil); err == nil {
+func TestResolveConfiguredProviderErrors(t *testing.T) {
+	if _, err := ResolveConfiguredProvider("", "https://x", "openai", nil); err == nil {
 		t.Fatal("empty id should error")
 	}
-	if _, err := ResolveCustomProvider("custom-x", "", "openai", nil); err == nil {
+	if _, err := ResolveConfiguredProvider("custom-x", "", "openai", nil); err == nil {
 		t.Fatal("empty base url should error")
 	}
-	if _, err := ResolveCustomProvider("custom-x", "https://x", "unknown", nil); err == nil ||
+	if _, err := ResolveConfiguredProvider("custom-x", "https://x", "unknown", nil); err == nil ||
 		!strings.Contains(err.Error(), "unknown protocol") {
 		t.Fatalf("unknown protocol error = %v", err)
 	}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/smallnest/pigo/internal/agentcore"
+	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/provider"
 	"github.com/smallnest/pigo/internal/sessionstore"
 )
@@ -88,6 +89,11 @@ func TestConfigSurfaceModesAndOrder(t *testing.T) {
 	defer server.Close()
 	disp, _ := newTestDispatcher(t, &fakeRunner{}, server)
 	disp.SetCredentialStore(provider.NewCredentialStore(nil))
+	disp.model = "deepseek/deepseek-v4-pro"
+	disp.SetConfiguredModels(newConfiguredModels(t, config.ModelConfig{
+		Provider: "deepseek", ModelID: "deepseek-v4-pro", Name: "DeepSeek V4 Pro",
+		BaseURL: "https://api.deepseek.com", Protocol: "openai",
+	}))
 	srv := NewServer(server, disp)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -143,7 +149,7 @@ func TestConfigSurfaceModesAndOrder(t *testing.T) {
 func TestConfigOptionsOmitEmptyModel(t *testing.T) {
 	opts := configOptionsFromModels(
 		map[string]any{"currentModelId": "x", "availableModels": []map[string]any{}},
-		sessionModes(&AcpSession{}),
+		sessionModes(&AcpSession{}, nil),
 	)
 	if len(opts) != 1 || opts[0]["id"] != configIDThoughtLevel {
 		t.Fatalf("configOptions = %+v, want only thought_level", opts)
@@ -155,9 +161,9 @@ func TestModelSetValidation(t *testing.T) {
 	defer client.Close()
 	defer server.Close()
 	disp, _ := newTestDispatcher(t, &fakeRunner{}, server)
-	creds := provider.NewCredentialStore(nil)
-	creds.SetOverride("deepseek", "sk-test")
-	disp.SetCredentialStore(creds)
+	disp.SetConfiguredModels(newConfiguredModels(t, config.ModelConfig{
+		Provider: "deepseek", ModelID: "deepseek-v4-pro", BaseURL: "https://api.deepseek.com", Protocol: "openai",
+	}))
 	srv := NewServer(server, disp)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -409,7 +415,7 @@ func TestInitializeExtensionsUnchanged(t *testing.T) {
 	if _, ok := resp.AgentCapabilities.SessionCapabilities["close"]; !ok {
 		t.Fatalf("session close capability missing: %+v", resp.AgentCapabilities.SessionCapabilities)
 	}
-	if resp.AgentCapabilities.Meta["pigo.models.discover"] != true || resp.AgentCapabilities.Meta["pigo.providers"] != true {
+	if resp.AgentCapabilities.Meta["pigo.models.discover"] != true {
 		t.Fatalf("pigo extension flags missing: %+v", resp.AgentCapabilities.Meta)
 	}
 }
