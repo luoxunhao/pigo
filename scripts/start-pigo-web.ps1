@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $PiWeb = "E:\project\pi-web"
-$PigoExe = "E:\project\pigo\pigo-accept.exe"
+$PigoExe = "E:\project\pigo\pigo.exe"
 $PidDir = Join-Path $env:TEMP "pi-web-pigo"
 $PidFile = Join-Path $PidDir "pids.txt"
 
@@ -30,7 +30,7 @@ if (-not (Test-Path $PiWeb)) {
   Write-Error "pi-web directory missing: $PiWeb"
 }
 if (-not (Test-Path $PigoExe)) {
-  Write-Error "pigo exe missing. Build first: cd E:\project\pigo; go build -o pigo-accept.exe ./cmd/pigo"
+  Write-Error "pigo exe missing. Build first: cd E:\project\pigo; go build -o pigo.exe ./cmd/pigo"
 }
 
 $ConfigFile = Join-Path $PidDir "pi-web-config.json"

@@ -1,7 +1,7 @@
 {
   "agentBackend": "pigo",
   "pigo": {
-    "command": "E:/project/pigo/pigo-accept.exe",
+    "command": "E:/project/pigo/pigo.exe",
     "args": ["--acp"]
   }
 }
