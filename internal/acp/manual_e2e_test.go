@@ -37,7 +37,7 @@ func TestACPRealProviderE2E(t *testing.T) {
 	}
 	t.Logf("config: %s model=%s provider=%s base_url=%s", cfgPath, model, entry.Provider, entry.BaseURL)
 
-	env, err := run.SetupEnv(model, entry.BaseURL, entry.Protocol, entry.Provider, entry.APIKey, false, true, "", nil, false)
+	env, err := run.SetupEnv(model, entry.BaseURL, entry.Protocol, entry.Provider, entry.APIKey, false, true, "", nil, false, run.ToolPolicy{})
 	if err != nil {
 		t.Fatalf("SetupEnv: %v", err)
 	}

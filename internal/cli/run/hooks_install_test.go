@@ -2,9 +2,11 @@ package run
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/smallnest/pigo/internal/agentcore"
+	"github.com/smallnest/pigo/internal/agenttool"
 	"github.com/smallnest/pigo/internal/hooks"
 	"github.com/smallnest/pigo/internal/runtime"
 )
@@ -104,5 +106,115 @@ func TestChainShouldStop(t *testing.T) {
 	}
 	if nextRan {
 		t.Fatal("next should not run after prev returns true")
+	}
+}
+
+func TestInstallSeamsBeforeRunsHookBeforePermission(t *testing.T) {
+	deps := HookDeps{ProjectDir: t.TempDir()}
+	call := agentcore.AgentToolCall{ID: "1", Name: "bash", Arguments: json.RawMessage(`{"command":"rm -rf /tmp/x"}`)}
+
+	permissionCalled := false
+	permission := func(context.Context, agentcore.AgentToolCall) *agentcore.BeforeToolCallDecision {
+		permissionCalled = true
+		return nil
+	}
+	var cfg runtime.RunConfig
+	cfg.Batch.ToolExecutorConfig.BeforeToolCall = permission
+	blockSet := hooks.HookSet{
+		"PreToolUse": {{Matcher: "*", Hooks: []hooks.HookConfig{{Command: "exit 2"}}}},
+	}
+	d := BuildDispatcher(blockSet, deps)
+	InstallSeamsBefore(&cfg, d, deps)
+	if dec := cfg.Batch.ToolExecutorConfig.BeforeToolCall(context.Background(), call); dec == nil || !dec.Block {
+		t.Fatalf("hook should block, got %+v", dec)
+	}
+	if permissionCalled {
+		t.Fatal("permission must not run after a hook block")
+	}
+
+	permissionCalled = false
+	var allowCfg runtime.RunConfig
+	allowCfg.Batch.ToolExecutorConfig.BeforeToolCall = permission
+	allowSet := hooks.HookSet{
+		"PreToolUse": {{Matcher: "*", Hooks: []hooks.HookConfig{{Command: "true"}}}},
+	}
+	d2 := BuildDispatcher(allowSet, deps)
+	InstallSeamsBefore(&allowCfg, d2, deps)
+	if dec := allowCfg.Batch.ToolExecutorConfig.BeforeToolCall(context.Background(), call); dec != nil {
+		t.Fatalf("safe hook should allow, got %+v", dec)
+	}
+	if !permissionCalled {
+		t.Fatal("safe command should reach the permission seam")
+	}
+}
+
+func TestInstallSeamsPropagatesToSubAgentTool(t *testing.T) {
+	tool := runtime.NewTaskTool(func() runtime.RunConfig { return runtime.RunConfig{} }, nil)
+	reg := agenttool.NewToolRegistry()
+	if err := reg.Register(tool); err != nil {
+		t.Fatal(err)
+	}
+	var cfg runtime.RunConfig
+	cfg.Batch.ToolExecutorConfig.Registry = reg
+	set := hooks.HookSet{
+		"PreToolUse": {{Matcher: "*", Hooks: []hooks.HookConfig{{Command: "true"}}}},
+	}
+	deps := HookDeps{ProjectDir: t.TempDir()}
+	d := BuildDispatcher(set, deps)
+	InstallSeams(&cfg, d, deps)
+
+	var child runtime.RunConfig
+	found := false
+	for _, tl := range reg.List() {
+		if st, ok := tl.(*runtime.SubAgentTool); ok {
+			st.ApplyConfigHook(&child)
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("task tool not found in registry")
+	}
+	if child.Batch.ToolExecutorConfig.BeforeToolCall == nil {
+		t.Fatal("child RunConfig did not receive the hook seam")
+	}
+}
+
+func TestInstallSeamsBlocksChildBash(t *testing.T) {
+	ran := false
+	childTool := &recordingTool{name: "bash", ran: &ran}
+	childReg := agenttool.NewToolRegistry()
+	if err := childReg.Register(childTool); err != nil {
+		t.Fatal(err)
+	}
+	childFactory := func() runtime.RunConfig {
+		return runtime.RunConfig{Batch: agenttool.BatchConfig{ToolExecutorConfig: agenttool.ToolExecutorConfig{Registry: childReg}}}
+	}
+	taskTool := runtime.NewTaskTool(childFactory, nil)
+	parentReg := agenttool.NewToolRegistry()
+	if err := parentReg.Register(taskTool); err != nil {
+		t.Fatal(err)
+	}
+	var cfg runtime.RunConfig
+	cfg.Batch.ToolExecutorConfig.Registry = parentReg
+	set := hooks.HookSet{
+		"PreToolUse": {{Matcher: "*", Hooks: []hooks.HookConfig{{Command: "exit 2"}}}},
+	}
+	deps := HookDeps{ProjectDir: t.TempDir()}
+	d := BuildDispatcher(set, deps)
+	InstallSeams(&cfg, d, deps)
+
+	child := childFactory()
+	for _, tl := range parentReg.List() {
+		if st, ok := tl.(*runtime.SubAgentTool); ok {
+			st.ApplyConfigHook(&child)
+		}
+	}
+	call := agentcore.AgentToolCall{ID: "1", Name: "bash", Arguments: json.RawMessage(`{"command":"rm -rf /tmp/x"}`)}
+	msgs, _ := agenttool.ExecuteToolCalls(context.Background(), child.Batch, []agentcore.AgentToolCall{call}, nil)
+	if ran {
+		t.Fatal("child bash must not execute when the hook blocks")
+	}
+	if len(msgs) != 1 || !msgs[0].IsError {
+		t.Fatalf("child blocked call should be an error result: %+v", msgs)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/smallnest/pigo/internal/agentcore"
+	"github.com/smallnest/pigo/internal/runtime"
 	"github.com/smallnest/pigo/internal/session"
 	"github.com/smallnest/pigo/internal/sessionstore"
 )
@@ -69,6 +70,10 @@ type queuedPrompt struct {
 type TurnHooks struct {
 	Steering func(ctx context.Context) []agentcore.AgentMessage
 	FollowUp func(ctx context.Context, agentCtx *agentcore.AgentContext) []agentcore.AgentMessage
+	// InstallSeams, when non-nil, installs the run's hook seams into a freshly
+	// built RunConfig. Dispatcher binds it per session so RuntimeRunner stays
+	// agnostic of session identity. An error fails the turn closed.
+	InstallSeams func(cfg *runtime.RunConfig) error
 }
 
 // SetCancel installs the cancel handle of the running turn.

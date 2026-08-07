@@ -182,6 +182,10 @@ var subAgentSchema = json.RawMessage(`{
 // the child's final text.
 type SubAgentTool struct {
 	spec SubAgentSpec
+	// configHook, when non-nil, mutates each freshly built child RunConfig
+	// before the child loop starts. The run-assembly layer uses it to propagate
+	// hook seams into goroutine sub-agents.
+	configHook func(*RunConfig)
 	// processCall, when non-nil, overrides the default subprocess transport for
 	// process-isolated mode. Tests inject a fake to exercise the process-mode
 	// logic (params shaping, crash-as-error, result forwarding) without building
@@ -194,6 +198,22 @@ type SubAgentTool struct {
 // child); in process mode Process.Model is required instead.
 func NewSubAgentTool(spec SubAgentSpec) *SubAgentTool {
 	return &SubAgentTool{spec: spec}
+}
+
+// SetConfigHook installs a per-spawn mutator applied after NewRunConfig. It is
+// used by the run-assembly layer to propagate hook seams into goroutine child
+// runs so a sub-agent cannot bypass PreToolUse.
+func (t *SubAgentTool) SetConfigHook(fn func(*RunConfig)) {
+	t.configHook = fn
+}
+
+// ApplyConfigHook applies the installed per-spawn mutator to a freshly built
+// child RunConfig. executeGoroutine calls it before starting the child loop;
+// the run-assembly layer uses it to verify hook propagation in tests.
+func (t *SubAgentTool) ApplyConfigHook(cfg *RunConfig) {
+	if t.configHook != nil {
+		t.configHook(cfg)
+	}
 }
 
 func (t *SubAgentTool) Name() string { return t.spec.Name }
@@ -272,6 +292,7 @@ func (t *SubAgentTool) executeGoroutine(ctx context.Context, id, prompt, descrip
 		}
 	}
 	runCfg := t.spec.NewRunConfig()
+	t.ApplyConfigHook(&runCfg)
 	// Advertise the child's tools to the model. A spec may pin an explicit set
 	// (spec.Tools); otherwise fall back to the run config's registry — the tools
 	// the executor can actually run — so a factory that wires only the registry

@@ -87,6 +87,11 @@ func (r *RuntimeRunner) Run(ctx context.Context, prompt string, images []agentco
 			ToolExecutorConfig: agenttool.ToolExecutorConfig{Registry: reg, BeforeToolCall: beforeToolCall},
 		},
 	}
+	if hooks.InstallSeams != nil {
+		if err := hooks.InstallSeams(&cfg); err != nil {
+			return nil, nil, err
+		}
+	}
 	if hooks.Steering != nil {
 		cfg.GetSteeringMessages = hooks.Steering
 	}

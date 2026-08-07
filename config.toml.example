@@ -2,17 +2,24 @@
 # Copy this file to ~/.config/pigo/config.toml and fill in your own values.
 # https://github.com/smallnest/pigo
 
-# Provider base URL (overrides the provider's default endpoint).
-# Leave unset to use the selected provider's built-in default.
-# base_url = "https://api.anthropic.com/v1"
+# Default model to use. It must match a [[models]] entry below by
+# "provider/model_id".
+model = "openrouter/free"
 
-# Default model to use.
-model = "claude-opus-4-8"
-
-# API key for authentication.
-# Prefer supplying this via the <PROVIDER>_API_KEY environment variable
-# (e.g. ANTHROPIC_API_KEY) instead of committing it to a config file.
+# Configured model entries: each carries its own endpoint, credential,
+# protocol, and runtime metadata. The default model above selects one entry.
+#
+# [[models]]
+# provider = "openrouter"
+# model_id = "free"
+# name = "OpenRouter Free"
+# base_url = "https://openrouter.ai/api/v1"
 # api_key = "your-api-key-here"
+# protocol = "openai"
+# context_window = 128000
+# max_tokens = 8192
+# thinking_levels = ["off", "low", "medium", "high"]
+# supports_images = false
 
 # Output format: text | stream-json
 output_format = "text"
@@ -23,11 +30,28 @@ approve = false
 # Disable the built-in file/shell tools.
 no_tools = false
 
+# Tool-level admission control (the middle ground between "all tools" and
+# no_tools). Names match case-insensitively, so "Read" hits the built-in "read".
+# disallowed_tools wins when a name appears in both lists (fail-closed).
+#
+# A boundary declared here is a HARD boundary: filtering happens at the tool-
+# registration layer, so `approve = true` waives per-call confirmation but can
+# never let the model reach a tool outside the boundary. Task sub-agents inherit
+# it too. An unknown tool name aborts startup with exit code 2 rather than being
+# silently ignored.
+#
+# Each CLI flag REPLACES its own file value wholesale (it does not merge):
+# --allowed-tools overrides allowed_tools, --disallowed-tools overrides
+# disallowed_tools, independently. So a CLI --allowed-tools can widen what
+# allowed_tools narrowed. Note the two lists stay independent and deny still
+# wins: a file-level disallowed_tools is NOT lifted by a CLI --allowed-tools —
+# to re-admit a tool the file denied, override --disallowed-tools on the CLI.
+# Parameter-level forms such as Bash(git log:*) are not supported yet.
+# allowed_tools = ["read", "grep"]
+# disallowed_tools = ["bash", "bash_output", "kill_bash"]
+
 # Disable skill discovery (do not load skills under ~/.agents/skills as /skill-name commands).
 no_skills = false
-
-# Force wire protocol for a custom endpoint: openai | anthropic
-# protocol = "anthropic"
 
 # Run in headless print mode with the given prompt.
 # print = ""
