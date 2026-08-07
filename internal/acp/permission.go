@@ -39,16 +39,21 @@ func NewACPPermissionBroker(transport Transport, mgr *trust.Manager, cwd string,
 	return &ACPPermissionBroker{transport: transport, trust: mgr, cwd: cwd, timeout: timeout}
 }
 
-// BeforeToolCall returns the per-session tool gating hook.
-func (b *ACPPermissionBroker) BeforeToolCall(sessionID string) agentcore.BeforeToolCallFunc {
+// BeforeToolCall returns the per-session tool gating hook for cwd. Sessions
+// may target different workspaces, so trust and permission decisions are made
+// against the session's own directory rather than the server startup cwd.
+func (b *ACPPermissionBroker) BeforeToolCall(sessionID, cwd string) agentcore.BeforeToolCallFunc {
 	if b.trust == nil {
 		return nil
+	}
+	if cwd == "" {
+		cwd = b.cwd
 	}
 	return func(ctx context.Context, call agentcore.AgentToolCall) *agentcore.BeforeToolCallDecision {
 		if !trust.SideEffectTools[call.Name] {
 			return nil
 		}
-		if b.trust.IsTrusted(b.cwd) {
+		if b.trust.IsTrusted(cwd) {
 			return nil
 		}
 		if b.remoteConfirm != nil {
@@ -57,7 +62,7 @@ func (b *ACPPermissionBroker) BeforeToolCall(sessionID string) agentcore.BeforeT
 					return blockDecision(fmt.Sprintf("tool %q blocked by remote decision", call.Name))
 				}
 				if always {
-					b.trust.SetSessionTrust(b.cwd)
+					b.trust.SetSessionTrust(cwd)
 				}
 				return nil
 			}
@@ -70,13 +75,13 @@ func (b *ACPPermissionBroker) BeforeToolCall(sessionID string) agentcore.BeforeT
 		case permissionAllowOnce:
 			return nil
 		case permissionAllowAlways:
-			b.trust.SetSessionTrust(b.cwd)
+			b.trust.SetSessionTrust(cwd)
 			return nil
 		case permissionRejectAlways:
-			_ = b.trust.SetDecision(b.cwd, trust.Untrusted)
-			return blockDecision(fmt.Sprintf("tool %q blocked: %s is untrusted", call.Name, b.cwd))
+			_ = b.trust.SetDecision(cwd, trust.Untrusted)
+			return blockDecision(fmt.Sprintf("tool %q blocked: %s is untrusted", call.Name, cwd))
 		default:
-			return blockDecision(fmt.Sprintf("tool %q blocked: %s is not trusted", call.Name, b.cwd))
+			return blockDecision(fmt.Sprintf("tool %q blocked: %s is not trusted", call.Name, cwd))
 		}
 	}
 }

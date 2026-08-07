@@ -323,6 +323,8 @@ func dispatch(ctx context.Context, opts cliOptions, out, errOut io.Writer) int {
 			ThinkingLevel:      thinking,
 			NoTools:            opts.noTools,
 			NoSkills:           opts.noSkills,
+			AllowedTools:       opts.allowedTools,
+			DisallowedTools:    opts.disallowedTools,
 			SystemPrompt:       opts.systemPrompt,
 			AppendSystemPrompt: opts.appendSystemPrompt,
 			Approve:            opts.approve,

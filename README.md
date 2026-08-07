@@ -317,6 +317,27 @@ allowed_tools = ["read", "grep"]
 disallowed_tools = ["bash"]
 ```
 
+### ACP 客户端
+
+`--acp` 模式与 TUI/headless 共享同一套 pigo 侧策略：
+
+- `config.toml` 的 `allowed_tools` / `disallowed_tools` 和 CLI `--allowed-tools` / `--disallowed-tools` 对 ACP 会话生效；被过滤的工具不会出现在模型工具集中。
+- 命令级控制复用 `PreToolUse` hooks。hooks 按 `session/new` 的 cwd 逐会话解析：全局 hooks 始终加载，项目 hooks 仅当该目录受信任时加载。
+- hooks 先于 ACP permission 确认执行；被 hook 拦截的调用不会向客户端发起 permission 请求，原因以工具错误结果返回。
+- `task` 子 Agent 继承同一 hooks 边界，不能通过子 Agent 绕过命令级策略。
+- 可直接复制的示例见 `scripts/hooks/block-dangerous-commands.sh`。
+- pigo 默认不内置强制 deny 规则，示例脚本只是模板；hook 配置解析失败会让该轮失败（fail-closed），不会静默禁用边界。
+
+Zed 的 `agent_servers.pigo` 中可把工具策略放进 args：
+
+```json
+"pigo": {
+  "type": "custom",
+  "command": "E:/project/pigo/pigo.exe",
+  "args": ["--acp", "--allowed-tools", "read,grep", "--disallowed-tools", "bash"]
+}
+```
+
 ---
 
 ## 运行模式

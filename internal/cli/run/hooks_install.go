@@ -81,13 +81,48 @@ func BuildDispatcher(set hooks.HookSet, deps HookDeps) *hooks.Dispatcher {
 // onto the loop's natural-end seam (FR-10), bounded by the decorator's
 // consecutive-block counter (FR-12).
 func InstallSeams(cfg *runtime.RunConfig, d *hooks.Dispatcher, deps HookDeps) {
+	installSeams(cfg, d, deps, false)
+}
+
+// InstallSeamsBefore is the ACP variant: user hooks run before the existing
+// BeforeToolCall seam (the ACP permission broker), so a policy block never
+// prompts the client. Trust-derived hooks still short-circuit first.
+func InstallSeamsBefore(cfg *runtime.RunConfig, d *hooks.Dispatcher, deps HookDeps) {
+	installSeams(cfg, d, deps, true)
+}
+
+func installSeams(cfg *runtime.RunConfig, d *hooks.Dispatcher, deps HookDeps, before bool) {
 	if d == nil {
 		return
 	}
 	tec := &cfg.Batch.ToolExecutorConfig
-	tec.BeforeToolCall = chainBeforeToolCall(tec.BeforeToolCall, preToolCallHook(d, deps))
+	if before {
+		tec.BeforeToolCall = chainBeforeToolCall(preToolCallHook(d, deps), tec.BeforeToolCall)
+	} else {
+		tec.BeforeToolCall = chainBeforeToolCall(tec.BeforeToolCall, preToolCallHook(d, deps))
+	}
 	tec.AfterToolCall = chainAfterToolCall(tec.AfterToolCall, postToolCallHook(d, deps))
 	installStopHook(cfg, d, deps, "Stop")
+	installSubagentConfigHooks(cfg, d, deps, before)
+}
+
+// installSubagentConfigHooks propagates the resolved hook seams to goroutine
+// sub-agent tools in the registry so a child cannot bypass PreToolUse.
+func installSubagentConfigHooks(cfg *runtime.RunConfig, d *hooks.Dispatcher, deps HookDeps, before bool) {
+	if d == nil {
+		return
+	}
+	reg := cfg.Batch.ToolExecutorConfig.Registry
+	if reg == nil {
+		return
+	}
+	for _, tool := range reg.List() {
+		if st, ok := tool.(*runtime.SubAgentTool); ok {
+			st.SetConfigHook(func(child *runtime.RunConfig) {
+				installSeams(child, d, deps, before)
+			})
+		}
+	}
 }
 
 // preToolCallHook adapts the dispatcher's PreToolUse event to the BeforeToolCall

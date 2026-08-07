@@ -75,4 +75,12 @@ Zed 通过 `agent_servers.pigo` 使用 pigo：
 }
 ```
 
+## ACP 工具策略与 hooks
+
+- `--acp` 模式与 TUI/headless 共享 pigo 侧策略：`config.toml` 的 `allowed_tools` / `disallowed_tools` 与 CLI `--allowed-tools` / `--disallowed-tools` 对 ACP 会话生效。
+- 命令级控制通过 `PreToolUse` hooks 实现；hooks 按会话 cwd 解析，项目 hooks 仅在目录受信任时加载，全局 hooks 始终加载。
+- hooks 先于 ACP permission 确认；被拦截的调用不发起 permission 请求，原因以工具错误结果返回。
+- `task` 子 Agent 继承 hooks 边界。示例见 `scripts/hooks/block-dangerous-commands.sh`。
+- pigo 默认不内置强制 deny 规则；hook 配置解析失败按 fail-closed 处理，不会静默禁用边界。
+
 修改 Zed 配置后重启 Zed（或重新加载配置），即可在 agent 列表中选择 pigo。

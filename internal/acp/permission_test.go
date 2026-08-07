@@ -76,7 +76,7 @@ func TestPermissionAllowOnce(t *testing.T) {
 	m, mgr, cwd := newPermissionTest(t)
 	respond(m, "allow_once")
 	broker := NewACPPermissionBroker(m, mgr, cwd, 0)
-	dec := broker.BeforeToolCall("s1")(context.Background(), bashCall())
+	dec := broker.BeforeToolCall("s1", cwd)(context.Background(), bashCall())
 	if dec != nil {
 		t.Fatalf("allow once blocked: %+v", dec)
 	}
@@ -90,7 +90,7 @@ func TestPermissionAllowAlways(t *testing.T) {
 	m, mgr, cwd := newPermissionTest(t)
 	respond(m, "allow_always")
 	broker := NewACPPermissionBroker(m, mgr, cwd, 0)
-	hook := broker.BeforeToolCall("s1")
+	hook := broker.BeforeToolCall("s1", cwd)
 	if dec := hook(context.Background(), bashCall()); dec != nil {
 		t.Fatalf("allow always blocked: %+v", dec)
 	}
@@ -112,7 +112,7 @@ func TestPermissionRejectOnce(t *testing.T) {
 	m, mgr, cwd := newPermissionTest(t)
 	respond(m, "reject_once")
 	broker := NewACPPermissionBroker(m, mgr, cwd, 0)
-	dec := broker.BeforeToolCall("s1")(context.Background(), bashCall())
+	dec := broker.BeforeToolCall("s1", cwd)(context.Background(), bashCall())
 	if dec == nil || !dec.Block {
 		t.Fatalf("reject once did not block: %+v", dec)
 	}
@@ -125,7 +125,7 @@ func TestPermissionRejectAlways(t *testing.T) {
 	m, mgr, cwd := newPermissionTest(t)
 	respond(m, "reject_always")
 	broker := NewACPPermissionBroker(m, mgr, cwd, 0)
-	dec := broker.BeforeToolCall("s1")(context.Background(), bashCall())
+	dec := broker.BeforeToolCall("s1", cwd)(context.Background(), bashCall())
 	if dec == nil || !dec.Block {
 		t.Fatalf("reject always did not block: %+v", dec)
 	}
@@ -141,7 +141,7 @@ func TestPermissionCancelledRejects(t *testing.T) {
 	m.raw = json.RawMessage(`{"outcome":{"outcome":"cancelled"}}`)
 	m.mu.Unlock()
 	broker := NewACPPermissionBroker(m, mgr, cwd, 0)
-	dec := broker.BeforeToolCall("s1")(context.Background(), bashCall())
+	dec := broker.BeforeToolCall("s1", cwd)(context.Background(), bashCall())
 	if dec == nil || !dec.Block {
 		t.Fatalf("cancelled did not block: %+v", dec)
 	}
@@ -153,7 +153,7 @@ func TestPermissionTimeoutRejects(t *testing.T) {
 	broker := NewACPPermissionBroker(m, mgr, cwd, 20*time.Millisecond)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	dec := broker.BeforeToolCall("s1")(ctx, bashCall())
+	dec := broker.BeforeToolCall("s1", cwd)(ctx, bashCall())
 	if dec == nil || !dec.Block {
 		t.Fatalf("timeout did not block: %+v", dec)
 	}
@@ -162,7 +162,7 @@ func TestPermissionTimeoutRejects(t *testing.T) {
 func TestPermissionSkipsTrustedAndReadOnlyTools(t *testing.T) {
 	m, mgr, cwd := newPermissionTest(t)
 	broker := NewACPPermissionBroker(m, mgr, cwd, 0)
-	hook := broker.BeforeToolCall("s1")
+	hook := broker.BeforeToolCall("s1", cwd)
 	if dec := hook(context.Background(), agentcore.AgentToolCall{ID: "c", Name: "read"}); dec != nil {
 		t.Fatalf("read tool blocked: %+v", dec)
 	}
@@ -184,7 +184,7 @@ func TestPermissionRequestParamsShape(t *testing.T) {
 	m, mgr, cwd := newPermissionTest(t)
 	respond(m, "allow_once")
 	broker := NewACPPermissionBroker(m, mgr, cwd, 0)
-	_ = broker.BeforeToolCall("s1")(context.Background(), bashCall())
+	_ = broker.BeforeToolCall("s1", cwd)(context.Background(), bashCall())
 	m.mu.Lock()
 	raw := append(json.RawMessage{}, m.lastParams...)
 	m.mu.Unlock()
@@ -216,7 +216,7 @@ func TestPermissionRemoteConfirm(t *testing.T) {
 	broker.SetRemoteConfirm(func(tool, summary string) (allow, always bool, ok bool) {
 		return true, true, true
 	})
-	hook := broker.BeforeToolCall("s1")
+	hook := broker.BeforeToolCall("s1", cwd)
 	if dec := hook(context.Background(), bashCall()); dec != nil {
 		t.Fatalf("remote approved but blocked: %+v", dec)
 	}
@@ -236,5 +236,40 @@ func TestPermissionRemoteConfirm(t *testing.T) {
 	mgr.ClearSessionTrust(cwd)
 	if dec := hook(context.Background(), bashCall()); dec == nil || !dec.Block {
 		t.Fatalf("remote rejection did not block: %+v", dec)
+	}
+}
+
+// TestPermissionTrustScopedToSessionCwd verifies trust and permission decisions
+// follow the session workspace instead of the server startup directory.
+func TestPermissionTrustScopedToSessionCwd(t *testing.T) {
+	m, mgr, startupCwd := newPermissionTest(t)
+	if err := mgr.SetDecision(startupCwd, trust.Trusted); err != nil {
+		t.Fatal(err)
+	}
+	broker := NewACPPermissionBroker(m, mgr, startupCwd, 0)
+	otherCwd := filepath.Join(t.TempDir(), "other-project")
+
+	respond(m, "allow_once")
+	hook := broker.BeforeToolCall("s1", otherCwd)
+	if dec := hook(context.Background(), bashCall()); dec != nil {
+		t.Fatalf("session cwd should prompt and allow once, got block: %+v", dec)
+	}
+	if mgr.IsTrusted(otherCwd) {
+		t.Fatal("allow once must not persist trust for the session cwd")
+	}
+	if !mgr.IsTrusted(startupCwd) {
+		t.Fatal("startup cwd trust must remain untouched")
+	}
+
+	mgr.ClearSessionTrust(otherCwd)
+	respond(m, "allow_always")
+	if dec := hook(context.Background(), bashCall()); dec != nil {
+		t.Fatalf("allow always blocked: %+v", dec)
+	}
+	if !mgr.IsTrusted(otherCwd) {
+		t.Fatal("allow always must persist trust for the session cwd")
+	}
+	if !mgr.IsTrusted(startupCwd) {
+		t.Fatal("allow always must not touch the startup cwd")
 	}
 }

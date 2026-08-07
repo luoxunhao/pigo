@@ -13,6 +13,7 @@ import (
 
 	"github.com/smallnest/pigo/internal/acp"
 	"github.com/smallnest/pigo/internal/cli/headless"
+	"github.com/smallnest/pigo/internal/cli/run"
 	"github.com/smallnest/pigo/internal/sessionstore"
 	"github.com/smallnest/pigo/internal/trust"
 )
@@ -59,7 +60,7 @@ func RunACP(opts Options) error {
 		APIKey:        opts.APIKey,
 		ThinkingLevel: opts.ThinkingLevel,
 	}
-	client, stop := acp.StartInProcess(runner, home, opts.Model, opts.SysPrompt, cwd, mgr, dreamCfg)
+	client, stop := acp.StartInProcessWithHooks(runner, home, opts.Model, opts.SysPrompt, cwd, mgr, dreamCfg, run.SessionHookSeam())
 	defer stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

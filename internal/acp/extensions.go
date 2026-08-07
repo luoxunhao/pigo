@@ -605,7 +605,7 @@ func cmdBtw(ctx context.Context, d *Dispatcher, sess *AcpSession, args string) (
 		return "usage: /btw <prompt>", nil
 	}
 	history := append(agentcore.MessageList{}, sess.Messages...)
-	_, last, err := d.runner.Run(ctx, prompt, nil, history, sess.Header.SystemPrompt, sess.Model, sess.Thinking, nil, nil, TurnHooks{})
+	_, last, err := d.runner.Run(ctx, prompt, nil, history, sess.Header.SystemPrompt, sess.Model, sess.Thinking, nil, nil, d.turnHooks(sess))
 	if err != nil {
 		return "", NewError(CodeInternalError, err.Error())
 	}

@@ -24,12 +24,17 @@ func memoryStoreFromTools(tools []agentcore.AgentTool) *memory.Store {
 // used by the in-process TUI path and the stdio server so both frontends see
 // the same behavior.
 func newDispatcher(runner SessionRunner, transport Transport, pigoHome, model, sysPrompt, cwd string, mgr *trust.Manager, dreamCfg *DreamConfig) *Dispatcher {
+	return newDispatcherWithHooks(runner, transport, pigoHome, model, sysPrompt, cwd, mgr, dreamCfg, nil)
+}
+
+func newDispatcherWithHooks(runner SessionRunner, transport Transport, pigoHome, model, sysPrompt, cwd string, mgr *trust.Manager, dreamCfg *DreamConfig, hookSeam HookSeamFunc) *Dispatcher {
 	broker := NewACPPermissionBroker(transport, mgr, cwd, 0)
 	var snap *agenttool.FileSnapshotRecorder
 	if rr, ok := runner.(*RuntimeRunner); ok {
 		snap = rr.snapshotRecorder()
 	}
 	disp := NewDispatcher(NewSessionManager(runner), transport, pigoHome, model, sysPrompt, broker, snap)
+	disp.SetHookSeam(hookSeam)
 	disp.SetCwd(cwd)
 	disp.SetRunner(runner)
 	disp.SetDreamConfig(dreamCfg)
@@ -61,8 +66,14 @@ func newDispatcher(runner SessionRunner, transport Transport, pigoHome, model, s
 // function. It is the seam the TUI (and later the REPL) uses to talk to the
 // agent core through ACP without spawning a subprocess.
 func StartInProcess(runner SessionRunner, pigoHome, model, sysPrompt, cwd string, mgr *trust.Manager, dreamCfg *DreamConfig) (*Client, func()) {
+	return StartInProcessWithHooks(runner, pigoHome, model, sysPrompt, cwd, mgr, dreamCfg, nil)
+}
+
+// StartInProcessWithHooks is StartInProcess with a per-session hook seam for
+// tests and embedded drivers that want command-level policy enforcement.
+func StartInProcessWithHooks(runner SessionRunner, pigoHome, model, sysPrompt, cwd string, mgr *trust.Manager, dreamCfg *DreamConfig, hookSeam HookSeamFunc) (*Client, func()) {
 	clientT, serverT := NewChannelPair()
-	disp := newDispatcher(runner, serverT, pigoHome, model, sysPrompt, cwd, mgr, dreamCfg)
+	disp := newDispatcherWithHooks(runner, serverT, pigoHome, model, sysPrompt, cwd, mgr, dreamCfg, hookSeam)
 	srv := NewServer(serverT, disp)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {

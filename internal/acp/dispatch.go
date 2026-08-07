@@ -43,6 +43,7 @@ type Dispatcher struct {
 	registry        *runtime.SlashRegistry
 	credStore       *provider.CredentialStore
 	models          *ConfiguredModels
+	hookSeam        HookSeamFunc
 	lastSessionCwd  string
 	cwd             string
 	runMu           map[string]*sync.Mutex
@@ -76,6 +77,10 @@ func NewDispatcher(manager *SessionManager, transport Transport, pigoHome, model
 // SetCredentialStore wires the credential store used to decide which preset
 // providers appear in ACP model options.
 func (d *Dispatcher) SetCredentialStore(store *provider.CredentialStore) { d.credStore = store }
+
+// SetHookSeam wires the per-session hook installer supplied by the CLI entry
+// point. It is invoked for every turn with the live session id and workspace.
+func (d *Dispatcher) SetHookSeam(fn HookSeamFunc) { d.hookSeam = fn }
 
 // SetProviderName wires the startup resolved provider name used to keep the
 // current model visible even when it is not part of the curated preset catalog.
@@ -183,9 +188,9 @@ func (d *Dispatcher) runRemotePrompt(sessionID, text string) {
 			return
 		}
 	}
-	hook := d.beforeToolCall(sessionID)
+	hook := d.beforeToolCall(sess)
 	onEvent := d.eventSink(sessionID)
-	_, _ = d.manager.Run(context.Background(), sess, p.text, nil, hook, onEvent, TurnHooks{})
+	_, _ = d.manager.Run(context.Background(), sess, p.text, nil, hook, onEvent, d.turnHooks(sess))
 }
 
 func (d *Dispatcher) lockFor(sessionID string) *sync.Mutex {
@@ -198,11 +203,25 @@ func (d *Dispatcher) lockFor(sessionID string) *sync.Mutex {
 	return mu
 }
 
-func (d *Dispatcher) beforeToolCall(sessionID string) agentcore.BeforeToolCallFunc {
-	if d.broker != nil {
-		return d.broker.BeforeToolCall(sessionID)
+func (d *Dispatcher) beforeToolCall(sess *AcpSession) agentcore.BeforeToolCallFunc {
+	if d.broker != nil && sess != nil {
+		return d.broker.BeforeToolCall(sess.ID, sess.Cwd)
 	}
 	return nil
+}
+
+// turnHooks builds the per-turn hooks for a session. The hook seam is bound to
+// the session id and workspace so RuntimeRunner can install it into each
+// freshly built RunConfig without knowing session details.
+func (d *Dispatcher) turnHooks(sess *AcpSession) TurnHooks {
+	if d.hookSeam == nil || sess == nil {
+		return TurnHooks{}
+	}
+	return TurnHooks{
+		InstallSeams: func(cfg *runtime.RunConfig) error {
+			return d.hookSeam(cfg, sess.ID, sess.Cwd)
+		},
+	}
 }
 
 func (d *Dispatcher) eventSink(sessionID string) func(agentcore.AgentEvent) {
@@ -662,7 +681,7 @@ func (d *Dispatcher) runPrompt(ctx context.Context, id RequestID, params json.Ra
 		}
 	}
 
-	last, err := d.manager.Run(ctx, sess, p.text, p.images, d.beforeToolCall(sessionID), d.eventSink(sessionID), TurnHooks{})
+	last, err := d.manager.Run(ctx, sess, p.text, p.images, d.beforeToolCall(sess), d.eventSink(sessionID), d.turnHooks(sess))
 	if err != nil {
 		if err == ErrTurnCancelled {
 			_ = d.transport.SendResponse(ctx, id, map[string]any{"stopReason": "cancelled"}, nil)

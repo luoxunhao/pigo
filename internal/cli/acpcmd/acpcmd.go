@@ -34,6 +34,8 @@ type Options struct {
 	ThinkingLevel      agentcore.ThinkingLevel
 	NoTools            bool
 	NoSkills           bool
+	AllowedTools       []string
+	DisallowedTools    []string
 	SystemPrompt       string
 	AppendSystemPrompt []string
 	Approve            bool
@@ -47,7 +49,7 @@ type Options struct {
 // returns a process exit code: 0 for a clean close, 1 for startup or protocol
 // failures.
 func Run(ctx context.Context, opts Options, stdin io.Reader, stdout, stderr io.Writer) int {
-	env, err := run.SetupEnv(opts.Model, opts.BaseURL, opts.Protocol, opts.ProviderName, opts.APIKey, opts.NoTools, opts.NoSkills, opts.SystemPrompt, opts.AppendSystemPrompt, opts.MemoryEnabled, run.ToolPolicy{})
+	env, err := setupEnv(opts)
 	if err != nil {
 		fmt.Fprintf(stderr, "pigo acp: %v\n", err)
 		return 1
@@ -126,7 +128,7 @@ func Run(ctx context.Context, opts Options, stdin io.Reader, stdout, stderr io.W
 		}
 	}
 
-	if err := acp.ServeStdioWithRegistry(ctx, runner, home, opts.Model, env.SysPrompt, cwd, mgr, dreamCfg, reg, stdin, stdout); err != nil {
+	if err := acp.ServeStdioWithRegistry(ctx, runner, home, opts.Model, env.SysPrompt, cwd, mgr, dreamCfg, reg, run.SessionHookSeam(), stdin, stdout); err != nil {
 		if err == acp.ErrClosed {
 			return 0
 		}
@@ -134,4 +136,10 @@ func Run(ctx context.Context, opts Options, stdin io.Reader, stdout, stderr io.W
 		return 1
 	}
 	return 0
+}
+
+// setupEnv resolves the ACP run environment from Options. It is split out so
+// tests can verify tool-policy plumbing without starting a stdio server.
+func setupEnv(opts Options) (run.Env, error) {
+	return run.SetupEnv(opts.Model, opts.BaseURL, opts.Protocol, opts.ProviderName, opts.APIKey, opts.NoTools, opts.NoSkills, opts.SystemPrompt, opts.AppendSystemPrompt, opts.MemoryEnabled, run.NewToolPolicy(opts.AllowedTools, opts.DisallowedTools))
 }
