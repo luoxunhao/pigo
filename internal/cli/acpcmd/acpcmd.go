@@ -47,7 +47,7 @@ type Options struct {
 // returns a process exit code: 0 for a clean close, 1 for startup or protocol
 // failures.
 func Run(ctx context.Context, opts Options, stdin io.Reader, stdout, stderr io.Writer) int {
-	env, err := run.SetupEnv(opts.Model, opts.BaseURL, opts.Protocol, opts.ProviderName, opts.APIKey, opts.NoTools, opts.NoSkills, opts.SystemPrompt, opts.AppendSystemPrompt, opts.MemoryEnabled)
+	env, err := run.SetupEnv(opts.Model, opts.BaseURL, opts.Protocol, opts.ProviderName, opts.APIKey, opts.NoTools, opts.NoSkills, opts.SystemPrompt, opts.AppendSystemPrompt, opts.MemoryEnabled, run.ToolPolicy{})
 	if err != nil {
 		fmt.Fprintf(stderr, "pigo acp: %v\n", err)
 		return 1
