@@ -70,7 +70,7 @@ func (d *Dispatcher) pigoStatus(params json.RawMessage) (any, *Error) {
 
 // pigoModels returns the current model plus the configured model list with
 // runtime metadata. It never consults PresetCatalog or a provider registry.
-func (d *Dispatcher) pigoModels(params json.RawMessage) (any, *Error) {
+func (d *Dispatcher) pigoModels(_ json.RawMessage) (any, *Error) {
 	configured := d.configuredModelList()
 	models := make([]map[string]any, 0, len(configured))
 	for _, m := range configured {
@@ -242,7 +242,7 @@ func (d *Dispatcher) generateTitle(sess *AcpSession, firstPrompt string) {
 		return
 	}
 	meta, err := sess.Store.LoadMetadata(sess.ID)
-	if err != nil || meta.SessionName != "Session" {
+	if err != nil || (meta.SessionName != "" && meta.SessionName != "Session") {
 		return
 	}
 	rr, ok := d.runner.(*RuntimeRunner)
@@ -280,8 +280,19 @@ func (d *Dispatcher) generateTitle(sess *AcpSession, firstPrompt string) {
 	if title == "" {
 		return
 	}
+	meta, err = sess.Store.LoadMetadata(sess.ID)
+	if err != nil || (meta.SessionName != "" && meta.SessionName != "Session") {
+		return
+	}
 	meta.SessionName = title
-	_ = sess.Store.SaveMetadata(meta)
+	if err := sess.Store.SaveMetadata(meta); err != nil {
+		return
+	}
+	d.sendSessionUpdate(sess.ID, map[string]any{
+		"sessionUpdate": "session_info_update",
+		"title":         title,
+		"updatedAt":     time.Now().UTC().Format(time.RFC3339),
+	})
 }
 
 // applyAdditionalDirectories merges workspace-level extra roots into the file
