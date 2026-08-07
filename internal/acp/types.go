@@ -48,6 +48,7 @@ const (
 	MethodPigoModels         = "pigo/models"
 	MethodPigoModelsDiscover = "pigo/models/discover"
 	MethodPigoConfig         = "pigo/config"
+	MethodPigoConfigTest     = "pigo/config/test"
 	MethodPigoMessages       = "pigo/messages"
 	MethodPigoRewind         = "pigo/rewind"
 	MethodPigoFork           = "pigo/fork"

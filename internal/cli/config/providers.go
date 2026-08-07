@@ -19,10 +19,15 @@ type ModelConfig struct {
 	MaxTokens      int      `toml:"max_tokens" json:"maxTokens,omitempty"`
 	ThinkingLevels []string `toml:"thinking_levels" json:"thinkingLevels,omitempty"`
 	SupportsImages bool     `toml:"supports_images" json:"supportsImages,omitempty"`
+	Enabled        *bool    `toml:"enabled" json:"enabled,omitempty"`
 }
 
 // Key returns the configured model identity "provider/model_id".
 func (m ModelConfig) Key() string { return m.Provider + "/" + m.ModelID }
+
+// IsEnabled reports whether the model may appear in session model menus. A
+// missing value means enabled for backward compatibility.
+func (m ModelConfig) IsEnabled() bool { return m.Enabled == nil || *m.Enabled }
 
 // MarshalJSON omits the API key so no response path can accidentally echo it.
 func (m ModelConfig) MarshalJSON() ([]byte, error) {
@@ -36,6 +41,7 @@ func (m ModelConfig) MarshalJSON() ([]byte, error) {
 		MaxTokens      int      `json:"maxTokens,omitempty"`
 		ThinkingLevels []string `json:"thinkingLevels,omitempty"`
 		SupportsImages bool     `json:"supportsImages,omitempty"`
+		Enabled        *bool    `json:"enabled,omitempty"`
 	}{
 		Provider:       m.Provider,
 		ModelID:        m.ModelID,
@@ -46,6 +52,7 @@ func (m ModelConfig) MarshalJSON() ([]byte, error) {
 		MaxTokens:      m.MaxTokens,
 		ThinkingLevels: m.ThinkingLevels,
 		SupportsImages: m.SupportsImages,
+		Enabled:        m.Enabled,
 	})
 }
 

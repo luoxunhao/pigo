@@ -259,6 +259,8 @@ func (d *Dispatcher) HandleRequest(ctx context.Context, id RequestID, method str
 		return d.pigoModelsDiscover(params)
 	case MethodPigoConfig:
 		return d.pigoConfig(params)
+	case MethodPigoConfigTest:
+		return d.pigoConfigTest(params)
 	case MethodPigoMessages:
 		return d.pigoMessages(params)
 	case MethodPigoRewind, MethodPigoFork, MethodPigoTree, MethodPigoGoal, MethodPigoBtw, MethodPigoDream, MethodPigoRemoteControl:

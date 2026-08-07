@@ -82,6 +82,7 @@ func (d *Dispatcher) pigoModels(_ json.RawMessage) (any, *Error) {
 			"maxTokens":      m.MaxTokens,
 			"thinkingLevels": m.ThinkingLevels,
 			"supportsImages": m.SupportsImages,
+			"enabled":        m.IsEnabled(),
 		})
 	}
 	return map[string]any{
@@ -177,6 +178,88 @@ func configuredModelResponse(m config.ModelConfig) map[string]any {
 		"maxTokens":        m.MaxTokens,
 		"thinkingLevels":   m.ThinkingLevels,
 		"supportsImages":   m.SupportsImages,
+		"enabled":          m.IsEnabled(),
+	}
+}
+
+// pigoConfigTest sends a minimal completion request for a configured model.
+// The API key stays inside pigo and is never accepted or returned.
+func (d *Dispatcher) pigoConfigTest(params json.RawMessage) (any, *Error) {
+	var req struct {
+		ModelID string `json:"modelId"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil || strings.TrimSpace(req.ModelID) == "" {
+		return nil, NewError(CodeInvalidParams, "missing modelId")
+	}
+	if d.models == nil {
+		return nil, NewError(CodeInternalError, "configured model store is not available")
+	}
+	modelID := strings.TrimSpace(req.ModelID)
+	entry, ok := d.models.Find(modelID)
+	if !ok {
+		return configTestFailure(0, "unknown modelId: "+modelID), nil
+	}
+	protocol, err := normalizeCustomProtocol(entry.Protocol)
+	if err != nil {
+		return configTestFailure(0, err.Error()), nil
+	}
+	prov, err := provider.ResolveConfiguredProvider(entry.Provider, entry.BaseURL, protocol, []provider.Model{
+		{Provider: entry.Provider, ID: entry.ModelID, DisplayName: entry.Name},
+	})
+	if err != nil {
+		return configTestFailure(0, err.Error()), nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	start := time.Now()
+	stream, err := provider.StreamFnFromProvider(prov)(ctx, entry.ModelID, provider.LlmContext{
+		SystemPrompt: "Reply with exactly: pong",
+		Messages: agentcore.MessageList{
+			agentcore.UserMessage{
+				RoleField: agentcore.RoleUser,
+				Content:   agentcore.ContentList{agentcore.NewTextContent("ping")},
+			},
+		},
+	}, provider.StreamConfig{APIKey: entry.APIKey, ThinkingLevel: agentcore.ThinkingOff})
+	if err != nil {
+		return configTestFailure(time.Since(start).Milliseconds(), err.Error()), nil
+	}
+
+	responseText := ""
+	for ev := range stream.Events() {
+		switch e := ev.(type) {
+		case provider.StreamTextEvent:
+			responseText = agentcore.ContentToText(e.Partial.Content)
+		case provider.StreamErrorEvent:
+			details := e.Message.ErrorMessage
+			if details == "" && e.Err != nil {
+				details = e.Err.Error()
+			}
+			if details == "" {
+				details = agentcore.ContentToText(e.Message.Content)
+			}
+			return configTestFailure(time.Since(start).Milliseconds(), details), nil
+		case provider.StreamDoneEvent:
+			doneText := strings.TrimSpace(agentcore.ContentToText(e.Message.Content))
+			if doneText == "" {
+				doneText = strings.TrimSpace(responseText)
+			}
+			return map[string]any{
+				"success":          true,
+				"response_time_ms": time.Since(start).Milliseconds(),
+				"model_response":   doneText,
+			}, nil
+		}
+	}
+	return configTestFailure(time.Since(start).Milliseconds(), "stream ended without a response"), nil
+}
+
+func configTestFailure(responseTimeMs int64, details string) map[string]any {
+	return map[string]any{
+		"success":          false,
+		"response_time_ms": responseTimeMs,
+		"error_details":    details,
 	}
 }
 

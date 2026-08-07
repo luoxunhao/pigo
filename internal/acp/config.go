@@ -33,6 +33,9 @@ var thinkingModes = []map[string]any{
 func sessionModels(ctx context.Context, sess *AcpSession, models []config.ModelConfig) map[string]any {
 	available := make([]map[string]any, 0, len(models))
 	for _, m := range models {
+		if !m.IsEnabled() {
+			continue
+		}
 		available = append(available, map[string]any{
 			"modelId":        m.Key(),
 			"name":           configuredModelName(m),

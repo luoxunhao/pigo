@@ -231,6 +231,240 @@ func TestPigoConfigReadWrite(t *testing.T) {
 	}
 }
 
+func TestPigoConfigDoesNotReturnKeyToAnyClient(t *testing.T) {
+	client, server := NewChannelPair()
+	defer client.Close()
+	defer server.Close()
+	disp, _ := newTestDispatcher(t, &fakeRunner{}, server)
+	disp.SetConfiguredModels(newConfiguredModels(t, config.ModelConfig{
+		Provider: "custom-gw", ModelID: "m1", Name: "M1",
+		BaseURL: "https://gw.example/v1", Protocol: "openai", APIKey: "sk-secret",
+	}))
+	srvACP := NewServer(server, disp)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { _ = srvACP.Serve(ctx) }()
+
+	if _, err := client.SendRequest(ctx, MethodInitialize, map[string]any{
+		"protocolVersion": 1,
+		"clientCapabilities": map[string]any{},
+		"clientInfo": map[string]any{"name": "ash-workbench", "version": "0.1.0"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := client.SendRequest(ctx, MethodPigoConfig, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "sk-secret") {
+		t.Fatalf("config response leaked api key: %s", raw)
+	}
+	var resp struct {
+		Models []struct {
+			APIKeyConfigured bool `json:"apiKeyConfigured"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Models) != 1 || !resp.Models[0].APIKeyConfigured {
+		t.Fatalf("config = %+v", resp.Models)
+	}
+}
+
+func TestPigoConfigDoesNotReturnKeyToZed(t *testing.T) {
+	client, server := NewChannelPair()
+	defer client.Close()
+	defer server.Close()
+	disp, _ := newTestDispatcher(t, &fakeRunner{}, server)
+	disp.SetConfiguredModels(newConfiguredModels(t, config.ModelConfig{
+		Provider: "custom-gw", ModelID: "m1", Name: "M1",
+		BaseURL: "https://gw.example/v1", Protocol: "openai", APIKey: "sk-secret",
+	}))
+	srvACP := NewServer(server, disp)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { _ = srvACP.Serve(ctx) }()
+
+	if _, err := client.SendRequest(ctx, MethodInitialize, map[string]any{
+		"protocolVersion": 1,
+		"clientCapabilities": map[string]any{},
+		"clientInfo": map[string]any{"name": "zed", "version": "0.1.0"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := client.SendRequest(ctx, MethodPigoConfig, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "sk-secret") {
+		t.Fatalf("config response leaked api key: %s", raw)
+	}
+}
+
+func TestPigoConfigTestWire(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(customOpenAISSE))
+	}))
+	defer srv.Close()
+
+	client, server := NewChannelPair()
+	defer client.Close()
+	defer server.Close()
+	disp, _ := newTestDispatcher(t, &fakeRunner{}, server)
+	disp.SetConfiguredModels(newConfiguredModels(t, config.ModelConfig{
+		Provider: "custom-gw", ModelID: "m1", Name: "M1",
+		BaseURL: srv.URL, Protocol: "openai", APIKey: "sk-test",
+	}))
+	srvACP := NewServer(server, disp)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { _ = srvACP.Serve(ctx) }()
+
+	raw, err := client.SendRequest(ctx, MethodPigoConfigTest, map[string]any{
+		"modelId": "custom-gw/m1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp struct {
+		Success        bool   `json:"success"`
+		ResponseTimeMs int64  `json:"response_time_ms"`
+		ModelResponse  string `json:"model_response"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Success || resp.ModelResponse != "Hello" || resp.ResponseTimeMs < 0 {
+		t.Fatalf("test result = %s", raw)
+	}
+	if gotAuth != "Bearer sk-test" {
+		t.Errorf("auth = %q, want Bearer sk-test", gotAuth)
+	}
+}
+
+func TestPigoConfigTestWireError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	client, server := NewChannelPair()
+	defer client.Close()
+	defer server.Close()
+	disp, _ := newTestDispatcher(t, &fakeRunner{}, server)
+	disp.SetConfiguredModels(newConfiguredModels(t, config.ModelConfig{
+		Provider: "custom-gw", ModelID: "m1", Name: "M1",
+		BaseURL: srv.URL, Protocol: "openai", APIKey: "sk-secret",
+	}))
+	srvACP := NewServer(server, disp)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { _ = srvACP.Serve(ctx) }()
+
+	raw, err := client.SendRequest(ctx, MethodPigoConfigTest, map[string]any{
+		"modelId": "custom-gw/m1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp struct {
+		Success      bool   `json:"success"`
+		ErrorDetails string `json:"error_details"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Success || resp.ErrorDetails == "" || strings.Contains(resp.ErrorDetails, "sk-secret") {
+		t.Fatalf("error result = %s, must not leak key", raw)
+	}
+}
+
+func TestPigoConfigTestUnknownModel(t *testing.T) {
+	client, server := NewChannelPair()
+	defer client.Close()
+	defer server.Close()
+	disp, _ := newTestDispatcher(t, &fakeRunner{}, server)
+	disp.SetConfiguredModels(newConfiguredModels(t))
+	srvACP := NewServer(server, disp)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { _ = srvACP.Serve(ctx) }()
+
+	raw, err := client.SendRequest(ctx, MethodPigoConfigTest, map[string]any{
+		"modelId": "missing/model",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "unknown modelId") {
+		t.Fatalf("result = %s", raw)
+	}
+}
+
+func TestPigoConfigEnabledFilter(t *testing.T) {
+	client, server := NewChannelPair()
+	defer client.Close()
+	defer server.Close()
+	disp, _ := newTestDispatcher(t, &fakeRunner{}, server)
+	disp.SetConfiguredModels(newConfiguredModels(t))
+	srvACP := NewServer(server, disp)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { _ = srvACP.Serve(ctx) }()
+
+	if _, err := client.SendRequest(ctx, MethodPigoConfig, map[string]any{
+		"models": []map[string]any{
+			{"provider": "a", "modelId": "m1", "baseUrl": "https://a.example/v1", "protocol": "openai", "enabled": false},
+			{"provider": "a", "modelId": "m2", "baseUrl": "https://a.example/v1", "protocol": "openai"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := client.SendRequest(ctx, MethodPigoModels, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var modelsResp struct {
+		Models []struct {
+			ModelID string `json:"modelId"`
+			Enabled bool   `json:"enabled"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(raw, &modelsResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(modelsResp.Models) != 2 {
+		t.Fatalf("models = %+v", modelsResp.Models)
+	}
+	for _, m := range modelsResp.Models {
+		if m.ModelID == "m1" && m.Enabled {
+			t.Fatalf("m1 should be disabled: %+v", m)
+		}
+		if m.ModelID == "m2" && !m.Enabled {
+			t.Fatalf("m2 should be enabled: %+v", m)
+		}
+	}
+
+	ws := filepath.Join(t.TempDir(), "ws")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw, err = client.SendRequest(ctx, MethodSessionNew, map[string]any{"cwd": ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "a/m2") || strings.Contains(string(raw), "a/m1") {
+		t.Fatalf("session/new should only expose enabled models: %s", raw)
+	}
+}
+
 func TestPigoModelsFilteringIncludesCustom(t *testing.T) {
 	client, server := NewChannelPair()
 	defer client.Close()
