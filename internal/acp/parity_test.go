@@ -222,6 +222,57 @@ func TestHistoryReplayEmitsUpdates(t *testing.T) {
 	}
 }
 
+func TestHistoryReplayBashShowsCommand(t *testing.T) {
+	client, server := NewChannelPair()
+	defer client.Close()
+	defer server.Close()
+	disp := &Dispatcher{transport: server}
+	msgs, stopReader := startClientReader(t, client)
+	defer stopReader()
+
+	sess := &AcpSession{ID: "s1", Cwd: `C:\ws`, Messages: agentcore.MessageList{
+		agentcore.AssistantMessage{
+			RoleField:  agentcore.RoleAssistant,
+			Content:    agentcore.ContentList{agentcore.NewToolCallContent("c1", "bash", json.RawMessage(`{"command":"go test ./internal/acp"}`))},
+			StopReason: agentcore.StopReasonEndTurn,
+		},
+		agentcore.ToolResultMessage{
+			RoleField:  agentcore.RoleToolResult,
+			ToolCallID: "c1",
+			ToolName:   "bash",
+			Content:    agentcore.ContentList{agentcore.NewTextContent("ok github.com/smallnest/pigo/internal/acp 1.450s")},
+		},
+	}}
+	disp.replaySession(sess)
+
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case msg := <-msgs:
+			if msg.Notification == nil || msg.Notification.Method != NotificationSessionUpdate {
+				continue
+			}
+			var payload struct {
+				Update map[string]any `json:"update"`
+			}
+			if err := json.Unmarshal(msg.Notification.Params, &payload); err != nil {
+				continue
+			}
+			if payload.Update["sessionUpdate"] != "tool_call_update" {
+				continue
+			}
+			meta := payload.Update["_meta"].(map[string]any)
+			out := meta["terminal_output"].(map[string]any)
+			if out["data"] != "> go test ./internal/acp\nok github.com/smallnest/pigo/internal/acp 1.450s" {
+				t.Fatalf("terminal output = %v", out["data"])
+			}
+			return
+		case <-timeout:
+			t.Fatal("timed out waiting for bash tool replay")
+		}
+	}
+}
+
 func TestEventMapperToolLocationAndDiff(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "f.txt")

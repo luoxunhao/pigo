@@ -69,6 +69,11 @@ func TestMapToolStartEnd(t *testing.T) {
 	if s["sessionUpdate"] != "tool_call" || s["kind"] != "execute" || s["status"] != "in_progress" {
 		t.Fatalf("tool start shape = %+v", s)
 	}
+	startMeta := s["_meta"].(map[string]any)
+	info := startMeta["terminal_info"].(map[string]any)
+	if info["command"] != "echo hi" {
+		t.Fatalf("terminal info command = %v", info["command"])
+	}
 	end := m.Map("s1", agentcore.ToolExecutionEndEvent{
 		ToolCallID: "call-1",
 		ToolName:   "bash",
@@ -80,7 +85,7 @@ func TestMapToolStartEnd(t *testing.T) {
 	}
 	meta := e["_meta"].(map[string]any)
 	out := meta["terminal_output"].(map[string]any)
-	if out["data"] != "hi" {
+	if out["data"] != "> echo hi\nhi" {
 		t.Fatalf("terminal output = %v, want hi", out["data"])
 	}
 }

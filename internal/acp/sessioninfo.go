@@ -158,6 +158,7 @@ func (d *Dispatcher) announceSession(sess *AcpSession, withStartup bool) {
 }
 
 func (d *Dispatcher) replaySession(sess *AcpSession) {
+	bashCmds := map[string]string{}
 	for _, msg := range sess.Messages {
 		switch m := msg.(type) {
 		case agentcore.UserMessage:
@@ -173,7 +174,9 @@ func (d *Dispatcher) replaySession(sess *AcpSession) {
 			}
 			for _, tc := range m.ToolCalls() {
 				if isBashTool(tc.Name) {
-					d.sendSessionUpdate(sess.ID, bashToolCallStart(tc.ID, tc.Name, json.RawMessage(tc.Arguments), sess.Cwd))
+					cmd := bashCommandFromArgs(json.RawMessage(tc.Arguments))
+					bashCmds[tc.ID] = cmd
+					d.sendSessionUpdate(sess.ID, bashToolCallStart(tc.ID, tc.Name, json.RawMessage(tc.Arguments), sess.Cwd, cmd))
 					continue
 				}
 				d.sendSessionUpdate(sess.ID, map[string]any{
@@ -187,10 +190,12 @@ func (d *Dispatcher) replaySession(sess *AcpSession) {
 			}
 		case agentcore.ToolResultMessage:
 			if isBashTool(m.ToolName) {
+				cmd := bashCmds[m.ToolCallID]
+				delete(bashCmds, m.ToolCallID)
 				d.sendSessionUpdate(sess.ID, bashToolCallEnd(m.ToolCallID, m.ToolName, m.IsError, agentcore.AgentToolResult{
 					Content: m.Content,
 					Details: m.Details,
-				}, sess.Cwd))
+				}, sess.Cwd, cmd))
 				continue
 			}
 			d.sendSessionUpdate(sess.ID, map[string]any{

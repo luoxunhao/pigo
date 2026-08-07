@@ -20,6 +20,7 @@ type eventMapper struct {
 	sessions      map[string]*deltaTracker
 	fileSnapshots map[string]fileToolSnapshot
 	bashCalls     map[string]bool
+	bashCommands  map[string]string
 	cwd           string
 }
 
@@ -33,6 +34,7 @@ func newEventMapper(cwd string) *eventMapper {
 		sessions:      make(map[string]*deltaTracker),
 		fileSnapshots: make(map[string]fileToolSnapshot),
 		bashCalls:     make(map[string]bool),
+		bashCommands:  make(map[string]string),
 		cwd:           cwd,
 	}
 }
@@ -91,10 +93,12 @@ func (m *eventMapper) Map(sessionID string, ev agentcore.AgentEvent) []map[strin
 func (m *eventMapper) toolCallStart(e agentcore.ToolExecutionStartEvent) map[string]any {
 	cwd := m.cwdValue()
 	if isBashTool(e.ToolName) {
+		command := bashCommandFromArgs(e.Args)
 		m.mu.Lock()
 		m.bashCalls[e.ToolCallID] = true
+		m.bashCommands[e.ToolCallID] = command
 		m.mu.Unlock()
-		return bashToolCallStart(e.ToolCallID, e.ToolName, e.Args, cwd)
+		return bashToolCallStart(e.ToolCallID, e.ToolName, e.Args, cwd, command)
 	}
 	update := toolCallStart(e.ToolCallID, e.ToolName, e.Args)
 	path, oldText, line := m.toolFileState(e.ToolCallID, e.ToolName, e.Args, cwd)
@@ -116,13 +120,15 @@ func (m *eventMapper) toolCallStart(e agentcore.ToolExecutionStartEvent) map[str
 func (m *eventMapper) toolCallEnd(e agentcore.ToolExecutionEndEvent) map[string]any {
 	m.mu.Lock()
 	isBash := m.bashCalls[e.ToolCallID]
+	command := m.bashCommands[e.ToolCallID]
 	snap, hasSnap := m.fileSnapshots[e.ToolCallID]
 	delete(m.bashCalls, e.ToolCallID)
+	delete(m.bashCommands, e.ToolCallID)
 	delete(m.fileSnapshots, e.ToolCallID)
 	m.mu.Unlock()
 
 	if isBash {
-		return bashToolCallEnd(e.ToolCallID, e.ToolName, e.IsError, e.Result, m.cwdValue())
+		return bashToolCallEnd(e.ToolCallID, e.ToolName, e.IsError, e.Result, m.cwdValue(), command)
 	}
 	if hasSnap && !e.IsError {
 		newText, err := os.ReadFile(snap.Path)
@@ -205,7 +211,17 @@ func isBashTool(name string) bool {
 	return strings.HasPrefix(strings.ToLower(name), "bash")
 }
 
-func bashToolCallStart(id, name string, rawInput any, cwd string) map[string]any {
+func bashCommandFromArgs(raw any) string {
+	args, ok := raw.(map[string]any)
+	if !ok {
+		if b, err := json.Marshal(raw); err == nil {
+			_ = json.Unmarshal(b, &args)
+		}
+	}
+	return argString(args, "command")
+}
+
+func bashToolCallStart(id, name string, rawInput any, cwd, command string) map[string]any {
 	return map[string]any{
 		"sessionUpdate": "tool_call",
 		"toolCallId":    id,
@@ -215,15 +231,19 @@ func bashToolCallStart(id, name string, rawInput any, cwd string) map[string]any
 		"rawInput":      rawInput,
 		"content":       []map[string]any{{"type": "terminal", "terminalId": id}},
 		"_meta": map[string]any{
-			"terminal_info": map[string]any{"terminal_id": id, "cwd": cwd},
+			"terminal_info": map[string]any{"terminal_id": id, "cwd": cwd, "command": command},
 		},
 	}
 }
 
-func bashToolCallEnd(id, name string, failed bool, result agentcore.AgentToolResult, cwd string) map[string]any {
+func bashToolCallEnd(id, name string, failed bool, result agentcore.AgentToolResult, cwd, command string) map[string]any {
 	status := "completed"
 	if failed {
 		status = "failed"
+	}
+	data := toolResultText(result)
+	if command != "" {
+		data = "> " + command + "\n" + data
 	}
 	return map[string]any{
 		"sessionUpdate": "tool_call_update",
@@ -233,7 +253,7 @@ func bashToolCallEnd(id, name string, failed bool, result agentcore.AgentToolRes
 		"status":        status,
 		"content":       []map[string]any{{"type": "terminal", "terminalId": id}},
 		"_meta": map[string]any{
-			"terminal_output": map[string]any{"terminal_id": id, "data": toolResultText(result)},
+			"terminal_output": map[string]any{"terminal_id": id, "data": data},
 			"terminal_exit":   map[string]any{"terminal_id": id, "exit_code": bashExitCode(result, failed), "signal": nil},
 		},
 	}
