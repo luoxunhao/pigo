@@ -263,7 +263,7 @@ func TestHistoryReplayBashShowsCommand(t *testing.T) {
 			}
 			meta := payload.Update["_meta"].(map[string]any)
 			out := meta["terminal_output"].(map[string]any)
-			if out["data"] != "> go test ./internal/acp\nok github.com/smallnest/pigo/internal/acp 1.450s" {
+			if out["data"] != "ok github.com/smallnest/pigo/internal/acp 1.450s" {
 				t.Fatalf("terminal output = %v", out["data"])
 			}
 			return

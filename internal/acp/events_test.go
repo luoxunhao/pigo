@@ -94,7 +94,7 @@ func TestMapToolStartEnd(t *testing.T) {
 	}
 	meta := e["_meta"].(map[string]any)
 	out := meta["terminal_output"].(map[string]any)
-	if out["data"] != "> echo hi\nhi" {
+	if out["data"] != "hi" {
 		t.Fatalf("terminal output = %v, want hi", out["data"])
 	}
 }

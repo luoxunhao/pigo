@@ -284,9 +284,6 @@ func bashToolCallEnd(id, name string, failed bool, result agentcore.AgentToolRes
 		status = "failed"
 	}
 	data := toolResultText(result)
-	if command != "" {
-		data = "> " + command + "\n" + data
-	}
 	return map[string]any{
 		"sessionUpdate": "tool_call_update",
 		"toolCallId":    id,
