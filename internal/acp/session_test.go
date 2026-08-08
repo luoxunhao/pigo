@@ -54,3 +54,34 @@ func TestSessionManagerPersistsBranchTree(t *testing.T) {
 		t.Errorf("second turn parent = %q, want first turn leaf %q", entries[2].ParentID, entries[1].ID)
 	}
 }
+
+// TestRunReleasesTurnSlotWhenPersistenceFails verifies that a failed
+// sessionstore write still releases the single-turn slot, so the next prompt
+// is not queued forever behind a broken store.
+func TestRunReleasesTurnSlotWhenPersistenceFails(t *testing.T) {
+	home := t.TempDir()
+	ws := filepath.Join(home, "ws")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := sessionstore.OpenForWorkspace(home, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewSessionManager(&fakeRunner{})
+	sess, err := mgr.New(ws, "m", "sys", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(store.Dir()); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := mgr.Run(context.Background(), sess, "first", nil, nil, nil, TurnHooks{}); err == nil {
+		t.Fatal("expected persistence failure after removing sessions dir")
+	}
+	p := &queuedPrompt{text: "second", done: make(chan struct{})}
+	if !sess.tryRun(p) {
+		t.Fatal("turn slot not released after persistence failure")
+	}
+}

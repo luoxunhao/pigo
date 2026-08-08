@@ -75,6 +75,9 @@ func (m *eventMapper) Map(sessionID string, ev agentcore.AgentEvent) []map[strin
 		}
 	case agentcore.ToolExecutionPendingEvent:
 		m.rememberToolArgs(e.ToolCallID, e.Args)
+		if isBashTool(e.ToolName) {
+			return []map[string]any{bashToolCallPending(e.ToolCallID, e.ToolName, e.Args, m.cwdValue(), bashCommandFromArgs(e.Args))}
+		}
 		return []map[string]any{toolCallPending(e.ToolCallID, e.ToolName, e.Args)}
 	case agentcore.ToolExecutionStartEvent:
 		return []map[string]any{m.toolCallStart(e)}
@@ -238,13 +241,35 @@ func bashCommandFromArgs(raw any) string {
 	return argString(args, "command")
 }
 
+func bashCommandTitle(command, name string) string {
+	if command != "" {
+		return command
+	}
+	return name
+}
+
 func bashToolCallStart(id, name string, rawInput any, cwd, command string) map[string]any {
 	return map[string]any{
 		"sessionUpdate": "tool_call",
 		"toolCallId":    id,
-		"title":         name,
+		"title":         bashCommandTitle(command, name),
 		"kind":          "execute",
 		"status":        "in_progress",
+		"rawInput":      rawInput,
+		"content":       []map[string]any{{"type": "terminal", "terminalId": id}},
+		"_meta": map[string]any{
+			"terminal_info": map[string]any{"terminal_id": id, "cwd": cwd, "command": command},
+		},
+	}
+}
+
+func bashToolCallPending(id, name string, rawInput any, cwd, command string) map[string]any {
+	return map[string]any{
+		"sessionUpdate": "tool_call",
+		"toolCallId":    id,
+		"title":         bashCommandTitle(command, name),
+		"kind":          "execute",
+		"status":        "pending",
 		"rawInput":      rawInput,
 		"content":       []map[string]any{{"type": "terminal", "terminalId": id}},
 		"_meta": map[string]any{
@@ -265,7 +290,7 @@ func bashToolCallEnd(id, name string, failed bool, result agentcore.AgentToolRes
 	return map[string]any{
 		"sessionUpdate": "tool_call_update",
 		"toolCallId":    id,
-		"title":         name,
+		"title":         bashCommandTitle(command, name),
 		"kind":          "execute",
 		"status":        status,
 		"rawInput":      rawInput,

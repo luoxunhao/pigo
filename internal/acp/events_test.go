@@ -69,6 +69,9 @@ func TestMapToolStartEnd(t *testing.T) {
 	if s["sessionUpdate"] != "tool_call" || s["kind"] != "execute" || s["status"] != "in_progress" {
 		t.Fatalf("tool start shape = %+v", s)
 	}
+	if s["title"] != "echo hi" {
+		t.Fatalf("tool start title = %v, want echo hi", s["title"])
+	}
 	startMeta := s["_meta"].(map[string]any)
 	info := startMeta["terminal_info"].(map[string]any)
 	if info["command"] != "echo hi" {
@@ -82,6 +85,9 @@ func TestMapToolStartEnd(t *testing.T) {
 	e := end[0]
 	if e["sessionUpdate"] != "tool_call_update" || e["status"] != "completed" {
 		t.Fatalf("tool end shape = %+v", e)
+	}
+	if e["title"] != "echo hi" {
+		t.Fatalf("tool end title = %v, want echo hi", e["title"])
 	}
 	if e["rawInput"] == nil {
 		t.Fatalf("tool end rawInput missing: %+v", e)
@@ -109,6 +115,9 @@ func TestMapToolPending(t *testing.T) {
 	}
 	if u["rawInput"] == nil {
 		t.Fatalf("pending rawInput missing: %+v", u)
+	}
+	if u["title"] != "echo hi" {
+		t.Fatalf("pending bash title = %v, want echo hi", u["title"])
 	}
 }
 

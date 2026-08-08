@@ -332,8 +332,26 @@ func (m *SessionManager) DeleteEverywhere(sessionID string) error {
 // Run executes one prompt turn on a session, streams agent events through
 // onEvent, persists the newly produced messages, and returns the final
 // assistant message. A cancellation surfaces as an error whose context is
-// cancelled; the caller maps that to ACP's cancelled stop reason.
-func (m *SessionManager) Run(ctx context.Context, sess *AcpSession, prompt string, images []agentcore.Content, beforeToolCall agentcore.BeforeToolCallFunc, onEvent func(agentcore.AgentEvent), hooks TurnHooks) (*agentcore.AssistantMessage, error) {
+// cancelled; the caller maps that to ACP's cancelled stop reason. The turn
+// slot is always released, even when persistence fails, so a later prompt
+// cannot queue forever behind a failed sessionstore write.
+func (m *SessionManager) Run(ctx context.Context, sess *AcpSession, prompt string, images []agentcore.Content, beforeToolCall agentcore.BeforeToolCallFunc, onEvent func(agentcore.AgentEvent), hooks TurnHooks) (last *agentcore.AssistantMessage, err error) {
+	defer func() {
+		stop := "end_turn"
+		switch {
+		case err == ErrTurnCancelled:
+			stop = "cancelled"
+		case last != nil:
+			switch last.StopReason {
+			case agentcore.StopReasonLength:
+				stop = "max_tokens"
+			case agentcore.StopReasonAborted:
+				stop = "cancelled"
+			}
+		}
+		sess.finishTurn(stop, err)
+	}()
+
 	runCtx, cancel := context.WithCancel(ctx)
 	sess.SetCancel(cancel)
 	defer sess.SetCancel(nil)
@@ -379,19 +397,6 @@ func (m *SessionManager) Run(ctx context.Context, sess *AcpSession, prompt strin
 	}
 	sess.Messages = messages
 
-	stop := "end_turn"
-	switch {
-	case err == ErrTurnCancelled:
-		stop = "cancelled"
-	case last != nil:
-		switch last.StopReason {
-		case agentcore.StopReasonLength:
-			stop = "max_tokens"
-		case agentcore.StopReasonAborted:
-			stop = "cancelled"
-		}
-	}
-	sess.finishTurn(stop, err)
 	return last, err
 }
 
