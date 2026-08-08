@@ -282,6 +282,65 @@ func TestSessionCancelStopsTurn(t *testing.T) {
 	_ = msgs
 }
 
+func TestPromptAfterStoreFailureDoesNotQueue(t *testing.T) {
+	client, server := NewChannelPair()
+	defer client.Close()
+	defer server.Close()
+
+	runner := &fakeRunner{}
+	disp, _ := newTestDispatcher(t, runner, server)
+	srv := NewServer(server, disp)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { _ = srv.Serve(ctx) }()
+
+	msgs, stopReader := startClientReader(t, client)
+	defer stopReader()
+	_ = msgs
+
+	ws := filepath.Join(t.TempDir(), "ws")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := client.SendRequest(ctx, MethodSessionNew, map[string]any{"cwd": ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var newResp struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(raw, &newResp); err != nil {
+		t.Fatal(err)
+	}
+	sess := disp.manager.Get(newResp.SessionID)
+	if sess == nil {
+		t.Fatal("session not found after session/new")
+	}
+	if err := os.RemoveAll(sess.Store.Dir()); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt := func() {
+		t.Helper()
+		if _, err := client.SendRequest(ctx, MethodSessionPrompt, map[string]any{
+			"sessionId": newResp.SessionID,
+			"prompt":    []map[string]any{{"type": "text", "text": "first"}},
+		}); err == nil {
+			t.Fatal("prompt should fail when sessionstore cannot persist")
+		}
+	}
+	prompt()
+	prompt()
+
+	runner.mu.Lock()
+	ran := len(runner.models)
+	runner.mu.Unlock()
+	if ran != 2 {
+		t.Fatalf("runner ran %d prompts, want 2 (turn slot must be released after store failure)", ran)
+	}
+}
+
 func TestSessionListAndLoadMessages(t *testing.T) {
 	client, server := NewChannelPair()
 	defer client.Close()
