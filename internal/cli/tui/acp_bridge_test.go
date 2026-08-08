@@ -63,7 +63,7 @@ func TestStartACPRunBridgesToTeaMsgs(t *testing.T) {
 					sawText = true
 				}
 			case toolStartMsg:
-				if m.name == "bash" {
+				if m.name == "bash" || m.name == "echo hi" {
 					sawToolStart = true
 				}
 			case toolEndMsg:

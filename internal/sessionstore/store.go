@@ -260,6 +260,23 @@ func (s *Store) SaveMetadata(meta Metadata) error {
 	return s.upsertIndex(meta)
 }
 
+// UpdateHeader rewrites a session's transcript header while preserving all
+// existing entries. It is used when session/load rebuilds the system prompt so
+// the corrected header is persisted for later resumes.
+func (s *Store) UpdateHeader(sessionID string, header session.SessionHeader) error {
+	if header.ID == "" {
+		header.ID = sessionID
+	}
+	if header.ID != sessionID {
+		return fmt.Errorf("sessionstore: header id %q != session id %q", header.ID, sessionID)
+	}
+	_, entries, err := s.transcripts.LoadEntries(sessionID)
+	if err != nil {
+		return err
+	}
+	return s.transcripts.SaveEntries(header, entries)
+}
+
 // LoadMetadata reads a session's metadata.
 func (s *Store) LoadMetadata(sessionID string) (Metadata, error) {
 	var file StoredMetadataFile

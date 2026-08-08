@@ -1,5 +1,7 @@
 # backend 字段迁移
 
+> 已废弃：迁移方向反转，由 `issue-024` 取代（旧 `project` 记录迁回 `shared`）。
+
 ## Description
 
 启动时读取 `conversations.json`，将 pigo 对话的 `backend='shared'` 迁移为 `backend='project'`；移除代码中 `backend==='shared'` 的全局单例路由分支。对应 PRD US-004 / FR-6。

@@ -490,14 +490,30 @@ func TestSessionLoadAppliesAdditionalDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for name, roots := range map[string][]string{
-		"read":  read.ExtraRoots,
-		"write": write.ExtraRoots,
-		"edit":  edit.ExtraRoots,
-	} {
+	// The session owns a cloned tool set with the additional directory merged;
+	// the process-wide template must stay untouched.
+	sess := disp.manager.Get(newResp.SessionID)
+	if sess == nil {
+		t.Fatal("session not found after session/load")
+	}
+	sessionRoots := map[string][]string{}
+	for _, tool := range sess.Tools {
+		switch tt := tool.(type) {
+		case *agenttool.ReadTool:
+			sessionRoots["read"] = tt.ExtraRoots
+		case *agenttool.WriteTool:
+			sessionRoots["write"] = tt.ExtraRoots
+		case *agenttool.EditTool:
+			sessionRoots["edit"] = tt.ExtraRoots
+		}
+	}
+	for name, roots := range sessionRoots {
 		if len(roots) != 1 || filepath.Clean(roots[0]) != filepath.Clean(extra) {
 			t.Fatalf("%s ExtraRoots = %v, want [%s]", name, roots, extra)
 		}
+	}
+	if len(read.ExtraRoots) != 0 || len(write.ExtraRoots) != 0 || len(edit.ExtraRoots) != 0 {
+		t.Fatal("process-wide template tools must not be mutated by session additionalDirectories")
 	}
 	_ = msgs
 }

@@ -267,7 +267,7 @@ func TestSessionTreeForkRewind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := mgr.New(ws, "openrouter/free", "sys", store)
+	sess, err := mgr.New(ws, "openrouter/free", SessionContext{SysPrompt: "sys"}, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +339,7 @@ func TestDreamCommandRequiresConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := mgr.New(ws, "m", "sys", store)
+	sess, err := mgr.New(ws, "m", SessionContext{SysPrompt: "sys"}, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,7 +361,7 @@ func TestCompactAndSessionCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := mgr.New(ws, "m", "sys", store)
+	sess, err := mgr.New(ws, "m", SessionContext{SysPrompt: "sys"}, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +388,7 @@ func TestHelpCopyExportImport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := mgr.New(ws, "m", "sys", store)
+	sess, err := mgr.New(ws, "m", SessionContext{SysPrompt: "sys"}, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +438,7 @@ func TestRebuildCommandRequiresConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := mgr.New(ws, "m", "sys", store)
+	sess, err := mgr.New(ws, "m", SessionContext{SysPrompt: "sys"}, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -460,7 +460,7 @@ func TestMemoryCommandDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := mgr.New(ws, "m", "sys", store)
+	sess, err := mgr.New(ws, "m", SessionContext{SysPrompt: "sys"}, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +482,7 @@ func TestGoalAndBtw(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := mgr.New(ws, "m", "sys", store)
+	sess, err := mgr.New(ws, "m", SessionContext{SysPrompt: "sys"}, store)
 	if err != nil {
 		t.Fatal(err)
 	}

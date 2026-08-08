@@ -23,14 +23,17 @@ import (
 // the Server handler and owns the session manager plus the transport used for
 // streaming notifications and deferred prompt responses.
 type Dispatcher struct {
-	manager         *SessionManager
-	transport       Transport
-	version         string
-	pigoHome        string
-	model           string
-	providerName    string
+	manager      *SessionManager
+	transport    Transport
+	version      string
+	pigoHome     string
+	model        string
+	providerName string
+	// sysPrompt and registry are the single-project defaults used by the
+	// in-process factory. A shared stdio server installs a SessionContextFactory
+	// that rebuilds both per session cwd instead.
 	sysPrompt       string
-	mapper          *eventMapper
+	sessionCtx      SessionContextFactory
 	broker          *ACPPermissionBroker
 	trustMgr        *trust.Manager
 	commands        map[string]commandFunc
@@ -46,10 +49,8 @@ type Dispatcher struct {
 	models          *ConfiguredModels
 	hookSeam        HookSeamFunc
 	lastSessionCwd  string
-	cwd             string
 	runMu           map[string]*sync.Mutex
 	runMuOnce       sync.Once
-	extraRootsMu    sync.Mutex
 }
 
 // NewDispatcher builds a dispatcher. model and sysPrompt are the session
@@ -63,7 +64,6 @@ func NewDispatcher(manager *SessionManager, transport Transport, pigoHome, model
 		pigoHome:  pigoHome,
 		model:     model,
 		sysPrompt: sysPrompt,
-		mapper:    newEventMapper(""),
 		broker:    broker,
 		commands:  buildCommands(),
 		snap:      snap,
@@ -72,6 +72,10 @@ func NewDispatcher(manager *SessionManager, transport Transport, pigoHome, model
 		d.trustMgr = broker.TrustManager()
 	}
 	d.runMu = make(map[string]*sync.Mutex)
+	d.sessionCtx = d.defaultSessionContext()
+	if broker != nil {
+		broker.SetTrustChangedHook(d.invalidateSessionRegistries)
+	}
 	return d
 }
 
@@ -92,14 +96,50 @@ func (d *Dispatcher) SetProviderName(name string) { d.providerName = name }
 func (d *Dispatcher) SetConfiguredModels(m *ConfiguredModels) { d.models = m }
 
 // SetSlashRegistry wires the full slash registry so external clients see and
-// can invoke user templates, skills, and plugin commands.
+// can invoke user templates, skills, and plugin commands. It is the default
+// registry used by in-process servers; shared servers override the session
+// context factory with a per-cwd registry builder.
 func (d *Dispatcher) SetSlashRegistry(reg *runtime.SlashRegistry) { d.registry = reg }
 
-// SetCwd wires the workspace cwd used for tool-location resolution and startup
-// info. In-process callers set it from the session workspace.
-func (d *Dispatcher) SetCwd(cwd string) {
-	d.cwd = cwd
-	d.mapper.SetCwd(cwd)
+// SetSessionContextFactory installs a per-session context builder. When unset
+// the dispatcher uses the startup sysPrompt/registry/tools as a single-project
+// default.
+func (d *Dispatcher) SetSessionContextFactory(fn SessionContextFactory) {
+	if fn != nil {
+		d.sessionCtx = fn
+	}
+}
+
+// invalidateSessionRegistries rebuilds the slash registry of every live
+// session after a trust change. Registries are per-session snapshots, so a
+// trust decision must replace them rather than waiting for the next load.
+func (d *Dispatcher) invalidateSessionRegistries() {
+	for _, sess := range d.manager.All() {
+		ctx, err := d.sessionCtx(sess.Cwd, sess.AdditionalDirectories)
+		if err != nil {
+			continue
+		}
+		sess.Registry = ctx.Registry
+	}
+}
+
+func (d *Dispatcher) defaultSessionContext() SessionContextFactory {
+	return func(cwd string, additionalDirectories []string) (SessionContext, error) {
+		tools := CloneToolsForSession(runnerTemplateTools(d.runner), cwd, additionalDirectories, nil)
+		return SessionContext{
+			SysPrompt: d.sysPrompt,
+			Tools:     tools,
+			Registry:  d.registry,
+		}, nil
+	}
+}
+
+func runnerTemplateTools(runner SessionRunner) []agentcore.AgentTool {
+	rr, ok := runner.(*RuntimeRunner)
+	if !ok || rr == nil {
+		return nil
+	}
+	return rr.Tools
 }
 
 // SetDreamConfig wires the /dream command settings.
@@ -190,7 +230,7 @@ func (d *Dispatcher) runRemotePrompt(sessionID, text string) {
 		}
 	}
 	hook := d.beforeToolCall(sess)
-	onEvent := d.eventSink(sessionID)
+	onEvent := d.eventSink(sess)
 	_, _ = d.manager.Run(context.Background(), sess, p.text, nil, hook, onEvent, d.turnHooks(sess))
 }
 
@@ -225,15 +265,19 @@ func (d *Dispatcher) turnHooks(sess *AcpSession) TurnHooks {
 	}
 }
 
-func (d *Dispatcher) eventSink(sessionID string) func(agentcore.AgentEvent) {
+func (d *Dispatcher) eventSink(sess *AcpSession) func(agentcore.AgentEvent) {
 	return func(ev agentcore.AgentEvent) {
-		for _, update := range d.mapper.Map(sessionID, ev) {
-			_ = d.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(sessionID, update))
+		mapper := sess.Mapper
+		if mapper == nil {
+			mapper = newEventMapper(sess.Cwd)
+		}
+		for _, update := range mapper.Map(sess.ID, ev) {
+			_ = d.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(sess.ID, update))
 			if d.remote != nil {
 				d.remote.SendOutput(updateText(update))
 			}
 		}
-		_ = d.transport.SendNotification(MethodPigoEvent, pigoEventPayload(sessionID, ev))
+		_ = d.transport.SendNotification(MethodPigoEvent, pigoEventPayload(sess.ID, ev))
 		if d.remote != nil {
 			d.remote.SendEvent(ev)
 		}
@@ -336,12 +380,16 @@ func (d *Dispatcher) sessionNew(params json.RawMessage) (any, *Error) {
 	if !filepath.IsAbs(req.Cwd) {
 		return nil, NewError(CodeInvalidParams, "cwd must be an absolute path")
 	}
-	d.applyAdditionalDirectories(req.AdditionalDirectories)
+	ctx, ctxErr := d.sessionCtx(req.Cwd, req.AdditionalDirectories)
+	if ctxErr != nil {
+		return nil, NewError(CodeInternalError, ctxErr.Error())
+	}
+	ctx.AdditionalDirectories = req.AdditionalDirectories
 	store, err := d.manager.StoreForWorkspace(d.pigoHome, req.Cwd)
 	if err != nil {
 		return nil, NewError(CodeInternalError, err.Error())
 	}
-	sess, err := d.manager.New(req.Cwd, d.model, d.sysPrompt, store)
+	sess, err := d.manager.New(req.Cwd, d.model, ctx, store)
 	if err != nil {
 		return nil, NewError(CodeInternalError, err.Error())
 	}
@@ -351,7 +399,6 @@ func (d *Dispatcher) sessionNew(params json.RawMessage) (any, *Error) {
 		}
 	}
 	d.lastSessionCwd = req.Cwd
-	d.SetCwd(req.Cwd)
 	go d.announceSession(sess, true)
 	return d.sessionPayload(sess), nil
 }
@@ -370,12 +417,16 @@ func (d *Dispatcher) sessionLoad(params json.RawMessage) (any, *Error) {
 	if !filepath.IsAbs(req.Cwd) {
 		return nil, NewError(CodeInvalidParams, "cwd must be an absolute path")
 	}
-	d.applyAdditionalDirectories(req.AdditionalDirectories)
+	ctx, ctxErr := d.sessionCtx(req.Cwd, req.AdditionalDirectories)
+	if ctxErr != nil {
+		return nil, NewError(CodeInternalError, ctxErr.Error())
+	}
+	ctx.AdditionalDirectories = req.AdditionalDirectories
 	store, err := d.manager.StoreForWorkspace(d.pigoHome, req.Cwd)
 	if err != nil {
 		return nil, NewError(CodeInternalError, err.Error())
 	}
-	sess, err := d.manager.Load(req.Cwd, req.SessionID, req.ModelID, store)
+	sess, err := d.manager.Load(req.Cwd, req.SessionID, req.ModelID, ctx, store)
 	if err != nil {
 		return nil, NewError(CodeInvalidParams, "session not found: "+req.SessionID)
 	}
@@ -394,7 +445,6 @@ func (d *Dispatcher) sessionLoad(params json.RawMessage) (any, *Error) {
 		_ = saveMCPServers(sess, req.MCPServers)
 	}
 	d.lastSessionCwd = req.Cwd
-	d.SetCwd(req.Cwd)
 	go d.replaySession(sess)
 	go d.announceSession(sess, false)
 	resp := d.sessionPayload(sess)
@@ -632,7 +682,6 @@ func (d *Dispatcher) modeAllowed(sess *AcpSession, mode string) bool {
 	return slices.Contains(m.ThinkingLevels, mode)
 }
 
-
 func (d *Dispatcher) runPrompt(ctx context.Context, id RequestID, params json.RawMessage) {
 	sessionID, text, images, ok := parsePromptParams(params)
 	if !ok {
@@ -678,7 +727,7 @@ func (d *Dispatcher) runPrompt(ctx context.Context, id RequestID, params json.Ra
 		}
 	}
 
-	last, err := d.manager.Run(ctx, sess, p.text, p.images, d.beforeToolCall(sess), d.eventSink(sessionID), d.turnHooks(sess))
+	last, err := d.manager.Run(ctx, sess, p.text, p.images, d.beforeToolCall(sess), d.eventSink(sess), d.turnHooks(sess))
 	if err != nil {
 		if err == ErrTurnCancelled {
 			_ = d.transport.SendResponse(ctx, id, map[string]any{"stopReason": "cancelled"}, nil)

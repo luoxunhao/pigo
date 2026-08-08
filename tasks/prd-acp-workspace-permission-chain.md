@@ -1,5 +1,7 @@
 # PRD: ACP 按项目进程模型的目录与权限链路修复
 
+> 已废弃：本 PRD 的“按项目进程池 + 独立配置网关”方案已被 `prd-global-shared-acp-session.md` 取代。权限链路部分仍有效，并纳入新 PRD 的回归范围。
+
 ## 1. Introduction
 
 ash-workbench 之前用一个全局共享 pigo ACP 进程服务所有项目。pigo 的 `--acp` 进程使用启动时的 cwd 构建 system prompt，因此共享进程会让 `E:\project\ams` 会话被模型当成 `E:\project\ash-workbench\apps\desktop-electron`。

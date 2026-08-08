@@ -32,6 +32,9 @@ type ACPPermissionBroker struct {
 	// remoteConfirm, when set, lets a paired remote browser answer the
 	// permission request before the ACP client is consulted.
 	remoteConfirm func(tool, summary string) (allow, always bool, ok bool)
+	// trustChanged, when set, is invoked after a persisted trust decision is
+	// written so the dispatcher can invalidate session-scoped slash registries.
+	trustChanged func()
 }
 
 // NewACPPermissionBroker builds a broker. mgr may be nil to disable gating.
@@ -65,6 +68,9 @@ func (b *ACPPermissionBroker) BeforeToolCall(sessionID, cwd string) agentcore.Be
 					if err := b.trust.SetDecision(cwd, trust.Trusted); err != nil {
 						return blockDecision(fmt.Sprintf("tool %q blocked: persist trust failed: %v", call.Name, err))
 					}
+					if b.trustChanged != nil {
+						b.trustChanged()
+					}
 				}
 				return nil
 			}
@@ -80,9 +86,15 @@ func (b *ACPPermissionBroker) BeforeToolCall(sessionID, cwd string) agentcore.Be
 			if err := b.trust.SetDecision(cwd, trust.Trusted); err != nil {
 				return blockDecision(fmt.Sprintf("tool %q blocked: persist trust failed: %v", call.Name, err))
 			}
+			if b.trustChanged != nil {
+				b.trustChanged()
+			}
 			return nil
 		case permissionRejectAlways:
 			_ = b.trust.SetDecision(cwd, trust.Untrusted)
+			if b.trustChanged != nil {
+				b.trustChanged()
+			}
 			return blockDecision(fmt.Sprintf("tool %q blocked: %s is untrusted", call.Name, cwd))
 		default:
 			return blockDecision(fmt.Sprintf("tool %q blocked: %s is not trusted", call.Name, cwd))
@@ -96,6 +108,12 @@ func (b *ACPPermissionBroker) TrustManager() *trust.Manager { return b.trust }
 // SetRemoteConfirm installs an optional remote approval path.
 func (b *ACPPermissionBroker) SetRemoteConfirm(f func(tool, summary string) (allow, always bool, ok bool)) {
 	b.remoteConfirm = f
+}
+
+// SetTrustChangedHook installs a callback invoked after a trust decision is
+// persisted, letting callers invalidate caches keyed on trust state.
+func (b *ACPPermissionBroker) SetTrustChangedHook(fn func()) {
+	b.trustChanged = fn
 }
 
 // toolCallSummary renders a one-line preview of a tool call.

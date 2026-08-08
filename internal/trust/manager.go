@@ -9,6 +9,8 @@
 package trust
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -277,6 +279,33 @@ func (m *Manager) Entries() []Entry {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out
+}
+
+// Fingerprint returns a stable digest of the current trust state, including
+// both persisted decisions and in-process session grants. It changes whenever
+// any decision or grant changes, so callers can key caches such as the
+// per-workspace slash registry on it and invalidate them on trust updates.
+func (m *Manager) Fingerprint() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	h := sha256.New()
+	paths := make([]string, 0, len(m.data))
+	for path := range m.data {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		fmt.Fprintf(h, "%s\x00%d\n", path, decisionFromBool(m.data[path]))
+	}
+	sessionPaths := make([]string, 0, len(m.session))
+	for path := range m.session {
+		sessionPaths = append(sessionPaths, path)
+	}
+	sort.Strings(sessionPaths)
+	for _, path := range sessionPaths {
+		fmt.Fprintf(h, "s:%s\x00%v\n", path, m.session[path])
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // saveLocked writes the trust map to disk atomically so a crash mid-write

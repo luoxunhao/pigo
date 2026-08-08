@@ -23,7 +23,7 @@ func TestSessionManagerPersistsBranchTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	mgr := NewSessionManager(&fakeRunner{})
-	sess, err := mgr.New(ws, "m", "sys", store)
+	sess, err := mgr.New(ws, "m", SessionContext{SysPrompt: "sys"}, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestRunReleasesTurnSlotWhenPersistenceFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	mgr := NewSessionManager(&fakeRunner{})
-	sess, err := mgr.New(ws, "m", "sys", store)
+	sess, err := mgr.New(ws, "m", SessionContext{SysPrompt: "sys"}, store)
 	if err != nil {
 		t.Fatal(err)
 	}

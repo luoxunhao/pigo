@@ -35,6 +35,11 @@ type Env struct {
 	ProviderName string
 	APIKey       string
 	SysPrompt    string
+	// Model is the resolved wire model id used by sub-agent factories.
+	Model string
+	// AppendInstructions are the resolved --append-system-prompt texts so a
+	// shared ACP process can rebuild per-session prompts without re-resolving.
+	AppendInstructions []string
 
 	// Skills is the discovered skill set (loaded once here, empty under
 	// --no-skills). It is threaded into the REPL so each skill is registered as a
@@ -102,25 +107,7 @@ func SetupEnv(model, baseURL, protocol, providerName, apiKey string, noTools, no
 	// again), and all task calls in a run share one semaphore capping concurrency.
 	if !noTools {
 		sem := runtime.NewSubagentSemaphore()
-		// The child resolves credentials the same way the parent does: env/OAuth via
-		// a fresh store, plus the CLI/config api key as an override. Without the
-		// override a child would get an empty key whenever auth comes from config.toml
-		// or --api-key (not an env var), leaving every sub-agent unauthenticated.
-		childCreds := provider.NewCredentialStore(nil)
-		childCreds.SetOverride(resolvedName, resolvedKey)
-		factory := func() runtime.RunConfig {
-			childTools := ChildToolSet(cwd, policy)
-			return runtime.RunConfig{
-				LoopConfig: runtime.LoopConfig{
-					Model:     model,
-					Provider:  resolvedName,
-					Stream:    provider.StreamFnFromProvider(prov),
-					GetAPIKey: childCreds.GetAPIKey,
-				},
-				Batch: agenttool.BatchConfig{ToolExecutorConfig: agenttool.ToolExecutorConfig{Registry: ToolRegistry(childTools)}},
-			}
-		}
-		tools = append(tools, runtime.NewTaskTool(factory, sem))
+		tools = append(tools, SessionTaskTool(cwd, policy, model, resolvedName, prov, resolvedKey, sem))
 	}
 	// Discover external plugins (US-016) and append their tools. Plugin loading
 	// is fault-tolerant: a plugin that fails to start is logged and skipped, and
@@ -170,7 +157,7 @@ func SetupEnv(model, baseURL, protocol, providerName, apiKey string, noTools, no
 		Root:               cwd,
 		AppendInstructions: appends,
 		Skills:             skills,
-		ReadToolAvailable:  hasReadTool(tools),
+		ReadToolAvailable:  HasReadTool(tools),
 	})
 	if err != nil {
 		return Env{}, err
@@ -182,6 +169,8 @@ func SetupEnv(model, baseURL, protocol, providerName, apiKey string, noTools, no
 		ProviderName: resolvedName,
 		APIKey:       resolvedKey,
 		SysPrompt:    sysPrompt,
+		Model:        model,
+		AppendInstructions: appends,
 		Skills:       skills,
 		Plugins:      mgr,
 		Memory:       memStore,
@@ -236,16 +225,40 @@ func localEndpoint(baseURL string) bool {
 	return strings.Contains(b, "localhost") || strings.Contains(b, "127.0.0.1") || strings.HasPrefix(b, "http://")
 }
 
-// hasReadTool reports whether the read tool is present in the tool set. Skills
+// HasReadTool reports whether the read tool is present in the tool set. Skills
 // are advertised in the system prompt only when it is, since the model needs the
 // read tool to load a skill's body on demand.
-func hasReadTool(tools []agentcore.AgentTool) bool {
+func HasReadTool(tools []agentcore.AgentTool) bool {
 	for _, t := range tools {
 		if t.Name() == "read" {
 			return true
 		}
 	}
 	return false
+}
+
+// SessionTaskTool builds a generic task sub-agent tool whose children operate
+// in cwd. It is used both by SetupEnv (single-project drivers) and by the ACP
+// session builder (shared processes), so a task child never inherits the
+// startup directory of a different workspace.
+func SessionTaskTool(cwd string, policy ToolPolicy, model, providerName string, prov provider.Provider, apiKey string, sem chan struct{}) *runtime.SubAgentTool {
+	childCreds := provider.NewCredentialStore(nil)
+	childCreds.SetOverride(providerName, apiKey)
+	factory := func() runtime.RunConfig {
+		childTools := ChildToolSet(cwd, policy)
+		return runtime.RunConfig{
+			LoopConfig: runtime.LoopConfig{
+				Model:     model,
+				Provider:  providerName,
+				Stream:    provider.StreamFnFromProvider(prov),
+				GetAPIKey: childCreds.GetAPIKey,
+			},
+			Batch: agenttool.BatchConfig{
+				ToolExecutorConfig: agenttool.ToolExecutorConfig{Registry: ToolRegistry(childTools)},
+			},
+		}
+	}
+	return runtime.NewTaskTool(factory, sem)
 }
 
 // resolveAppendInstructions maps each --append-system-prompt value to the text

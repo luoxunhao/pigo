@@ -58,7 +58,7 @@ func (d *Dispatcher) sessionPayload(sess *AcpSession) map[string]any {
 		"models":        sessionModels(ctx, sess, configured),
 		"modes":         sessionModes(sess, d.currentConfiguredModel(sess)),
 		"_meta": map[string]any{
-			"pigo.startupInfo": startupInfoText(d.version, sess, d.commandCount()),
+			"pigo.startupInfo": startupInfoText(d.version, sess, d.commandCountFor(sess)),
 		},
 	}
 }
@@ -99,8 +99,8 @@ func (d *Dispatcher) resolveSlash(sess *AcpSession, line string) (prompt string,
 		}
 		return "", true, text, nil
 	}
-	if d.registry != nil {
-		if c, ok := d.registry.Lookup(name); ok {
+	if sess.Registry != nil {
+		if c, ok := sess.Registry.Lookup(name); ok {
 			switch {
 			case c.Action != nil:
 				return "", true, c.Action(args), nil
@@ -115,10 +115,10 @@ func (d *Dispatcher) resolveSlash(sess *AcpSession, line string) (prompt string,
 	return line, false, "", nil
 }
 
-func (d *Dispatcher) commandCount() int {
+func (d *Dispatcher) commandCountFor(sess *AcpSession) int {
 	n := len(d.commands)
-	if d.registry != nil {
-		n += len(d.registry.List())
+	if sess != nil && sess.Registry != nil {
+		n += len(sess.Registry.List())
 	}
 	return n
 }
@@ -147,13 +147,13 @@ func (d *Dispatcher) sendQueued(sessionID string, position int) {
 
 func (d *Dispatcher) announceSession(sess *AcpSession, withStartup bool) {
 	if withStartup {
-		if text := startupInfoText(d.version, sess, d.commandCount()); text != "" {
+		if text := startupInfoText(d.version, sess, d.commandCountFor(sess)); text != "" {
 			d.sendTextChunk(sess.ID, text)
 		}
 	}
 	d.sendSessionUpdate(sess.ID, map[string]any{
 		"sessionUpdate":     "available_commands_update",
-		"availableCommands": availableCommandsPayload(d.commands, d.registry),
+		"availableCommands": availableCommandsPayload(d.commands, sess.Registry),
 	})
 }
 

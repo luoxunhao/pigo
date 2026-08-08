@@ -81,7 +81,7 @@ func TestSessionThinkingPersistsAndRestores(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := mgr.New(ws, "a/m", "sys", store)
+	sess, err := mgr.New(ws, "a/m", SessionContext{SysPrompt: "sys"}, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestSessionThinkingPersistsAndRestores(t *testing.T) {
 	if got := readSessionThinking(meta); got != "high" {
 		t.Fatalf("thinking = %q, want high", got)
 	}
-	loaded, err := mgr.Load(ws, sess.ID, "", store)
+	loaded, err := mgr.Load(ws, sess.ID, "", SessionContext{SysPrompt: "sys"}, store)
 	if err != nil {
 		t.Fatal(err)
 	}

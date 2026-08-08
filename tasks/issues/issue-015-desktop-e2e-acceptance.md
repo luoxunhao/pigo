@@ -1,5 +1,7 @@
 # 桌面端端到端验收
 
+> 部分废弃：`backend='project'` 断言由 `issue-024` 改为 `backend='shared'`；权限链路断言仍有效。
+
 ## Description
 
 手动验证 A1 进程模型与权限/工具链路：新建 ams 会话、bash pending 卡、四种审批、allow always 重启生效、多目录 sourceFolders 可访问。对应 PRD Success Metrics。

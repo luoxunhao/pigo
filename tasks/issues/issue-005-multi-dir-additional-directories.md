@@ -1,5 +1,7 @@
 # 多目录项目传入 sourceFolders
 
+> 已废弃：由 `issue-025` 取代，目录边界改为会话级而非项目进程级。
+
 ## Description
 
 ash-workbench 在 `session/new` 与 `session/load` 中把 `project.sourceFolders` 作为 `additionalDirectories` 传给 pigo，保证多目录项目恢复会话后文件工具仍可访问附加目录。对应 PRD US-012 / FR-17、FR-18。

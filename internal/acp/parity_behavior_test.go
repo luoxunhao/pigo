@@ -219,7 +219,7 @@ func TestSessionLoadRestoresPersistedModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := mgr.New(ws, "deepseek/deepseek-v4-pro", "sys", store)
+	sess, err := mgr.New(ws, "deepseek/deepseek-v4-pro", SessionContext{SysPrompt: "sys"}, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +367,7 @@ func TestSessionStatsCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := mgr.New(ws, "m", "sys", store)
+	sess, err := mgr.New(ws, "m", SessionContext{SysPrompt: "sys"}, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -431,7 +431,7 @@ func TestCompactCustomInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := mgr.New(ws, "fake-model", "sys", store)
+	sess, err := mgr.New(ws, "fake-model", SessionContext{SysPrompt: "sys"}, store)
 	if err != nil {
 		t.Fatal(err)
 	}

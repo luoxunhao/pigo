@@ -22,6 +22,15 @@ type AcpSession struct {
 	Cwd    string
 	Store  *sessionstore.Store
 	Header session.SessionHeader
+	// Mapper translates agent events against this session's cwd.
+	Mapper *eventMapper
+	// Tools is the session-scoped tool set rooted at Cwd.
+	Tools []agentcore.AgentTool
+	// Registry is the session-scoped slash command registry.
+	Registry *runtime.SlashRegistry
+	// AdditionalDirectories are the extra workspace roots this session was
+	// created/loaded with, kept so trust changes can rebuild the registry.
+	AdditionalDirectories []string
 	// Messages is the in-memory history; Persisted is how many of those
 	// messages are already on disk, so a run only appends its tail.
 	Messages agentcore.MessageList
@@ -205,6 +214,13 @@ type SessionRunner interface {
 	Run(ctx context.Context, prompt string, images []agentcore.Content, history agentcore.MessageList, sysPrompt, model, thinking string, beforeToolCall agentcore.BeforeToolCallFunc, onEvent func(agentcore.AgentEvent), hooks TurnHooks) (agentcore.MessageList, *agentcore.AssistantMessage, error)
 }
 
+// TooledRunner is implemented by session runners that accept a per-session tool
+// set. SessionManager uses it when present so a shared process can run each
+// session against its own roots instead of the process-wide template.
+type TooledRunner interface {
+	RunWithTools(ctx context.Context, prompt string, images []agentcore.Content, history agentcore.MessageList, sysPrompt string, tools []agentcore.AgentTool, model, thinking string, beforeToolCall agentcore.BeforeToolCallFunc, onEvent func(agentcore.AgentEvent), hooks TurnHooks) (agentcore.MessageList, *agentcore.AssistantMessage, error)
+}
+
 // SessionManager owns the live ACP sessions and the project-scoped stores they
 // persist to. It serializes prompt execution per session by construction: each
 // session has one cancel handle and Run replaces it per turn.
@@ -241,8 +257,9 @@ func (m *SessionManager) StoreForWorkspace(pigoHome, workspacePath string) (*ses
 	return s, nil
 }
 
-// New creates a fresh persisted session in the given workspace.
-func (m *SessionManager) New(cwd, model, sysPrompt string, store *sessionstore.Store) (*AcpSession, error) {
+// New creates a fresh persisted session in the given workspace with an
+// isolated session context.
+func (m *SessionManager) New(cwd, model string, ctx SessionContext, store *sessionstore.Store) (*AcpSession, error) {
 	now := time.Now().UTC()
 	id := session.NewID(now)
 	header := session.SessionHeader{
@@ -250,14 +267,24 @@ func (m *SessionManager) New(cwd, model, sysPrompt string, store *sessionstore.S
 		CreatedAt:    now,
 		UpdatedAt:    now,
 		Model:        model,
-		SystemPrompt: sysPrompt,
+		SystemPrompt: ctx.SysPrompt,
 		Cwd:          cwd,
 	}
 	meta := sessionstore.NewMetadata(id, "Session", "pigo", model, cwd)
 	if err := store.Create(meta, header, nil); err != nil {
 		return nil, err
 	}
-	sess := &AcpSession{ID: id, Cwd: cwd, Store: store, Header: header, Model: model}
+	sess := &AcpSession{
+		ID:                    id,
+		Cwd:                   cwd,
+		Store:                 store,
+		Header:                header,
+		Mapper:                newEventMapper(cwd),
+		Tools:                 ctx.Tools,
+		Registry:              ctx.Registry,
+		AdditionalDirectories: ctx.AdditionalDirectories,
+		Model:                 model,
+	}
 	m.mu.Lock()
 	m.sessions[id] = sess
 	m.mu.Unlock()
@@ -265,7 +292,7 @@ func (m *SessionManager) New(cwd, model, sysPrompt string, store *sessionstore.S
 }
 
 // Load restores an existing persisted session into memory.
-func (m *SessionManager) Load(cwd, sessionID, model string, store *sessionstore.Store) (*AcpSession, error) {
+func (m *SessionManager) Load(cwd, sessionID, model string, ctx SessionContext, store *sessionstore.Store) (*AcpSession, error) {
 	meta, header, msgs, err := store.Load(sessionID)
 	if err != nil {
 		return nil, err
@@ -273,19 +300,29 @@ func (m *SessionManager) Load(cwd, sessionID, model string, store *sessionstore.
 	if model == "" {
 		model = meta.ModelName
 	}
+	// Rebuild the persisted system prompt from the session's own cwd so a
+	// shared process never leaves a stale startup-directory prompt behind.
+	header.SystemPrompt = ctx.SysPrompt
+	if err := store.UpdateHeader(sessionID, header); err != nil {
+		return nil, err
+	}
 	curLeaf := ""
 	if _, entries, err := store.TranscriptStore().LoadEntries(sessionID); err == nil && len(entries) > 0 {
 		curLeaf = entries[len(entries)-1].ID
 	}
 	sess := &AcpSession{
-		ID:        sessionID,
-		Cwd:       cwd,
-		Store:     store,
-		Header:    header,
-		Messages:  msgs,
-		Persisted: len(msgs),
-		CurLeaf:   curLeaf,
-		Model:     model,
+		ID:                    sessionID,
+		Cwd:                   cwd,
+		Store:                 store,
+		Header:                header,
+		Mapper:                newEventMapper(cwd),
+		Tools:                 ctx.Tools,
+		Registry:              ctx.Registry,
+		AdditionalDirectories: ctx.AdditionalDirectories,
+		Messages:              msgs,
+		Persisted:             len(msgs),
+		CurLeaf:               curLeaf,
+		Model:                 model,
 	}
 	m.mu.Lock()
 	if old, ok := m.sessions[sessionID]; ok {
@@ -301,6 +338,17 @@ func (m *SessionManager) Get(sessionID string) *AcpSession {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.sessions[sessionID]
+}
+
+// All returns a snapshot of every live session.
+func (m *SessionManager) All() []*AcpSession {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*AcpSession, 0, len(m.sessions))
+	for _, sess := range m.sessions {
+		out = append(out, sess)
+	}
+	return out
 }
 
 // Close cancels a running turn and drops the live session.
@@ -373,7 +421,12 @@ func (m *SessionManager) Run(ctx context.Context, sess *AcpSession, prompt strin
 		}
 	}
 
-	messages, last, err := m.runner.Run(runCtx, prompt, images, sess.Messages, sess.Header.SystemPrompt, sess.Model, sess.Thinking, beforeToolCall, onEvent, hooks)
+	var messages agentcore.MessageList
+	if tr, ok := m.runner.(TooledRunner); ok {
+		messages, last, err = tr.RunWithTools(runCtx, prompt, images, sess.Messages, sess.Header.SystemPrompt, sess.Tools, sess.Model, sess.Thinking, beforeToolCall, onEvent, hooks)
+	} else {
+		messages, last, err = m.runner.Run(runCtx, prompt, images, sess.Messages, sess.Header.SystemPrompt, sess.Model, sess.Thinking, beforeToolCall, onEvent, hooks)
+	}
 	if err != nil && runCtx.Err() != nil {
 		err = ErrTurnCancelled
 	}

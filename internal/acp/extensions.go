@@ -255,7 +255,7 @@ func cmdFork(ctx context.Context, d *Dispatcher, sess *AcpSession, args string) 
 	if err := sess.Store.SaveMetadata(meta); err != nil {
 		return "", NewError(CodeInternalError, err.Error())
 	}
-	if _, err := d.manager.Load(sess.Cwd, newHeader.ID, sess.Model, sess.Store); err != nil {
+	if _, err := d.manager.Load(sess.Cwd, newHeader.ID, sess.Model, sessionContextOf(sess), sess.Store); err != nil {
 		return "", NewError(CodeInternalError, err.Error())
 	}
 	return "forked to " + newHeader.ID, nil
@@ -426,7 +426,7 @@ func cmdCompact(ctx context.Context, d *Dispatcher, sess *AcpSession, args strin
 
 // cmdHelp lists the commands routed through pigo/command.
 func cmdHelp(ctx context.Context, d *Dispatcher, sess *AcpSession, args string) (string, *Error) {
-	cmds := availableCommandsPayload(d.commands, d.registry)
+	cmds := availableCommandsPayload(d.commands, sess.Registry)
 	names := make([]string, 0, len(cmds))
 	for _, c := range cmds {
 		if name, _ := c["name"].(string); name != "" {
@@ -509,7 +509,7 @@ func cmdImport(ctx context.Context, d *Dispatcher, sess *AcpSession, args string
 	if err := sess.Store.SaveMetadata(meta); err != nil {
 		return "", NewError(CodeInternalError, err.Error())
 	}
-	if _, err := d.manager.Load(sess.Cwd, newHeader.ID, sess.Model, sess.Store); err != nil {
+	if _, err := d.manager.Load(sess.Cwd, newHeader.ID, sess.Model, sessionContextOf(sess), sess.Store); err != nil {
 		return "", NewError(CodeInternalError, err.Error())
 	}
 	return fmt.Sprintf("imported %d entries from %s → session %s", len(entries), path, newHeader.ID), nil
@@ -602,7 +602,13 @@ func cmdBtw(ctx context.Context, d *Dispatcher, sess *AcpSession, args string) (
 		return "usage: /btw <prompt>", nil
 	}
 	history := append(agentcore.MessageList{}, sess.Messages...)
-	_, last, err := d.runner.Run(ctx, prompt, nil, history, sess.Header.SystemPrompt, sess.Model, sess.Thinking, nil, nil, d.turnHooks(sess))
+	var last *agentcore.AssistantMessage
+	var err error
+	if tr, ok := d.runner.(TooledRunner); ok {
+		_, last, err = tr.RunWithTools(ctx, prompt, nil, history, sess.Header.SystemPrompt, sess.Tools, sess.Model, sess.Thinking, nil, nil, d.turnHooks(sess))
+	} else {
+		_, last, err = d.runner.Run(ctx, prompt, nil, history, sess.Header.SystemPrompt, sess.Model, sess.Thinking, nil, nil, d.turnHooks(sess))
+	}
 	if err != nil {
 		return "", NewError(CodeInternalError, err.Error())
 	}

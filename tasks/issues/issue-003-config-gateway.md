@@ -1,5 +1,7 @@
 # 独立配置网关
 
+> 已废弃：由 `issue-022` 取代，配置/模型/trust 全部走共享 pigo 进程。
+
 ## Description
 
 新增独立配置网关 pigo 进程，cwd 使用 `os.homedir()`，负责 `pigo/config`、`pigo/models`、`pigo/trust/list`、`pigo/trust/set` 等全局能力；项目进程只服务会话、工具与权限。对应 PRD US-003 / FR-4、FR-5。

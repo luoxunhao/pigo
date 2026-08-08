@@ -16,11 +16,11 @@ pigo.exe -v                       # 打印版本信息
 
 ## ACP 进程模型
 
-- `--acp` 进程绑定启动时的 cwd；system prompt、项目 AGENTS.md、hooks、slash registry 与 trust 决策均按该 cwd 解析。
-- 客户端应为一个项目启动一个 `pigo.exe --acp` 进程，并在该项目内复用；不要用同一个 ACP 进程服务多个不同项目。
+- `--acp` 进程本身不绑定项目上下文；每个 ACP 会话按 `session/new` / `session/load` 请求中的 `cwd` 独立构建 system prompt、工具根、eventMapper cwd、slash registry 与信任边界。
+- 一个 `pigo.exe --acp` 进程可以同时服务多个项目；外部客户端（如 ash-workbench desktop）默认启动一个共享进程，并在应用启动时拉起，进程 cwd 使用客户端选择的安全目录（如 `os.homedir()`）。
+- Zed 等客户端仍可按项目各启动一个进程；per-session 隔离对单项目进程幂等，行为不变。
 - 多目录项目由客户端把附加目录作为 `additionalDirectories` 传入 `session/new` 与 `session/load`；pigo 将其合并进 read/write/edit 工具边界。
-- pigo 不为多项目共享进程提供 per-session prompt 重建；项目上下文由客户端通过进程 cwd 提供。
-- 外部客户端（Zed、ash-workbench desktop）负责进程生命周期：按项目启动、复用、恢复与退出清理。
+- 外部客户端负责进程生命周期：启动、复用、恢复与退出清理；pigo 负责会话级上下文重建。
 
 ## 目录结构
 

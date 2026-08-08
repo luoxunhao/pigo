@@ -24,3 +24,15 @@ func ServeStdioWithRegistry(ctx context.Context, runner SessionRunner, pigoHome,
 	disp.SetSlashRegistry(reg)
 	return NewServer(tr, disp).Serve(ctx)
 }
+
+// ServeStdioWithSessionContext runs an ACP server with a per-session context
+// factory. It is the entry point for shared pigo processes that serve multiple
+// workspaces: the factory rebuilds system prompts, tool roots, and slash
+// registries for each session cwd instead of using the process startup cwd.
+func ServeStdioWithSessionContext(ctx context.Context, runner SessionRunner, pigoHome, model string, factory SessionContextFactory, mgr *trust.Manager, dreamCfg *DreamConfig, hookSeam HookSeamFunc, in io.Reader, out io.Writer) error {
+	tr := NewStdioTransport(in, out)
+	defer tr.Close()
+	disp := newDispatcherWithHooks(runner, tr, pigoHome, model, "", "", mgr, dreamCfg, hookSeam)
+	disp.SetSessionContextFactory(factory)
+	return NewServer(tr, disp).Serve(ctx)
+}

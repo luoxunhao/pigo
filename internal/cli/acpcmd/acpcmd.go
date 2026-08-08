@@ -9,13 +9,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
 	"github.com/smallnest/pigo/internal/acp"
 	"github.com/smallnest/pigo/internal/agentcore"
-	"github.com/smallnest/pigo/internal/cli"
 	"github.com/smallnest/pigo/internal/cli/config"
-	"github.com/smallnest/pigo/internal/cli/prompts"
 	"github.com/smallnest/pigo/internal/cli/run"
 	"github.com/smallnest/pigo/internal/sessionstore"
 	"github.com/smallnest/pigo/internal/trust"
@@ -80,26 +77,8 @@ func Run(ctx context.Context, opts Options, stdin io.Reader, stdout, stderr io.W
 		mgr.SetSessionTrust(cwd)
 	}
 
-	live := &cli.LiveConfig{
-		Model:         opts.Model,
-		ProviderName:  env.ProviderName,
-		Provider:      env.Provider,
-		BaseURL:       opts.BaseURL,
-		Protocol:      opts.Protocol,
-		ThinkingLevel: opts.ThinkingLevel,
-		ContextWindow: cli.DefaultContextWindow,
-	}
-	reg, err := prompts.BuildSlashRegistry(live, env.Skills, env.Plugins, prompts.PromptTemplateSources{
-		Settings:       opts.ConfigPrompts,
-		CLI:            opts.CliPrompts,
-		Disable:        opts.NoPromptTemplates,
-		ProjectDir:     filepath.Join(cwd, ".pigo", "prompts"),
-		ProjectTrusted: run.Trusted(cwd),
-	})
-	if err != nil {
-		fmt.Fprintf(stderr, "pigo acp: %v\n", err)
-		return 1
-	}
+	policy := run.NewToolPolicy(opts.AllowedTools, opts.DisallowedTools)
+	builder := newSessionContextBuilder(opts, env, policy, mgr)
 
 	runner := &acp.RuntimeRunner{
 		Provider:      env.Provider,
@@ -128,7 +107,7 @@ func Run(ctx context.Context, opts Options, stdin io.Reader, stdout, stderr io.W
 		}
 	}
 
-	if err := acp.ServeStdioWithRegistry(ctx, runner, home, opts.Model, env.SysPrompt, cwd, mgr, dreamCfg, reg, run.SessionHookSeam(), stdin, stdout); err != nil {
+	if err := acp.ServeStdioWithSessionContext(ctx, runner, home, opts.Model, builder.Build, mgr, dreamCfg, run.SessionHookSeam(), stdin, stdout); err != nil {
 		if err == acp.ErrClosed {
 			return 0
 		}

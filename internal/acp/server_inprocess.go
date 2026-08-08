@@ -35,7 +35,6 @@ func newDispatcherWithHooks(runner SessionRunner, transport Transport, pigoHome,
 	}
 	disp := NewDispatcher(NewSessionManager(runner), transport, pigoHome, model, sysPrompt, broker, snap)
 	disp.SetHookSeam(hookSeam)
-	disp.SetCwd(cwd)
 	disp.SetRunner(runner)
 	disp.SetDreamConfig(dreamCfg)
 	if rr, ok := runner.(*RuntimeRunner); ok {

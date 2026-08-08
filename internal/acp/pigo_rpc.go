@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/smallnest/pigo/internal/agentcore"
-	"github.com/smallnest/pigo/internal/agenttool"
 	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/provider"
 	"github.com/smallnest/pigo/internal/trust"
@@ -37,8 +36,8 @@ func (d *Dispatcher) pigoCommand(params json.RawMessage) (any, *Error) {
 		}
 		return map[string]any{"text": text, "notifications": []any{}}, nil
 	}
-	if d.registry != nil {
-		if c, ok := d.registry.Lookup(name); ok {
+	if sess.Registry != nil {
+		if c, ok := sess.Registry.Lookup(name); ok {
 			switch {
 			case c.Action != nil:
 				return map[string]any{"text": c.Action(args), "notifications": []any{}}, nil
@@ -305,6 +304,7 @@ func (d *Dispatcher) pigoTrustSet(params json.RawMessage) (any, *Error) {
 	if err != nil {
 		return nil, NewError(CodeInternalError, err.Error())
 	}
+	d.invalidateSessionRegistries()
 	return map[string]any{
 		"path":     filepath.Clean(req.Path),
 		"decision": decision,
@@ -429,37 +429,6 @@ func (d *Dispatcher) generateTitle(sess *AcpSession, firstPrompt string) {
 		"title":         title,
 		"updatedAt":     time.Now().UTC().Format(time.RFC3339),
 	})
-}
-
-// applyAdditionalDirectories merges workspace-level extra roots into the file
-// tools. The ACP process is scoped to one workspace, so a process-wide merge
-// matches the pi-web workspace configuration model.
-func (d *Dispatcher) applyAdditionalDirectories(dirs []string) {
-	if len(dirs) == 0 {
-		return
-	}
-	rr, ok := d.runner.(*RuntimeRunner)
-	if !ok {
-		return
-	}
-	d.extraRootsMu.Lock()
-	defer d.extraRootsMu.Unlock()
-	for _, dir := range dirs {
-		abs, err := filepath.Abs(dir)
-		if err != nil {
-			continue
-		}
-		for _, tool := range rr.Tools {
-			switch t := tool.(type) {
-			case *agenttool.ReadTool:
-				t.ExtraRoots = appendUniquePath(t.ExtraRoots, abs)
-			case *agenttool.WriteTool:
-				t.ExtraRoots = appendUniquePath(t.ExtraRoots, abs)
-			case *agenttool.EditTool:
-				t.ExtraRoots = appendUniquePath(t.ExtraRoots, abs)
-			}
-		}
-	}
 }
 
 func appendUniquePath(list []string, path string) []string {

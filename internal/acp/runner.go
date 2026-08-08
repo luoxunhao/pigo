@@ -42,6 +42,13 @@ type RuntimeRunner struct {
 // final assistant message. Agent events are streamed through onEvent as they
 // are emitted by the loop.
 func (r *RuntimeRunner) Run(ctx context.Context, prompt string, images []agentcore.Content, history agentcore.MessageList, sysPrompt, model, thinking string, beforeToolCall agentcore.BeforeToolCallFunc, onEvent func(agentcore.AgentEvent), hooks TurnHooks) (agentcore.MessageList, *agentcore.AssistantMessage, error) {
+	return r.RunWithTools(ctx, prompt, images, history, sysPrompt, r.Tools, model, thinking, beforeToolCall, onEvent, hooks)
+}
+
+// RunWithTools is Run with an explicit per-session tool set. SessionManager
+// passes the session-scoped tools so a shared ACP process runs each workspace
+// against its own roots instead of the process-wide template.
+func (r *RuntimeRunner) RunWithTools(ctx context.Context, prompt string, images []agentcore.Content, history agentcore.MessageList, sysPrompt string, tools []agentcore.AgentTool, model, thinking string, beforeToolCall agentcore.BeforeToolCallFunc, onEvent func(agentcore.AgentEvent), hooks TurnHooks) (agentcore.MessageList, *agentcore.AssistantMessage, error) {
 	if model == "" {
 		model = r.Model
 	}
@@ -65,11 +72,11 @@ func (r *RuntimeRunner) Run(ctx context.Context, prompt string, images []agentco
 	agentCtx := &agentcore.AgentContext{
 		SystemPrompt: sysPrompt,
 		Messages:     msgs,
-		Tools:        r.Tools,
+		Tools:        tools,
 	}
 
 	reg := agenttool.NewToolRegistry()
-	for _, tool := range r.Tools {
+	for _, tool := range tools {
 		_ = reg.Register(tool)
 	}
 
