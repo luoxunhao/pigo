@@ -100,10 +100,11 @@ func (r *RuntimeRunner) Run(ctx context.Context, prompt string, images []agentco
 	}
 
 	headless := runtime.HeadlessConfig{
-		Mode:    runtime.PrintMode,
-		Out:     io.Discard,
-		Run:     cfg,
-		OnEvent: onEvent,
+		Mode:     runtime.PrintMode,
+		Out:      io.Discard,
+		Run:      cfg,
+		OnEvent:  onEvent,
+		Progress: io.Discard,
 	}
 	err = runtime.RunHeadless(ctx, agentCtx, headless)
 	if snap := r.snapshotRecorder(); err == nil && snap != nil {
