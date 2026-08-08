@@ -76,8 +76,8 @@ func TestExecutorNormal(t *testing.T) {
 	if term {
 		t.Error("normal result should not terminate")
 	}
-	wantKinds := []string{agentcore.EventToolExecutionStart, agentcore.EventToolExecutionEnd}
-	if len(events) != 2 || events[0].EventType() != wantKinds[0] || events[1].EventType() != wantKinds[1] {
+	wantKinds := []string{agentcore.EventToolExecutionPending, agentcore.EventToolExecutionStart, agentcore.EventToolExecutionEnd}
+	if len(events) != 3 || events[0].EventType() != wantKinds[0] || events[1].EventType() != wantKinds[1] || events[2].EventType() != wantKinds[2] {
 		t.Errorf("events wrong: %+v", events)
 	}
 }
@@ -112,9 +112,14 @@ func TestExecutorBlock(t *testing.T) {
 	cfg.BeforeToolCall = func(ctx context.Context, call agentcore.AgentToolCall) *agentcore.BeforeToolCallDecision {
 		return &agentcore.BeforeToolCallDecision{Block: true}
 	}
-	msg, _ := executeToolCall(context.Background(), cfg, agentcore.AgentToolCall{ID: "1", Name: "echo"}, nil)
+	var events []agentcore.AgentEvent
+	emit := func(ctx context.Context, ev agentcore.AgentEvent) error { events = append(events, ev); return nil }
+	msg, _ := executeToolCall(context.Background(), cfg, agentcore.AgentToolCall{ID: "1", Name: "echo"}, emit)
 	if !msg.IsError {
 		t.Fatalf("blocked call should be error result: %+v", msg)
+	}
+	if len(events) != 2 || events[0].EventType() != agentcore.EventToolExecutionPending || events[1].EventType() != agentcore.EventToolExecutionEnd {
+		t.Fatalf("blocked call events = %+v, want pending then end", events)
 	}
 }
 
@@ -282,8 +287,8 @@ func TestExecutorResultBudgetDisabled(t *testing.T) {
 // countingTool returns a transient error for its first failN attempts, then
 // succeeds; if failN < 0 it always fails. It records how many times Execute ran.
 type retryStub struct {
-	failN   int   // number of leading failures before success; <0 = always fail
-	err     error // error to return on a failing attempt
+	failN    int   // number of leading failures before success; <0 = always fail
+	err      error // error to return on a failing attempt
 	attempts int32
 }
 
@@ -462,4 +467,3 @@ func TestExecutorRetrySuccessResultWithIsErrorNotRetried(t *testing.T) {
 		t.Fatalf("(result,nil) must not be retried: got %d attempts", got)
 	}
 }
-

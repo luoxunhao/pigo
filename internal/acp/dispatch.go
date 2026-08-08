@@ -282,6 +282,10 @@ func (d *Dispatcher) HandleRequest(ctx context.Context, id RequestID, method str
 		return d.pigoConfigTest(params)
 	case MethodPigoMessages:
 		return d.pigoMessages(params)
+	case MethodPigoTrustList:
+		return d.pigoTrustList(params)
+	case MethodPigoTrustSet:
+		return d.pigoTrustSet(params)
 	case MethodPigoRewind, MethodPigoFork, MethodPigoTree, MethodPigoGoal, MethodPigoBtw, MethodPigoDream, MethodPigoRemoteControl:
 		return nil, NewError(CodeNotImplemented, method+" is not implemented yet")
 	default:
@@ -353,10 +357,11 @@ func (d *Dispatcher) sessionNew(params json.RawMessage) (any, *Error) {
 
 func (d *Dispatcher) sessionLoad(params json.RawMessage) (any, *Error) {
 	var req struct {
-		SessionID  string          `json:"sessionId"`
-		Cwd        string          `json:"cwd"`
-		ModelID    string          `json:"modelId,omitempty"`
-		MCPServers json.RawMessage `json:"mcpServers,omitempty"`
+		SessionID             string          `json:"sessionId"`
+		Cwd                   string          `json:"cwd"`
+		ModelID               string          `json:"modelId,omitempty"`
+		AdditionalDirectories []string        `json:"additionalDirectories,omitempty"`
+		MCPServers            json.RawMessage `json:"mcpServers,omitempty"`
 	}
 	if err := json.Unmarshal(params, &req); err != nil || req.SessionID == "" || req.Cwd == "" {
 		return nil, NewError(CodeInvalidParams, "missing sessionId or cwd")
@@ -364,6 +369,7 @@ func (d *Dispatcher) sessionLoad(params json.RawMessage) (any, *Error) {
 	if !filepath.IsAbs(req.Cwd) {
 		return nil, NewError(CodeInvalidParams, "cwd must be an absolute path")
 	}
+	d.applyAdditionalDirectories(req.AdditionalDirectories)
 	store, err := d.manager.StoreForWorkspace(d.pigoHome, req.Cwd)
 	if err != nil {
 		return nil, NewError(CodeInternalError, err.Error())

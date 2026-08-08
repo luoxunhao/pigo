@@ -74,6 +74,8 @@ func eventPayload(ev agentcore.AgentEvent) map[string]any {
 			p["toolCalls"] = names
 		}
 		return p
+	case agentcore.ToolExecutionPendingEvent:
+		return map[string]any{"toolCallId": e.ToolCallID, "toolName": e.ToolName}
 	case agentcore.ToolExecutionStartEvent:
 		return map[string]any{"toolCallId": e.ToolCallID, "toolName": e.ToolName}
 	case agentcore.ToolExecutionEndEvent:

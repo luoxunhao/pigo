@@ -12,20 +12,21 @@ type AgentEvent interface {
 
 // Event type discriminants.
 const (
-	EventAgentStart          = "agent_start"
-	EventAgentEnd            = "agent_end"
-	EventTurnStart           = "turn_start"
-	EventTurnEnd             = "turn_end"
-	EventMessageStart        = "message_start"
-	EventMessageUpdate       = "message_update"
-	EventMessageEnd          = "message_end"
-	EventToolExecutionStart  = "tool_execution_start"
-	EventToolExecutionUpdate = "tool_execution_update"
-	EventToolExecutionEnd    = "tool_execution_end"
-	EventCompaction          = "compaction"
-	EventCompactionStart     = "compaction_start"
-	EventTelemetry           = "telemetry"
-	EventSubAgentProgress    = "subagent_progress"
+	EventAgentStart           = "agent_start"
+	EventAgentEnd             = "agent_end"
+	EventTurnStart            = "turn_start"
+	EventTurnEnd              = "turn_end"
+	EventMessageStart         = "message_start"
+	EventMessageUpdate        = "message_update"
+	EventMessageEnd           = "message_end"
+	EventToolExecutionPending = "tool_execution_pending"
+	EventToolExecutionStart   = "tool_execution_start"
+	EventToolExecutionUpdate  = "tool_execution_update"
+	EventToolExecutionEnd     = "tool_execution_end"
+	EventCompaction           = "compaction"
+	EventCompactionStart      = "compaction_start"
+	EventTelemetry            = "telemetry"
+	EventSubAgentProgress     = "subagent_progress"
 )
 
 // AgentStartEvent is emitted once when a loop run begins. SessionID, when set,
@@ -67,6 +68,14 @@ type MessageUpdateEvent struct {
 // MessageEndEvent is emitted when a message finishes streaming.
 type MessageEndEvent struct {
 	Message AgentMessage
+}
+
+// ToolExecutionPendingEvent is emitted when a tool call is first observed,
+// before hooks, permission gating, and execution.
+type ToolExecutionPendingEvent struct {
+	ToolCallID string
+	ToolName   string
+	Args       any
 }
 
 // ToolExecutionStartEvent is emitted before a tool runs.
@@ -186,32 +195,34 @@ type TelemetryEvent struct {
 	ContextWindow int
 }
 
-func (AgentStartEvent) isAgentEvent()          {}
-func (AgentEndEvent) isAgentEvent()            {}
-func (TurnStartEvent) isAgentEvent()           {}
-func (TurnEndEvent) isAgentEvent()             {}
-func (MessageStartEvent) isAgentEvent()        {}
-func (MessageUpdateEvent) isAgentEvent()       {}
-func (MessageEndEvent) isAgentEvent()          {}
-func (ToolExecutionStartEvent) isAgentEvent()  {}
-func (ToolExecutionUpdateEvent) isAgentEvent() {}
-func (ToolExecutionEndEvent) isAgentEvent()    {}
-func (CompactionEvent) isAgentEvent()          {}
-func (CompactionStartEvent) isAgentEvent()     {}
-func (TelemetryEvent) isAgentEvent()           {}
-func (SubAgentProgressEvent) isAgentEvent()    {}
+func (AgentStartEvent) isAgentEvent()           {}
+func (AgentEndEvent) isAgentEvent()             {}
+func (TurnStartEvent) isAgentEvent()            {}
+func (TurnEndEvent) isAgentEvent()              {}
+func (MessageStartEvent) isAgentEvent()         {}
+func (MessageUpdateEvent) isAgentEvent()        {}
+func (MessageEndEvent) isAgentEvent()           {}
+func (ToolExecutionPendingEvent) isAgentEvent() {}
+func (ToolExecutionStartEvent) isAgentEvent()   {}
+func (ToolExecutionUpdateEvent) isAgentEvent()  {}
+func (ToolExecutionEndEvent) isAgentEvent()     {}
+func (CompactionEvent) isAgentEvent()           {}
+func (CompactionStartEvent) isAgentEvent()      {}
+func (TelemetryEvent) isAgentEvent()            {}
+func (SubAgentProgressEvent) isAgentEvent()     {}
 
-func (AgentStartEvent) EventType() string          { return EventAgentStart }
-func (AgentEndEvent) EventType() string            { return EventAgentEnd }
-func (TurnStartEvent) EventType() string           { return EventTurnStart }
-func (TurnEndEvent) EventType() string             { return EventTurnEnd }
-func (MessageStartEvent) EventType() string        { return EventMessageStart }
-func (MessageUpdateEvent) EventType() string       { return EventMessageUpdate }
-func (MessageEndEvent) EventType() string          { return EventMessageEnd }
-func (ToolExecutionStartEvent) EventType() string  { return EventToolExecutionStart }
-func (ToolExecutionUpdateEvent) EventType() string { return EventToolExecutionUpdate }
-func (ToolExecutionEndEvent) EventType() string    { return EventToolExecutionEnd }
-func (CompactionEvent) EventType() string          { return EventCompaction }
-func (CompactionStartEvent) EventType() string     { return EventCompactionStart }
-func (TelemetryEvent) EventType() string           { return EventTelemetry }
-func (SubAgentProgressEvent) EventType() string    { return EventSubAgentProgress }
+func (AgentStartEvent) EventType() string           { return EventAgentStart }
+func (AgentEndEvent) EventType() string             { return EventAgentEnd }
+func (TurnStartEvent) EventType() string            { return EventTurnStart }
+func (TurnEndEvent) EventType() string              { return EventTurnEnd }
+func (MessageStartEvent) EventType() string         { return EventMessageStart }
+func (MessageUpdateEvent) EventType() string        { return EventMessageUpdate }
+func (MessageEndEvent) EventType() string           { return EventMessageEnd }
+func (ToolExecutionPendingEvent) EventType() string { return EventToolExecutionPending }
+func (ToolExecutionStartEvent) EventType() string   { return EventToolExecutionStart }
+func (ToolExecutionUpdateEvent) EventType() string  { return EventToolExecutionUpdate }
+func (ToolExecutionEndEvent) EventType() string     { return EventToolExecutionEnd }
+func (CompactionEvent) EventType() string           { return EventCompaction }
+func (CompactionStartEvent) EventType() string      { return EventCompactionStart }
+func (TelemetryEvent) EventType() string            { return EventTelemetry }
+func (SubAgentProgressEvent) EventType() string     { return EventSubAgentProgress }

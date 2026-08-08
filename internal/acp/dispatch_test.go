@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/smallnest/pigo/internal/agentcore"
+	"github.com/smallnest/pigo/internal/agenttool"
 	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/provider"
 	"github.com/smallnest/pigo/internal/sessionstore"
@@ -381,6 +382,65 @@ func TestSessionListAndLoadMessages(t *testing.T) {
 	if _, ok := user["timestamp"]; !ok {
 		t.Fatalf("first message missing timestamp: %+v", user)
 	}
+}
+
+func TestSessionLoadAppliesAdditionalDirectories(t *testing.T) {
+	client, server := NewChannelPair()
+	defer client.Close()
+	defer server.Close()
+
+	ws := filepath.Join(t.TempDir(), "ws")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	extra := filepath.Join(t.TempDir(), "lib")
+	if err := os.MkdirAll(extra, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	read := &agenttool.ReadTool{Root: ws}
+	write := &agenttool.WriteTool{Root: ws}
+	edit := &agenttool.EditTool{Root: ws}
+	runner := &RuntimeRunner{Tools: []agentcore.AgentTool{read, write, edit}}
+	disp := NewDispatcher(NewSessionManager(runner), server, t.TempDir(), "openrouter/free", "you are pigo", nil, nil)
+	disp.SetRunner(runner)
+	srv := NewServer(server, disp)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { _ = srv.Serve(ctx) }()
+	msgs, stopReader := startClientReader(t, client)
+	defer stopReader()
+
+	raw, err := client.SendRequest(ctx, MethodSessionNew, map[string]any{"cwd": ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var newResp struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(raw, &newResp); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err = client.SendRequest(ctx, MethodSessionLoad, map[string]any{
+		"sessionId":             newResp.SessionID,
+		"cwd":                   ws,
+		"additionalDirectories": []string{extra},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, roots := range map[string][]string{
+		"read":  read.ExtraRoots,
+		"write": write.ExtraRoots,
+		"edit":  edit.ExtraRoots,
+	} {
+		if len(roots) != 1 || filepath.Clean(roots[0]) != filepath.Clean(extra) {
+			t.Fatalf("%s ExtraRoots = %v, want [%s]", name, roots, extra)
+		}
+	}
+	_ = msgs
 }
 
 func TestPigoWebExtensions(t *testing.T) {

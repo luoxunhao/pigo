@@ -50,6 +50,8 @@ const (
 	MethodPigoConfig         = "pigo/config"
 	MethodPigoConfigTest     = "pigo/config/test"
 	MethodPigoMessages       = "pigo/messages"
+	MethodPigoTrustList      = "pigo/trust/list"
+	MethodPigoTrustSet       = "pigo/trust/set"
 	MethodPigoRewind         = "pigo/rewind"
 	MethodPigoFork           = "pigo/fork"
 	MethodPigoTree           = "pigo/tree"

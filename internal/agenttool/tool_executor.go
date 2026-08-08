@@ -52,6 +52,12 @@ type ToolExecutorConfig struct {
 // terminate. emit may be nil (no events). It never returns a Go error: every
 // failure is encoded into the returned message with IsError=true.
 func executeToolCall(ctx context.Context, cfg ToolExecutorConfig, call agentcore.AgentToolCall, emit agentcore.EmitFunc) (agentcore.ToolResultMessage, bool) {
+	if emit != nil {
+		if err := emit(ctx, agentcore.ToolExecutionPendingEvent{ToolCallID: call.ID, ToolName: call.Name, Args: call.Arguments}); err != nil {
+			return errorToolResult(call, "aborted before execution: "+err.Error()), false
+		}
+	}
+
 	// 1. prepare: lookup, prepareArguments, validate, beforeToolCall.
 	tool, args, prep, isError := prepareToolCall(ctx, cfg, call)
 	if prep != nil {

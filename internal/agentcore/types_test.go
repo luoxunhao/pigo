@@ -163,7 +163,7 @@ func TestAgentEventCoverage(t *testing.T) {
 	events := []AgentEvent{
 		AgentStartEvent{}, AgentEndEvent{}, TurnStartEvent{}, TurnEndEvent{},
 		MessageStartEvent{}, MessageUpdateEvent{}, MessageEndEvent{},
-		ToolExecutionStartEvent{}, ToolExecutionUpdateEvent{}, ToolExecutionEndEvent{},
+		ToolExecutionPendingEvent{}, ToolExecutionStartEvent{}, ToolExecutionUpdateEvent{}, ToolExecutionEndEvent{},
 	}
 	seen := map[string]bool{}
 	for _, e := range events {
@@ -176,7 +176,7 @@ func TestAgentEventCoverage(t *testing.T) {
 		}
 		seen[et] = true
 	}
-	if len(seen) != 10 {
-		t.Fatalf("want 10 distinct event types, got %d", len(seen))
+	if len(seen) != 11 {
+		t.Fatalf("want 11 distinct event types, got %d", len(seen))
 	}
 }

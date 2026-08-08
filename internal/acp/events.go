@@ -21,6 +21,7 @@ type eventMapper struct {
 	fileSnapshots map[string]fileToolSnapshot
 	bashCalls     map[string]bool
 	bashCommands  map[string]string
+	toolArgs      map[string]any
 	cwd           string
 }
 
@@ -35,6 +36,7 @@ func newEventMapper(cwd string) *eventMapper {
 		fileSnapshots: make(map[string]fileToolSnapshot),
 		bashCalls:     make(map[string]bool),
 		bashCommands:  make(map[string]string),
+		toolArgs:      make(map[string]any),
 		cwd:           cwd,
 	}
 }
@@ -71,6 +73,9 @@ func (m *eventMapper) Map(sessionID string, ev agentcore.AgentEvent) []map[strin
 			}
 			return []map[string]any{thoughtChunkUpdate(delta)}
 		}
+	case agentcore.ToolExecutionPendingEvent:
+		m.rememberToolArgs(e.ToolCallID, e.Args)
+		return []map[string]any{toolCallPending(e.ToolCallID, e.ToolName, e.Args)}
 	case agentcore.ToolExecutionStartEvent:
 		return []map[string]any{m.toolCallStart(e)}
 	case agentcore.ToolExecutionEndEvent:
@@ -92,6 +97,7 @@ func (m *eventMapper) Map(sessionID string, ev agentcore.AgentEvent) []map[strin
 
 func (m *eventMapper) toolCallStart(e agentcore.ToolExecutionStartEvent) map[string]any {
 	cwd := m.cwdValue()
+	m.rememberToolArgs(e.ToolCallID, e.Args)
 	if isBashTool(e.ToolName) {
 		command := bashCommandFromArgs(e.Args)
 		m.mu.Lock()
@@ -117,26 +123,37 @@ func (m *eventMapper) toolCallStart(e agentcore.ToolExecutionStartEvent) map[str
 	return update
 }
 
+func (m *eventMapper) rememberToolArgs(toolCallID string, args any) {
+	if toolCallID == "" {
+		return
+	}
+	m.mu.Lock()
+	m.toolArgs[toolCallID] = args
+	m.mu.Unlock()
+}
+
 func (m *eventMapper) toolCallEnd(e agentcore.ToolExecutionEndEvent) map[string]any {
 	m.mu.Lock()
 	isBash := m.bashCalls[e.ToolCallID]
 	command := m.bashCommands[e.ToolCallID]
 	snap, hasSnap := m.fileSnapshots[e.ToolCallID]
+	rawInput := m.toolArgs[e.ToolCallID]
 	delete(m.bashCalls, e.ToolCallID)
 	delete(m.bashCommands, e.ToolCallID)
 	delete(m.fileSnapshots, e.ToolCallID)
+	delete(m.toolArgs, e.ToolCallID)
 	m.mu.Unlock()
 
 	if isBash {
-		return bashToolCallEnd(e.ToolCallID, e.ToolName, e.IsError, e.Result, m.cwdValue(), command)
+		return bashToolCallEnd(e.ToolCallID, e.ToolName, e.IsError, e.Result, m.cwdValue(), command, rawInput)
 	}
 	if hasSnap && !e.IsError {
 		newText, err := os.ReadFile(snap.Path)
 		if err == nil && (snap.OldText == "" || string(newText) != snap.OldText) {
-			return diffToolCallEnd(e.ToolCallID, e.ToolName, false, snap.Path, snap.OldText, string(newText))
+			return diffToolCallEnd(e.ToolCallID, e.ToolName, false, snap.Path, snap.OldText, string(newText), rawInput)
 		}
 	}
-	return toolCallEnd(e.ToolCallID, e.ToolName, e.IsError, toolResultText(e.Result))
+	return toolCallEnd(e.ToolCallID, e.ToolName, e.IsError, toolResultText(e.Result), rawInput)
 }
 
 // toolFileState resolves a file tool's path, captures the pre-mutation text for
@@ -236,7 +253,7 @@ func bashToolCallStart(id, name string, rawInput any, cwd, command string) map[s
 	}
 }
 
-func bashToolCallEnd(id, name string, failed bool, result agentcore.AgentToolResult, cwd, command string) map[string]any {
+func bashToolCallEnd(id, name string, failed bool, result agentcore.AgentToolResult, cwd, command string, rawInput any) map[string]any {
 	status := "completed"
 	if failed {
 		status = "failed"
@@ -251,6 +268,7 @@ func bashToolCallEnd(id, name string, failed bool, result agentcore.AgentToolRes
 		"title":         name,
 		"kind":          "execute",
 		"status":        status,
+		"rawInput":      rawInput,
 		"content":       []map[string]any{{"type": "terminal", "terminalId": id}},
 		"_meta": map[string]any{
 			"terminal_output": map[string]any{"terminal_id": id, "data": data},
@@ -283,7 +301,7 @@ func bashExitCode(result agentcore.AgentToolResult, failed bool) int {
 	return 0
 }
 
-func diffToolCallEnd(id, name string, failed bool, path, oldText, newText string) map[string]any {
+func diffToolCallEnd(id, name string, failed bool, path, oldText, newText string, rawInput any) map[string]any {
 	status := "completed"
 	if failed {
 		status = "failed"
@@ -294,6 +312,7 @@ func diffToolCallEnd(id, name string, failed bool, path, oldText, newText string
 		"title":         name,
 		"kind":          inferToolKind(name),
 		"status":        status,
+		"rawInput":      rawInput,
 		"content": []map[string]any{
 			{"type": "diff", "path": path, "oldText": oldText, "newText": newText},
 		},
@@ -383,7 +402,18 @@ func toolCallStart(id, name string, rawInput any) map[string]any {
 	}
 }
 
-func toolCallEnd(id, name string, failed bool, rawOutput string) map[string]any {
+func toolCallPending(id, name string, rawInput any) map[string]any {
+	return map[string]any{
+		"sessionUpdate": "tool_call",
+		"toolCallId":    id,
+		"title":         name,
+		"kind":          inferToolKind(name),
+		"status":        "pending",
+		"rawInput":      rawInput,
+	}
+}
+
+func toolCallEnd(id, name string, failed bool, rawOutput string, rawInput any) map[string]any {
 	status := "completed"
 	if failed {
 		status = "failed"
@@ -395,6 +425,7 @@ func toolCallEnd(id, name string, failed bool, rawOutput string) map[string]any 
 		"kind":          inferToolKind(name),
 		"status":        status,
 		"rawOutput":     rawOutput,
+		"rawInput":      rawInput,
 	}
 }
 

@@ -14,6 +14,14 @@ pigo.exe -v                       # 打印版本信息
 
 常用配置通过 `~/.config/pigo/config.toml` 覆盖，命令行参数优先级最高（CLI > 配置文件 > 默认值）。
 
+## ACP 进程模型
+
+- `--acp` 进程绑定启动时的 cwd；system prompt、项目 AGENTS.md、hooks、slash registry 与 trust 决策均按该 cwd 解析。
+- 客户端应为一个项目启动一个 `pigo.exe --acp` 进程，并在该项目内复用；不要用同一个 ACP 进程服务多个不同项目。
+- 多目录项目由客户端把附加目录作为 `additionalDirectories` 传入 `session/new` 与 `session/load`；pigo 将其合并进 read/write/edit 工具边界。
+- pigo 不为多项目共享进程提供 per-session prompt 重建；项目上下文由客户端通过进程 cwd 提供。
+- 外部客户端（Zed、ash-workbench desktop）负责进程生命周期：按项目启动、复用、恢复与退出清理。
+
 ## 目录结构
 
 | 路径 | 职责 |
@@ -34,7 +42,7 @@ pigo.exe -v                       # 打印版本信息
 
 - ACP 方法按层放置，不按客户端命名：
   - 核心 `session/*` 与 `model/*` 的分发在 `internal/acp/dispatch.go` 的 `HandleRequest`。
-- 已实现的 `pigo/*` RPC（`pigo/command`、`pigo/status`、`pigo/models`、`pigo/models/discover`、`pigo/config`、`pigo/config/test`、`pigo/messages`）集中在 `internal/acp/pigo_rpc.go` / `internal/acp/discover.go`。
+- 已实现的 `pigo/*` RPC（`pigo/command`、`pigo/status`、`pigo/models`、`pigo/models/discover`、`pigo/config`、`pigo/config/test`、`pigo/messages`）集中在 `internal/acp/pigo_rpc.go` / `internal/acp/discover.go`；trust 管理通过新增的 `pigo/trust/list` 与 `pigo/trust/set` 暴露。
   - 斜杠命令实现集中在 `internal/acp/extensions.go`。
   - 新增 ACP 客户端只做客户端侧映射，不要新建 `xx_extensions.go`；协议方法只加一次，所有客户端共享。
 - 会话删除必须走 `internal/sessionstore` 的 store API，保持磁盘持久化一致。
@@ -78,6 +86,9 @@ Zed 通过 `agent_servers.pigo` 使用 pigo：
 ## ACP 工具策略与 hooks
 
 - `--acp` 模式与 TUI/headless 共享 pigo 侧策略：`config.toml` 的 `allowed_tools` / `disallowed_tools` 与 CLI `--allowed-tools` / `--disallowed-tools` 对 ACP 会话生效。
+- 工具事件按 `pending -> in_progress -> completed/failed` 发出；`tool_call_update` 必须携带 `rawInput`，被拦截或失败的调用也要让客户端能形成工具卡。
+- `allow_always` 写入 `~/.pigo/trust.json` 并跨进程重启生效；`allow_once` 不持久化；`reject_always` 写入 Untrusted。
+- 主目录受信任时，项目内附加目录视为同一项目信任边界，不要求每个附加目录单独信任。
 - 命令级控制通过 `PreToolUse` hooks 实现；hooks 按会话 cwd 解析，项目 hooks 仅在目录受信任时加载，全局 hooks 始终加载。
 - hooks 先于 ACP permission 确认；被拦截的调用不发起 permission 请求，原因以工具错误结果返回。
 - `task` 子 Agent 继承 hooks 边界。示例见 `scripts/hooks/block-dangerous-commands.sh`。

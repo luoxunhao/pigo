@@ -11,6 +11,7 @@ import (
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/provider"
 	"github.com/smallnest/pigo/internal/sessionstore"
+	"github.com/smallnest/pigo/internal/trust"
 )
 
 type titleProvider struct{}
@@ -106,5 +107,82 @@ func TestPromptGeneratesTitleAndNotifies(t *testing.T) {
 		case <-timeout:
 			t.Fatal("timed out waiting for generated title update")
 		}
+	}
+}
+
+func TestPigoTrustRPCListAndSet(t *testing.T) {
+	mgr, err := trust.NewManager(filepath.Join(t.TempDir(), "trust.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := NewACPPermissionBroker(&mockTransport{}, mgr, t.TempDir(), 0)
+	disp := NewDispatcher(NewSessionManager(&fakeRunner{}), nil, t.TempDir(), "model", "prompt", broker, nil)
+	cwd := filepath.Join(t.TempDir(), "project")
+
+	raw, rpcErr := disp.HandleRequest(context.Background(), RequestID{}, MethodPigoTrustList, json.RawMessage(`{}`))
+	if rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	listRaw, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listResp struct {
+		Entries []struct {
+			Path     string `json:"path"`
+			Decision string `json:"decision"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(listRaw, &listResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(listResp.Entries) != 0 {
+		t.Fatalf("initial entries = %+v", listResp.Entries)
+	}
+
+	setParams, err := json.Marshal(map[string]any{"path": cwd, "decision": "trusted"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, rpcErr = disp.HandleRequest(context.Background(), RequestID{}, MethodPigoTrustSet, setParams)
+	if rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+
+	raw, rpcErr = disp.HandleRequest(context.Background(), RequestID{}, MethodPigoTrustList, json.RawMessage(`{}`))
+	if rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	listRaw, err = json.Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(listRaw, &listResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(listResp.Entries) != 1 || listResp.Entries[0].Path != cwd || listResp.Entries[0].Decision != "trusted" {
+		t.Fatalf("entries after set = %+v", listResp.Entries)
+	}
+
+	forgetParams, err := json.Marshal(map[string]any{"path": cwd, "decision": "forget"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, rpcErr = disp.HandleRequest(context.Background(), RequestID{}, MethodPigoTrustSet, forgetParams); rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	raw, rpcErr = disp.HandleRequest(context.Background(), RequestID{}, MethodPigoTrustList, json.RawMessage(`{}`))
+	if rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	listRaw, err = json.Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(listRaw, &listResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(listResp.Entries) != 0 {
+		t.Fatalf("entries after forget = %+v", listResp.Entries)
 	}
 }

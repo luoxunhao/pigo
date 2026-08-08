@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 )
 
@@ -258,6 +259,24 @@ func (m *Manager) DecisionFor(dir string) (Decision, bool) {
 		return Undecided, false
 	}
 	return decisionFromBool(v), true
+}
+
+// Entry is one persisted trust decision exposed to clients.
+type Entry struct {
+	Path     string
+	Decision Decision
+}
+
+// Entries returns all persisted decisions sorted by path.
+func (m *Manager) Entries() []Entry {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]Entry, 0, len(m.data))
+	for path, v := range m.data {
+		out = append(out, Entry{Path: path, Decision: decisionFromBool(v)})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
 }
 
 // saveLocked writes the trust map to disk atomically so a crash mid-write

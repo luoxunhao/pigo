@@ -670,6 +670,9 @@ func agentEventEnvelope(ev agentcore.AgentEvent) map[string]any {
 				env["text"] = text
 			}
 		}
+	case agentcore.ToolExecutionPendingEvent:
+		env["toolCallId"] = e.ToolCallID
+		env["toolName"] = e.ToolName
 	case agentcore.ToolExecutionStartEvent:
 		env["toolCallId"] = e.ToolCallID
 		env["toolName"] = e.ToolName

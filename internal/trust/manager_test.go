@@ -317,6 +317,27 @@ func TestMalformedFileIsError(t *testing.T) {
 	}
 }
 
+func TestEntriesReturnsSortedPersistedDecisions(t *testing.T) {
+	dir := t.TempDir()
+	m, err := NewManager(filepath.Join(dir, "trust.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetDecision(filepath.Join(dir, "b"), Trusted); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetDecision(filepath.Join(dir, "a"), Untrusted); err != nil {
+		t.Fatal(err)
+	}
+	entries := m.Entries()
+	if len(entries) != 2 || entries[0].Path != filepath.Join(dir, "a") || entries[1].Path != filepath.Join(dir, "b") {
+		t.Fatalf("entries = %+v", entries)
+	}
+	if entries[0].Decision != Untrusted || entries[1].Decision != Trusted {
+		t.Fatalf("decisions = %+v", entries)
+	}
+}
+
 // TestConcurrentAccess exercises the mutex under -race: many goroutines reading
 // and writing concurrently must not trip the race detector.
 func TestConcurrentAccess(t *testing.T) {

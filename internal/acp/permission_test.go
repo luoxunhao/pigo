@@ -108,6 +108,29 @@ func TestPermissionAllowAlways(t *testing.T) {
 	}
 }
 
+func TestPermissionAllowAlwaysPersistsAcrossReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trust.json")
+	cwd := filepath.Join(t.TempDir(), "project")
+	m := &mockTransport{}
+	mgr, err := trust.NewManager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	respond(m, "allow_always")
+	broker := NewACPPermissionBroker(m, mgr, cwd, 0)
+	if dec := broker.BeforeToolCall("s1", cwd)(context.Background(), bashCall()); dec != nil {
+		t.Fatalf("allow always blocked: %+v", dec)
+	}
+
+	reloaded, err := trust.NewManager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.IsTrusted(cwd) {
+		t.Fatalf("allow always did not persist trust across reload")
+	}
+}
+
 func TestPermissionRejectOnce(t *testing.T) {
 	m, mgr, cwd := newPermissionTest(t)
 	respond(m, "reject_once")
@@ -233,9 +256,35 @@ func TestPermissionRemoteConfirm(t *testing.T) {
 	broker.SetRemoteConfirm(func(tool, summary string) (allow, always bool, ok bool) {
 		return false, false, true
 	})
-	mgr.ClearSessionTrust(cwd)
+	if err := mgr.SetDecision(cwd, trust.Untrusted); err != nil {
+		t.Fatal(err)
+	}
 	if dec := hook(context.Background(), bashCall()); dec == nil || !dec.Block {
 		t.Fatalf("remote rejection did not block: %+v", dec)
+	}
+}
+
+func TestPermissionRemoteAlwaysPersistsAcrossReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trust.json")
+	cwd := filepath.Join(t.TempDir(), "project")
+	mgr, err := trust.NewManager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := NewACPPermissionBroker(&mockTransport{}, mgr, cwd, 0)
+	broker.SetRemoteConfirm(func(tool, summary string) (allow, always bool, ok bool) {
+		return true, true, true
+	})
+	if dec := broker.BeforeToolCall("s1", cwd)(context.Background(), bashCall()); dec != nil {
+		t.Fatalf("remote allow always blocked: %+v", dec)
+	}
+
+	reloaded, err := trust.NewManager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.IsTrusted(cwd) {
+		t.Fatalf("remote allow always did not persist trust across reload")
 	}
 }
 

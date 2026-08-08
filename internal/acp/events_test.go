@@ -83,10 +83,54 @@ func TestMapToolStartEnd(t *testing.T) {
 	if e["sessionUpdate"] != "tool_call_update" || e["status"] != "completed" {
 		t.Fatalf("tool end shape = %+v", e)
 	}
+	if e["rawInput"] == nil {
+		t.Fatalf("tool end rawInput missing: %+v", e)
+	}
 	meta := e["_meta"].(map[string]any)
 	out := meta["terminal_output"].(map[string]any)
 	if out["data"] != "> echo hi\nhi" {
 		t.Fatalf("terminal output = %v, want hi", out["data"])
+	}
+}
+
+func TestMapToolPending(t *testing.T) {
+	m := newEventMapper("")
+	updates := m.Map("s1", agentcore.ToolExecutionPendingEvent{
+		ToolCallID: "call-1",
+		ToolName:   "bash",
+		Args:       map[string]any{"command": "echo hi"},
+	})
+	if len(updates) != 1 {
+		t.Fatalf("pending updates = %+v", updates)
+	}
+	u := updates[0]
+	if u["sessionUpdate"] != "tool_call" || u["status"] != "pending" || u["kind"] != "execute" {
+		t.Fatalf("pending shape = %+v", u)
+	}
+	if u["rawInput"] == nil {
+		t.Fatalf("pending rawInput missing: %+v", u)
+	}
+}
+
+func TestMapToolEndCarriesRawInputAfterPending(t *testing.T) {
+	m := newEventMapper("")
+	m.Map("s1", agentcore.ToolExecutionPendingEvent{
+		ToolCallID: "call-1",
+		ToolName:   "bash",
+		Args:       map[string]any{"command": "echo hi"},
+	})
+	end := m.Map("s1", agentcore.ToolExecutionEndEvent{
+		ToolCallID: "call-1",
+		ToolName:   "bash",
+		IsError:    true,
+		Result:     agentcore.AgentToolResult{Content: agentcore.ContentList{agentcore.NewTextContent("blocked")}},
+	})
+	if len(end) != 1 {
+		t.Fatalf("end updates = %+v", end)
+	}
+	u := end[0]
+	if u["status"] != "failed" || u["rawInput"] == nil {
+		t.Fatalf("failed end shape = %+v", u)
 	}
 }
 

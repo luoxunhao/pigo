@@ -54,6 +54,8 @@ func (r *RemoteBridge) SendOutput(text string) { r.server.SendOutput(text) }
 func (r *RemoteBridge) SendEvent(ev agentcore.AgentEvent) {
 	var text string
 	switch e := ev.(type) {
+	case agentcore.ToolExecutionPendingEvent:
+		text = "▶ " + e.ToolName
 	case agentcore.ToolExecutionStartEvent:
 		text = "▶ " + e.ToolName
 	case agentcore.ToolExecutionEndEvent:

@@ -62,7 +62,9 @@ func (b *ACPPermissionBroker) BeforeToolCall(sessionID, cwd string) agentcore.Be
 					return blockDecision(fmt.Sprintf("tool %q blocked by remote decision", call.Name))
 				}
 				if always {
-					b.trust.SetSessionTrust(cwd)
+					if err := b.trust.SetDecision(cwd, trust.Trusted); err != nil {
+						return blockDecision(fmt.Sprintf("tool %q blocked: persist trust failed: %v", call.Name, err))
+					}
 				}
 				return nil
 			}
@@ -75,7 +77,9 @@ func (b *ACPPermissionBroker) BeforeToolCall(sessionID, cwd string) agentcore.Be
 		case permissionAllowOnce:
 			return nil
 		case permissionAllowAlways:
-			b.trust.SetSessionTrust(cwd)
+			if err := b.trust.SetDecision(cwd, trust.Trusted); err != nil {
+				return blockDecision(fmt.Sprintf("tool %q blocked: persist trust failed: %v", call.Name, err))
+			}
 			return nil
 		case permissionRejectAlways:
 			_ = b.trust.SetDecision(cwd, trust.Untrusted)

@@ -11,6 +11,7 @@ import (
 	"github.com/smallnest/pigo/internal/agenttool"
 	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/provider"
+	"github.com/smallnest/pigo/internal/trust"
 )
 
 // pigoCommand runs a slash command through the command registry. Commands are
@@ -253,6 +254,61 @@ func (d *Dispatcher) pigoConfigTest(params json.RawMessage) (any, *Error) {
 		}
 	}
 	return configTestFailure(time.Since(start).Milliseconds(), "stream ended without a response"), nil
+}
+
+// pigoTrustList returns all persisted trust decisions.
+func (d *Dispatcher) pigoTrustList(_ json.RawMessage) (any, *Error) {
+	if d.trustMgr == nil {
+		return nil, NewError(CodeInternalError, "trust is disabled")
+	}
+	entries := d.trustMgr.Entries()
+	out := make([]map[string]any, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, map[string]any{
+			"path":     e.Path,
+			"decision": e.Decision.String(),
+		})
+	}
+	return map[string]any{"entries": out}, nil
+}
+
+// pigoTrustSet writes or removes one persisted trust decision.
+func (d *Dispatcher) pigoTrustSet(params json.RawMessage) (any, *Error) {
+	var req struct {
+		Path     string `json:"path"`
+		Decision string `json:"decision"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil || strings.TrimSpace(req.Path) == "" || strings.TrimSpace(req.Decision) == "" {
+		return nil, NewError(CodeInvalidParams, "missing path or decision")
+	}
+	if !filepath.IsAbs(req.Path) {
+		return nil, NewError(CodeInvalidParams, "path must be absolute")
+	}
+	if d.trustMgr == nil {
+		return nil, NewError(CodeInternalError, "trust is disabled")
+	}
+	decision := strings.ToLower(strings.TrimSpace(req.Decision))
+	var err error
+	switch decision {
+	case "trusted":
+		err = d.trustMgr.SetDecision(req.Path, trust.Trusted)
+	case "untrusted":
+		err = d.trustMgr.SetDecision(req.Path, trust.Untrusted)
+	case "undecided":
+		err = d.trustMgr.SetDecision(req.Path, trust.Undecided)
+	case "forget", "remove":
+		err = d.trustMgr.Forget(req.Path)
+		decision = "forget"
+	default:
+		return nil, NewError(CodeInvalidParams, "decision must be trusted, untrusted, undecided, or forget")
+	}
+	if err != nil {
+		return nil, NewError(CodeInternalError, err.Error())
+	}
+	return map[string]any{
+		"path":     filepath.Clean(req.Path),
+		"decision": decision,
+	}, nil
 }
 
 func configTestFailure(responseTimeMs int64, details string) map[string]any {
