@@ -419,10 +419,7 @@ func writeCompactionCheckpoint(ctx context.Context, msgs agentcore.MessageList, 
 	if cfg.MemoryRoot == "" || cfg.SessionID == "" || res == nil {
 		return
 	}
-	watermark := res.FirstKeptIndex
-	if watermark < 0 {
-		watermark = 0
-	}
+	watermark := max(0, res.FirstKeptIndex)
 	if watermark > len(msgs) {
 		watermark = len(msgs)
 	}

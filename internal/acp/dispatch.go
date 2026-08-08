@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -457,9 +458,7 @@ func (d *Dispatcher) sessionList(params json.RawMessage) (any, *Error) {
 		sessions = sessionInfos(metas)
 	}
 	offset, _ := strconv.Atoi(req.Cursor)
-	if offset < 0 {
-		offset = 0
-	}
+	offset = max(0, offset)
 	end := offset + 50
 	if end > len(sessions) {
 		end = len(sessions)
@@ -610,7 +609,7 @@ func (d *Dispatcher) applyModelSwitch(sess *AcpSession, modelID string) {
 	if !ok || len(m.ThinkingLevels) == 0 {
 		return
 	}
-	if !containsString(m.ThinkingLevels, sess.Thinking) {
+	if !slices.Contains(m.ThinkingLevels, sess.Thinking) {
 		sess.Thinking = m.ThinkingLevels[0]
 		_ = persistSessionThinking(sess)
 		d.sendSessionUpdate(sess.ID, map[string]any{
@@ -630,17 +629,9 @@ func (d *Dispatcher) modeAllowed(sess *AcpSession, mode string) bool {
 	if !ok || len(m.ThinkingLevels) == 0 {
 		return true
 	}
-	return containsString(m.ThinkingLevels, mode)
+	return slices.Contains(m.ThinkingLevels, mode)
 }
 
-func containsString(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}
 
 func (d *Dispatcher) runPrompt(ctx context.Context, id RequestID, params json.RawMessage) {
 	sessionID, text, images, ok := parsePromptParams(params)

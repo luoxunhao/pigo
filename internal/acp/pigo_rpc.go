@@ -351,10 +351,7 @@ func (d *Dispatcher) pigoMessages(params json.RawMessage) (any, *Error) {
 			}
 		}
 	}
-	start := end - limit
-	if start < 0 {
-		start = 0
-	}
+	start := max(0, end-limit)
 	messages := make([]any, 0, end-start)
 	for _, e := range entries[start:end] {
 		messages = append(messages, entryToACPMessage(e))

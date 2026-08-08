@@ -139,10 +139,7 @@ func RebuildFromCheckpoint(
 // verbatim. It reuses compaction.CompactionResult.RebuildContext so the summary
 // message is shaped exactly like a compaction checkpoint.
 func rebuildFromLoadedCheckpoint(msgs agentcore.MessageList, cp *Checkpoint, tokensBefore int, now int64) *RebuildResult {
-	w := cp.Watermark
-	if w < 0 {
-		w = 0
-	}
+	w := max(0, cp.Watermark)
 	if w > len(msgs) {
 		w = len(msgs)
 	}

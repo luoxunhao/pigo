@@ -75,10 +75,7 @@ func (t *telemetry) observe(ev agentcore.AgentEvent) {
 			return
 		}
 		delete(t.toolStarts, e.ToolCallID)
-		elapsed := t.now().Sub(start).Milliseconds()
-		if elapsed < 0 {
-			elapsed = 0
-		}
+		elapsed := max(0, t.now().Sub(start).Milliseconds())
 		agg := t.toolTimings[e.ToolName]
 		agg.Count++
 		agg.TotalMs += elapsed

@@ -212,10 +212,7 @@ func cmdRewind(ctx context.Context, d *Dispatcher, sess *AcpSession, args string
 	if d.snap != nil {
 		points := d.snap.Points()
 		if len(points) > 0 {
-			idx := len(points) - n
-			if idx < 0 {
-				idx = 0
-			}
+			idx := max(0, len(points)-n)
 			_, files, warns, err := d.snap.Restore(idx)
 			if err != nil {
 				return "", NewError(CodeInternalError, err.Error())

@@ -77,9 +77,7 @@ func (s *statusBar) SetTelemetry(ev telemetryEventView) {
 		return
 	}
 	pct := int(ev.util*100 + 0.5)
-	if pct < 0 {
-		pct = 0
-	}
+	pct = max(0, pct)
 	if pct > 100 {
 		pct = 100
 	}

@@ -47,9 +47,7 @@ var ErrStreamIncomplete = errors.New("agent: event stream ended without a result
 // A buffer of 0 gives fully synchronous back-pressure (each Emit blocks until a
 // consumer receives), matching pi's sequential `await emit(...)`.
 func NewEventStream[T any, R any](buffer int) *EventStream[T, R] {
-	if buffer < 0 {
-		buffer = 0
-	}
+	buffer = max(0, buffer)
 	return &EventStream[T, R]{
 		ch:       make(chan T, buffer),
 		resultCh: make(chan struct{}),

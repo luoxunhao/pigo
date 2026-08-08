@@ -65,10 +65,7 @@ func Compact(
 ) (*CompactionResult, error) {
 	cut := FindCutPoint(msgs, settings.KeepRecentTokens)
 
-	start := prevCompactionIndex + 1
-	if start < 0 {
-		start = 0
-	}
+	start := max(0, prevCompactionIndex+1)
 	if start >= cut.FirstKeptIndex {
 		// Nothing new to summarize.
 		return nil, nil

@@ -1340,9 +1340,7 @@ func (m *Model) relayout() {
 		// nothing so the single-run layout is unchanged.
 		rows -= m.subagents.lineCount(m.width)
 	}
-	if rows < 0 {
-		rows = 0
-	}
+	rows = max(0, rows)
 	m.transcript.setSize(m.width, rows)
 	m.input.SetWidth(m.width)
 }
@@ -1365,9 +1363,6 @@ func (m Model) onScrollbar(x, y int) bool {
 // the first size message arrives: the total minus the status bar and a single
 // input row, floored at zero so tiny terminals never produce a negative extent.
 func transcriptHeight(total int) int {
-	h := total - 2
-	if h < 0 {
-		h = 0
-	}
+	h := max(0, total-2)
 	return h
 }
