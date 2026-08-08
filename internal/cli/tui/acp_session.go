@@ -114,10 +114,8 @@ func (m Model) withACPSession(s *runSession, history []agentcore.Message, client
 	client.SetPermissionHandler(func(req acp.Request) (any, *acp.Error) {
 		respond := make(chan any, 1)
 		permCh <- permissionRequestedMsg{req: req, respond: respond}
-		select {
-		case v := <-respond:
-			return v, nil
-		}
+		v := <-respond
+		return v, nil
 	})
 	m.startRunFn = func(prompt string) (chan tea.Msg, tea.Cmd) {
 		ch := newEventChan()
