@@ -295,7 +295,9 @@ func (s statusBar) segments() []segment {
 // N dirty entries and "⇡N" for N commits ahead, each shown only when non-zero.
 func (s statusBar) gitText() string {
 	var b strings.Builder
-	b.WriteString(glyphGit + " " + s.git.branch)
+	b.WriteString(glyphGit)
+	b.WriteByte(' ')
+	b.WriteString(s.git.branch)
 	if s.git.dirty > 0 {
 		fmt.Fprintf(&b, " %s%d", glyphDirty, s.git.dirty)
 	}
