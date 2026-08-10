@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/smallnest/pigo/internal/agentcore"
@@ -100,6 +101,30 @@ func TestStreamResponseErrorEvent(t *testing.T) {
 	}
 	if events[len(events)-1].EventType() != agentcore.EventMessageEnd {
 		t.Errorf("last event = %q, want message_end", events[len(events)-1].EventType())
+	}
+}
+
+func TestStreamResponseEarlyBuildErrorAppendsMessage(t *testing.T) {
+	cfg := LoopConfig{
+		Model: "fake",
+		Stream: func(context.Context, string, provider.LlmContext, provider.StreamConfig) (*provider.AssistantMessageEventStream, error) {
+			return nil, errors.New("build failed")
+		},
+	}
+	agentCtx := &agentcore.AgentContext{}
+	msg, events := runStream(t, agentCtx, cfg)
+	if msg.StopReason != agentcore.StopReasonError || msg.ErrorMessage != "build failed" {
+		t.Fatalf("want error terminal message, got %+v", msg)
+	}
+	if len(agentCtx.Messages) != 1 {
+		t.Fatalf("context messages = %d, want the error assistant recorded", len(agentCtx.Messages))
+	}
+	got, ok := agentCtx.Messages[0].(agentcore.AssistantMessage)
+	if !ok || got.ErrorMessage != msg.ErrorMessage || got.StopReason != msg.StopReason {
+		t.Fatalf("context message = %T %+v, want the returned error message", agentCtx.Messages[0], agentCtx.Messages[0])
+	}
+	if len(events) != 1 || events[0].EventType() != agentcore.EventMessageEnd {
+		t.Fatalf("events = %+v, want a single message_end", events)
 	}
 }
 
