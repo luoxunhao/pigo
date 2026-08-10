@@ -35,7 +35,8 @@ const taskDescription = "Dispatch a general-purpose sub-agent to autonomously co
 const taskSystemPrompt = "You are a focused sub-agent working on one delegated task. " +
 	"You have your own fresh context and the standard tool set, but you cannot spawn further sub-agents. " +
 	"Complete the task fully using the tools available, then respond with a concise final report of what you did and any key findings. " +
-	"Your final message is returned verbatim to the agent that dispatched you, so make it self-contained."
+	"Your final message is returned verbatim to the agent that dispatched you, so make it self-contained. " +
+	"End your final message with the marker <<DONE>>."
 
 // taskSchema is the JSON Schema for a task invocation: a required self-contained
 // prompt plus an optional short description used for status display.

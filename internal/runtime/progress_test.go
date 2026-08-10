@@ -63,7 +63,7 @@ func TestTaskEmitsSubAgentProgress(t *testing.T) {
 	child := &fauxProvider{
 		name:   "faux-child",
 		models: []provider.Model{{Provider: "faux-child", ID: "child"}},
-		turns:  []fauxTurn{toolCallTurn("t1", "read", `{}`), textTurn("child final report")},
+		turns:  []fauxTurn{toolCallTurn("t1", "read", `{}`), textTurn("child final report <<DONE>>")},
 	}
 	factory := func() RunConfig {
 		reg := agenttool.NewToolRegistry()
@@ -128,7 +128,7 @@ func TestTaskNilEmitterNoPanic(t *testing.T) {
 	child := &fauxProvider{
 		name:   "faux-child",
 		models: []provider.Model{{Provider: "faux-child", ID: "child"}},
-		turns:  []fauxTurn{textTurn("child final report")},
+		turns:  []fauxTurn{textTurn("child final report <<DONE>>")},
 	}
 	factory := func() RunConfig {
 		return RunConfig{

@@ -30,7 +30,7 @@ func TestSubAgentParentChildParent(t *testing.T) {
 	child := &fauxProvider{
 		name:   "faux-child",
 		models: []provider.Model{{Provider: "faux-child", ID: "child"}},
-		turns:  []fauxTurn{textTurn("child result: 42")},
+		turns:  []fauxTurn{textTurn("child result: 42 <<DONE>>")},
 	}
 	// The sub-agent tool spawns a child loop over its own context + provider.
 	sub := NewSubAgentTool(SubAgentSpec{
@@ -103,7 +103,7 @@ func TestSubAgentConcurrent(t *testing.T) {
 		cp := &fauxProvider{
 			name:   "faux-child-" + answer,
 			models: []provider.Model{{Provider: "c", ID: "c"}},
-			turns:  []fauxTurn{textTurn(answer)},
+			turns:  []fauxTurn{textTurn(answer + " <<DONE>>")},
 		}
 		return NewSubAgentTool(SubAgentSpec{
 			Name:        "agent-" + answer,

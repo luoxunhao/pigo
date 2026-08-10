@@ -134,6 +134,33 @@ func TestExecutorToolError(t *testing.T) {
 	}
 }
 
+func TestExecutorResultIsErrorHonored(t *testing.T) {
+	tool := execTool{name: "shaped-error", run: func(ctx context.Context, id string, args json.RawMessage, onUpdate agentcore.ToolUpdateFunc) (agentcore.AgentToolResult, error) {
+		return agentcore.AgentToolResult{
+			Content: agentcore.ContentList{agentcore.NewTextContent("edit: old_string not found")},
+			IsError: true,
+		}, nil
+	}}
+	cfg := newExecCfg(t, tool)
+	msg, _ := executeToolCall(context.Background(), cfg, agentcore.AgentToolCall{ID: "1", Name: "shaped-error"}, nil)
+	if !msg.IsError {
+		t.Fatalf("tool result with IsError=true must surface as an error: %+v", msg)
+	}
+	if got := textOf(msg); got != "edit: old_string not found" {
+		t.Fatalf("error text = %q, want the tool's own message", got)
+	}
+}
+
+func TestErrorResultCarriesIsError(t *testing.T) {
+	res := errorResult("edit: old_string not found")
+	if !res.IsError {
+		t.Fatalf("errorResult must set IsError=true: %+v", res)
+	}
+	if got := textOf(agentcore.ToolResultMessage{Content: res.Content}); got != "edit: old_string not found" {
+		t.Fatalf("errorResult text = %q, want the original message", got)
+	}
+}
+
 func TestExecutorPanicRecovered(t *testing.T) {
 	tool := execTool{name: "panic", run: func(ctx context.Context, id string, args json.RawMessage, onUpdate agentcore.ToolUpdateFunc) (agentcore.AgentToolResult, error) {
 		panic("oops")

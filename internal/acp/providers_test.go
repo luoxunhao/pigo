@@ -246,9 +246,9 @@ func TestPigoConfigDoesNotReturnKeyToAnyClient(t *testing.T) {
 	go func() { _ = srvACP.Serve(ctx) }()
 
 	if _, err := client.SendRequest(ctx, MethodInitialize, map[string]any{
-		"protocolVersion": 1,
+		"protocolVersion":    1,
 		"clientCapabilities": map[string]any{},
-		"clientInfo": map[string]any{"name": "ash-workbench", "version": "0.1.0"},
+		"clientInfo":         map[string]any{"name": "ash-workbench", "version": "0.1.0"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -288,9 +288,9 @@ func TestPigoConfigDoesNotReturnKeyToZed(t *testing.T) {
 	go func() { _ = srvACP.Serve(ctx) }()
 
 	if _, err := client.SendRequest(ctx, MethodInitialize, map[string]any{
-		"protocolVersion": 1,
+		"protocolVersion":    1,
 		"clientCapabilities": map[string]any{},
-		"clientInfo": map[string]any{"name": "zed", "version": "0.1.0"},
+		"clientInfo":         map[string]any{"name": "zed", "version": "0.1.0"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -527,6 +527,62 @@ func TestSessionNewIncludesCustomModels(t *testing.T) {
 	if !strings.Contains(string(raw), "custom-gw/m1") {
 		t.Fatalf("session/new missing custom model: %s", raw)
 	}
+}
+
+func TestSessionNewAndLoadIncludeAvailableCommands(t *testing.T) {
+	client, server := NewChannelPair()
+	defer client.Close()
+	defer server.Close()
+	disp, _ := newTestDispatcher(t, &fakeRunner{}, server)
+	srvACP := NewServer(server, disp)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { _ = srvACP.Serve(ctx) }()
+
+	ws := filepath.Join(t.TempDir(), "ws")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := client.SendRequest(ctx, MethodSessionNew, map[string]any{"cwd": ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created struct {
+		SessionID         string           `json:"sessionId"`
+		AvailableCommands []map[string]any `json:"availableCommands"`
+	}
+	if err := json.Unmarshal(raw, &created); err != nil {
+		t.Fatal(err)
+	}
+	if !availableCommandsContain(created.AvailableCommands, "session") {
+		t.Fatalf("session/new availableCommands missing /session: %s", raw)
+	}
+
+	raw, err = client.SendRequest(ctx, MethodSessionLoad, map[string]any{
+		"sessionId": created.SessionID,
+		"cwd":       ws,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var loaded struct {
+		AvailableCommands []map[string]any `json:"availableCommands"`
+	}
+	if err := json.Unmarshal(raw, &loaded); err != nil {
+		t.Fatal(err)
+	}
+	if !availableCommandsContain(loaded.AvailableCommands, "session") {
+		t.Fatalf("session/load availableCommands missing /session: %s", raw)
+	}
+}
+
+func availableCommandsContain(cmds []map[string]any, name string) bool {
+	for _, c := range cmds {
+		if c["name"] == name {
+			return true
+		}
+	}
+	return false
 }
 
 func TestSetModelThenPromptUsesCustomEndpoint(t *testing.T) {

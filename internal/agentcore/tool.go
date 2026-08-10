@@ -58,4 +58,5 @@ type AgentToolResult struct {
 	Content   ContentList `json:"content"`
 	Details   any         `json:"details,omitempty"`
 	Terminate *bool       `json:"terminate,omitempty"`
+	IsError   bool        `json:"isError,omitempty"`
 }

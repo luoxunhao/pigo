@@ -55,7 +55,7 @@ func TestTaskReturnsChildText(t *testing.T) {
 	child := &fauxProvider{
 		name:   "faux-child",
 		models: []provider.Model{{Provider: "faux-child", ID: "child"}},
-		turns:  []fauxTurn{textTurn("child final report")},
+		turns:  []fauxTurn{textTurn("child final report <<DONE>>")},
 	}
 	factory := func() RunConfig {
 		return RunConfig{
@@ -151,7 +151,7 @@ func TestTaskSemaphoreBoundsConcurrency(t *testing.T) {
 		p := &fauxProvider{
 			name:   "faux-child",
 			models: []provider.Model{{Provider: "c", ID: "c"}},
-			turns:  []fauxTurn{toolCallTurn("t", "block", `{}`), textTurn("done")},
+			turns:  []fauxTurn{toolCallTurn("t", "block", `{}`), textTurn("done <<DONE>>")},
 		}
 		reg := agenttool.NewToolRegistry()
 		_ = reg.Register(blockTool)
@@ -206,7 +206,7 @@ func TestTaskAdvertisesRegistryTools(t *testing.T) {
 		child := &fauxProvider{
 			name:   "faux-child",
 			models: []provider.Model{{Provider: "faux-child", ID: "child"}},
-			turns:  []fauxTurn{textTurn("done")},
+			turns:  []fauxTurn{textTurn("done <<DONE>>")},
 		}
 		return provider.StreamFnFromProvider(child)(ctx, model, llm, cfg)
 	})

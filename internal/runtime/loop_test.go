@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/smallnest/pigo/internal/agentcore"
@@ -225,6 +226,110 @@ func TestAgentLoopLengthFailsToolCalls(t *testing.T) {
 	}
 	if !foundFail {
 		t.Errorf("expected a synthesized failed tool result for the truncated call")
+	}
+}
+
+func lengthToolTurn(id, name, rawArgs string) fauxTurn {
+	msg := agentcore.AssistantMessage{
+		RoleField:  agentcore.RoleAssistant,
+		StopReason: agentcore.StopReasonLength,
+		Content:    agentcore.ContentList{agentcore.NewToolCallContent(id, name, json.RawMessage(rawArgs))},
+	}
+	return fauxTurn{
+		provider.StreamStartEvent{Partial: agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant}},
+		provider.StreamDoneEvent{Message: msg},
+	}
+}
+
+func TestAgentLoopLengthSanitizesInvalidToolArgs(t *testing.T) {
+	p := &fauxProvider{
+		name:   "faux",
+		models: []provider.Model{{Provider: "faux", ID: "faux"}},
+		turns: []fauxTurn{
+			lengthToolTurn("c1", "echo", `{"path":"x"`),
+			textTurn("done"),
+		},
+	}
+	cfg := newFauxRunCfg(p, echoTool("echo", agentcore.ToolExecutionParallel, false))
+	agentCtx := &agentcore.AgentContext{Messages: agentcore.MessageList{agentcore.UserMessage{RoleField: agentcore.RoleUser}}}
+	collectStream(t, agentLoop(context.Background(), agentCtx, cfg))
+
+	if p.callCount() != 2 {
+		t.Fatalf("provider calls = %d, want 2", p.callCount())
+	}
+	req := p.requestAt(1)
+	found := false
+	for _, m := range req.Context.Messages {
+		if a, ok := m.(agentcore.AssistantMessage); ok {
+			for _, tc := range a.ToolCalls() {
+				if tc.ID != "c1" {
+					continue
+				}
+				found = true
+				if got := string(tc.Arguments); got != "{}" {
+					t.Errorf("sanitized tool args = %q, want {}", got)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("sanitized tool call not found in the next provider request")
+	}
+}
+
+func TestAgentLoopLengthCapStopsRun(t *testing.T) {
+	p := &fauxProvider{
+		name:   "faux",
+		models: []provider.Model{{Provider: "faux", ID: "faux"}},
+		turns: []fauxTurn{
+			lengthToolTurn("c1", "echo", `{"path":"x"`),
+			lengthToolTurn("c2", "echo", `{"path":"y"`),
+			lengthToolTurn("c3", "echo", `{"path":"z"`),
+		},
+	}
+	cfg := newFauxRunCfg(p, echoTool("echo", agentcore.ToolExecutionParallel, false))
+	agentCtx := &agentcore.AgentContext{Messages: agentcore.MessageList{agentcore.UserMessage{RoleField: agentcore.RoleUser}}}
+	_, msgs := collectStream(t, agentLoop(context.Background(), agentCtx, cfg))
+
+	if p.callCount() != 3 {
+		t.Fatalf("provider calls = %d, want 3 (cap before a 4th turn)", p.callCount())
+	}
+	last, ok := msgs[len(msgs)-1].(agentcore.AssistantMessage)
+	if !ok || last.StopReason != agentcore.StopReasonError {
+		t.Fatalf("last message = %T %+v, want an error stop", msgs[len(msgs)-1], msgs[len(msgs)-1])
+	}
+	if !strings.Contains(last.ErrorMessage, "consecutive truncated") {
+		t.Errorf("error message = %q, want a consecutive-length explanation", last.ErrorMessage)
+	}
+}
+
+func TestAgentLoopLengthCounterResetsOnNormalTurn(t *testing.T) {
+	p := &fauxProvider{
+		name:   "faux",
+		models: []provider.Model{{Provider: "faux", ID: "faux"}},
+		turns: []fauxTurn{
+			lengthToolTurn("c1", "echo", `{"path":"a"`),
+			textTurn("normal"),
+			lengthToolTurn("c2", "echo", `{"path":"b"`),
+			lengthToolTurn("c3", "echo", `{"path":"c"`),
+			lengthToolTurn("c4", "echo", `{"path":"d"`),
+		},
+	}
+	cfg := newFauxRunCfg(p, echoTool("echo", agentcore.ToolExecutionParallel, false))
+	served := false
+	cfg.GetFollowUpMessages = func(context.Context, *agentcore.AgentContext) []agentcore.AgentMessage {
+		if served {
+			return nil
+		}
+		served = true
+		return []agentcore.AgentMessage{agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("continue")}}}
+	}
+	agentCtx := &agentcore.AgentContext{Messages: agentcore.MessageList{agentcore.UserMessage{RoleField: agentcore.RoleUser}}}
+	collectStream(t, agentLoop(context.Background(), agentCtx, cfg))
+
+	// One length, one normal reset, then three consecutive lengths hit the cap.
+	if p.callCount() != 5 {
+		t.Fatalf("provider calls = %d, want 5 (counter reset on the normal turn)", p.callCount())
 	}
 }
 

@@ -44,7 +44,7 @@ func TestSubAgentGoroutineModeUnchanged(t *testing.T) {
 	child := &fauxProvider{
 		name:   "faux-child",
 		models: []provider.Model{{Provider: "faux-child", ID: "child"}},
-		turns:  []fauxTurn{textTurn("child answer")},
+		turns:  []fauxTurn{textTurn("child answer <<DONE>>")},
 	}
 	sub := NewSubAgentTool(SubAgentSpec{
 		Name:         "researcher",
@@ -63,6 +63,91 @@ func TestSubAgentGoroutineModeUnchanged(t *testing.T) {
 	}
 	if child.callCount() != 1 {
 		t.Errorf("child provider calls = %d, want 1", child.callCount())
+	}
+}
+
+func TestSubAgentGoroutineWhitespaceOnlyResultIsError(t *testing.T) {
+	child := &fauxProvider{
+		name:   "faux-child",
+		models: []provider.Model{{Provider: "faux-child", ID: "child"}},
+		turns:  []fauxTurn{textTurn(" \n\t ")},
+	}
+	sub := NewSubAgentTool(SubAgentSpec{
+		Name:         "task",
+		SystemPrompt: "sys",
+		NewRunConfig: func() RunConfig { return newFauxRunCfg(child) },
+	})
+	res, err := sub.Execute(context.Background(), "id", json.RawMessage(`{"prompt":"go"}`), nil)
+	if err != nil {
+		t.Fatalf("Execute err = %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("whitespace-only sub-agent result must be an error: %+v", res)
+	}
+	if got := agentcore.ContentToText(res.Content); !strings.Contains(got, "produced no text output") {
+		t.Errorf("result text = %q, want a clear no-output message", got)
+	}
+}
+
+func TestSubAgentGoroutineMissingMarkerCorrects(t *testing.T) {
+	child := &fauxProvider{
+		name:   "faux-child",
+		models: []provider.Model{{Provider: "faux-child", ID: "child"}},
+		turns: []fauxTurn{
+			textTurn("let me read the files"),
+			textTurn("final report <<DONE>>"),
+		},
+	}
+	sub := NewSubAgentTool(SubAgentSpec{
+		Name:         "task",
+		SystemPrompt: "sys",
+		NewRunConfig: func() RunConfig { return newFauxRunCfg(child) },
+	})
+	res, err := sub.Execute(context.Background(), "id", json.RawMessage(`{"prompt":"go"}`), nil)
+	if err != nil {
+		t.Fatalf("Execute err = %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("corrected sub-agent result must not be an error: %+v", res)
+	}
+	if got := agentcore.ContentToText(res.Content); got != "final report" {
+		t.Errorf("result = %q, want the marker stripped to 'final report'", got)
+	}
+	if child.callCount() != 2 {
+		t.Errorf("child provider calls = %d, want 2 (initial + correction)", child.callCount())
+	}
+}
+
+func TestSubAgentGoroutineMissingMarkerFails(t *testing.T) {
+	child := &fauxProvider{
+		name:   "faux-child",
+		models: []provider.Model{{Provider: "faux-child", ID: "child"}},
+		turns: []fauxTurn{
+			textTurn("partial one"),
+			textTurn("partial two"),
+			textTurn("partial three"),
+		},
+	}
+	sub := NewSubAgentTool(SubAgentSpec{
+		Name:         "task",
+		SystemPrompt: "sys",
+		NewRunConfig: func() RunConfig { return newFauxRunCfg(child) },
+	})
+	res, err := sub.Execute(context.Background(), "id", json.RawMessage(`{"prompt":"go"}`), nil)
+	if err != nil {
+		t.Fatalf("Execute err = %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("sub-agent without marker after corrections must be an error: %+v", res)
+	}
+	if got := agentcore.ContentToText(res.Content); !strings.Contains(got, "did not produce a completed final report") {
+		t.Errorf("error text = %q, want a clear completion-failure message", got)
+	}
+	if details, ok := res.Details.(string); !ok || !strings.Contains(details, "partial three") {
+		t.Errorf("Details = %v, want the last partial text", res.Details)
+	}
+	if child.callCount() != 3 {
+		t.Errorf("child provider calls = %d, want 3 (initial + 2 corrections)", child.callCount())
 	}
 }
 
@@ -99,7 +184,7 @@ func TestSubAgentProcessModeFake(t *testing.T) {
 		var got SubAgentRunParams
 		sub.processCall = func(ctx context.Context, cfg SubAgentProcessConfig, params SubAgentRunParams) (string, error) {
 			got = params
-			return "process result: 99", nil
+			return "process result: 99 <<DONE>>", nil
 		}
 		res, err := sub.Execute(context.Background(), "id", json.RawMessage(`{"prompt":"find it"}`), nil)
 		if err != nil {
@@ -142,6 +227,45 @@ func TestSubAgentProcessModeFake(t *testing.T) {
 		}
 	})
 
+	t.Run("whitespace result is error", func(t *testing.T) {
+		sub := NewSubAgentTool(SubAgentSpec{
+			Name:      "proc",
+			Isolation: SubAgentIsolationProcess,
+			Process:   SubAgentProcessConfig{Model: "faux"},
+		})
+		sub.processCall = func(context.Context, SubAgentProcessConfig, SubAgentRunParams) (string, error) {
+			return " \n\t ", nil
+		}
+		res, err := sub.Execute(context.Background(), "id", json.RawMessage(`{"prompt":"x"}`), nil)
+		if err != nil {
+			t.Fatalf("Execute err = %v", err)
+		}
+		if !res.IsError {
+			t.Fatalf("whitespace-only process result must be an error: %+v", res)
+		}
+	})
+
+	t.Run("missing marker is error", func(t *testing.T) {
+		sub := NewSubAgentTool(SubAgentSpec{
+			Name:      "proc",
+			Isolation: SubAgentIsolationProcess,
+			Process:   SubAgentProcessConfig{Model: "faux"},
+		})
+		sub.processCall = func(context.Context, SubAgentProcessConfig, SubAgentRunParams) (string, error) {
+			return "partial progress", nil
+		}
+		res, err := sub.Execute(context.Background(), "id", json.RawMessage(`{"prompt":"x"}`), nil)
+		if err != nil {
+			t.Fatalf("Execute err = %v", err)
+		}
+		if !res.IsError {
+			t.Fatalf("process result without marker must be an error: %+v", res)
+		}
+		if details, ok := res.Details.(string); !ok || details != "partial progress" {
+			t.Errorf("Details = %v, want the partial process text", res.Details)
+		}
+	})
+
 	t.Run("forwards tool names", func(t *testing.T) {
 		// spec.Tools is in-process; process mode forwards only their names so
 		// the subprocess can rebuild builtins by name.
@@ -154,7 +278,7 @@ func TestSubAgentProcessModeFake(t *testing.T) {
 		var got SubAgentRunParams
 		sub.processCall = func(_ context.Context, _ SubAgentProcessConfig, params SubAgentRunParams) (string, error) {
 			got = params
-			return "ok", nil
+			return "ok <<DONE>>", nil
 		}
 		if _, err := sub.Execute(context.Background(), "id", json.RawMessage(`{"prompt":"x"}`), nil); err != nil {
 			t.Fatalf("Execute err = %v", err)
@@ -191,7 +315,7 @@ func TestRunSubAgentOnce(t *testing.T) {
 		p := &fauxProvider{
 			name:   "faux",
 			models: []provider.Model{{Provider: "faux", ID: "faux"}},
-			turns:  []fauxTurn{textTurn("hello from child")},
+			turns:  []fauxTurn{textTurn("hello from child <<DONE>>")},
 		}
 		text, err := RunSubAgentOnce(context.Background(), "sys", "do it", nil, newFauxRunCfg(p))
 		if err != nil {
@@ -219,6 +343,58 @@ func TestRunSubAgentOnce(t *testing.T) {
 		// subprocess must surface it rather than a bare "error" stop reason.
 		if !strings.Contains(err.Error(), "boom") {
 			t.Errorf("error %q does not contain the 'boom' diagnostic", err.Error())
+		}
+	})
+
+	t.Run("whitespace run errors", func(t *testing.T) {
+		p := &fauxProvider{
+			name:   "faux",
+			models: []provider.Model{{Provider: "faux", ID: "faux"}},
+			turns:  []fauxTurn{textTurn(" \n\t ")},
+		}
+		_, err := RunSubAgentOnce(context.Background(), "sys", "do it", nil, newFauxRunCfg(p))
+		if err == nil {
+			t.Fatal("expected error for whitespace-only child run, got nil")
+		}
+		if !strings.Contains(err.Error(), "no text output") {
+			t.Errorf("error %q does not mention no text output", err.Error())
+		}
+	})
+
+	t.Run("missing marker corrected", func(t *testing.T) {
+		p := &fauxProvider{
+			name:   "faux",
+			models: []provider.Model{{Provider: "faux", ID: "faux"}},
+			turns: []fauxTurn{
+				textTurn("still reading"),
+				textTurn("complete <<DONE>>"),
+			},
+		}
+		text, err := RunSubAgentOnce(context.Background(), "sys", "do it", nil, newFauxRunCfg(p))
+		if err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if text != "complete" {
+			t.Errorf("text = %q, want marker stripped to 'complete'", text)
+		}
+	})
+
+	t.Run("missing marker fails after corrections", func(t *testing.T) {
+		p := &fauxProvider{
+			name:   "faux",
+			models: []provider.Model{{Provider: "faux", ID: "faux"}},
+			turns: []fauxTurn{
+				textTurn("partial a"),
+				textTurn("partial b"),
+				textTurn("partial c"),
+			},
+		}
+		_, err := RunSubAgentOnce(context.Background(), "sys", "do it", nil, newFauxRunCfg(p))
+		if err == nil {
+			t.Fatal("expected error after corrective turns without marker, got nil")
+		}
+		if !strings.Contains(err.Error(), "did not produce a completed final report") {
+			t.Errorf("error %q does not mention the completion contract", err.Error())
 		}
 	})
 }

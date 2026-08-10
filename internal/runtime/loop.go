@@ -21,6 +21,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -34,6 +35,11 @@ import (
 // nowMillis returns the current Unix time in milliseconds, the timestamp unit
 // used for CompactionMessage checkpoints.
 func nowMillis() int64 { return time.Now().UnixMilli() }
+
+// maxConsecutiveLength bounds how many turns in a row may stop with
+// StopReasonLength before the run is terminated with a clear error. A normal
+// turn resets the counter.
+const maxConsecutiveLength = 3
 
 // TurnUpdate is the optional result of PrepareNextTurn: any non-nil field
 // replaces the corresponding piece of loop state before the next turn. It lets
@@ -147,6 +153,7 @@ func runLoop(ctx context.Context, agentCtx *agentcore.AgentContext, cfg RunConfi
 		cfg.TransformContext = cfg.Reminders.wrapTransform(cfg.TransformContext)
 	}
 	startIdx := len(agentCtx.Messages)
+	consecutiveLength := 0
 	// tel accumulates structured telemetry (turn count, per-tool durations,
 	// truncation count, compaction count, latest context-utilization ratio) from
 	// the events emitted below, surfaced as a TelemetryEvent at run end.
@@ -205,6 +212,28 @@ func runLoop(ctx context.Context, agentCtx *agentcore.AgentContext, cfg RunConfi
 
 			switch assistant.StopReason {
 			case agentcore.StopReasonLength:
+				consecutiveLength++
+				// Repair the stored assistant message before the next provider
+				// request: a truncated tool call can carry invalid JSON, which
+				// upstream would reject or hang on. Replace bad arguments with a
+				// minimal valid object while keeping id/name so the synthesized
+				// tool result still matches.
+				if n := len(agentCtx.Messages); n > 0 {
+					if a, ok := agentCtx.Messages[n-1].(agentcore.AssistantMessage); ok {
+						agentCtx.Messages[n-1] = sanitizeTruncatedToolCalls(a)
+					}
+				}
+				if consecutiveLength >= maxConsecutiveLength {
+					errMsg := agentcore.AssistantMessage{
+						RoleField:    agentcore.RoleAssistant,
+						StopReason:   agentcore.StopReasonError,
+						ErrorMessage: fmt.Sprintf("run stopped after %d consecutive truncated responses (output token limit)", maxConsecutiveLength),
+					}
+					agentCtx.Messages = append(agentCtx.Messages, errMsg)
+					_ = emit(agentcore.TurnEndEvent{Message: errMsg})
+					finish()
+					return
+				}
 				// Truncated by the token cap: fail every tool call so the model
 				// resends, then continue feeding back.
 				toolResults := failToolCallsFromTruncatedMessage(agentCtx, assistant)
@@ -224,6 +253,7 @@ func runLoop(ctx context.Context, agentCtx *agentcore.AgentContext, cfg RunConfi
 				return
 			}
 
+			consecutiveLength = 0
 			calls := toAgentToolCalls(assistant.ToolCalls())
 			if len(calls) == 0 {
 				// Natural turn end: no tools to run.
@@ -484,6 +514,30 @@ func failToolCallsFromTruncatedMessage(agentCtx *agentcore.AgentContext, assista
 		agentCtx.Messages = append(agentCtx.Messages, r)
 	}
 	return results
+}
+
+// sanitizeTruncatedToolCalls returns a copy of msg with any tool call whose
+// arguments are not valid JSON replaced by `{}`. Truncated assistant messages
+// must never carry malformed arguments into the next provider request.
+func sanitizeTruncatedToolCalls(msg agentcore.AssistantMessage) agentcore.AssistantMessage {
+	changed := false
+	content := make(agentcore.ContentList, 0, len(msg.Content))
+	for _, c := range msg.Content {
+		if tc, ok := c.(agentcore.ToolCallContent); ok {
+			if !json.Valid(tc.Arguments) {
+				tc.Arguments = json.RawMessage(`{}`)
+				changed = true
+			}
+			content = append(content, tc)
+			continue
+		}
+		content = append(content, c)
+	}
+	if !changed {
+		return msg
+	}
+	msg.Content = content
+	return msg
 }
 
 // toAgentToolCalls converts the assistant message's ToolCallContent blocks into

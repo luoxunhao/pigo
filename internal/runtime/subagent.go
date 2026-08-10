@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/jsonrpc"
@@ -111,6 +112,20 @@ const SubAgentRPCMethod = "subagent/run"
 // subprocess with so it enters the sub-agent RPC server mode: "--subagent-rpc".
 const SubAgentRPCFlag = "--subagent-rpc"
 
+const (
+	// subAgentDoneMarker is the machine-checkable suffix every task sub-agent
+	// final message must carry. pigo strips it before returning the report to
+	// the parent.
+	subAgentDoneMarker = "<<DONE>>"
+	// maxSubAgentCorrections bounds how many corrective turns pigo injects when
+	// a sub-agent settles without the completion marker.
+	maxSubAgentCorrections = 2
+	// subAgentCorrectionMessage tells the child both that its response looked
+	// incomplete and exactly which marker is required.
+	subAgentCorrectionMessage = "Your previous response did not end with `<<DONE>>`. " +
+		"Complete any remaining work and end your final message with `<<DONE>>`."
+)
+
 // SubAgentSpec declares a spawnable sub-agent: its identity (surfaced to the
 // model as a tool), the system prompt and tools its child context runs with,
 // and a factory for the child's run configuration (provider stream, batch
@@ -176,6 +191,14 @@ var subAgentSchema = json.RawMessage(`{
   "required": ["prompt"],
   "additionalProperties": false
 }`)
+
+func hasSubAgentDoneMarker(text string) bool {
+	return strings.HasSuffix(strings.TrimSpace(text), subAgentDoneMarker)
+}
+
+func stripSubAgentDoneMarker(text string) string {
+	return strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(text), subAgentDoneMarker))
+}
 
 // SubAgentTool adapts a SubAgentSpec into an AgentTool. Executing it spawns a
 // child agent run (in a goroutine or a subprocess, per Isolation) and returns
@@ -311,13 +334,14 @@ func (t *SubAgentTool) executeGoroutine(ctx context.Context, id, prompt, descrip
 		Tools: tools,
 	}
 
-	stream := StartRun(ctx, childCtx, runCfg)
 	// Drain events (DrainStream never returns early, so the producer goroutine is
 	// never blocked on back-pressure); forward streamed child text as
 	// tool-execution updates when a sink is set.
 	var h StreamHandler
-	if onUpdate != nil {
-		h.OnText = func(delta string) {
+	var streamed strings.Builder
+	h.OnText = func(delta string) {
+		streamed.WriteString(delta)
+		if onUpdate != nil {
 			onUpdate(agentcore.AgentToolResult{Content: agentcore.ContentList{agentcore.NewTextContent(delta)}})
 		}
 	}
@@ -352,25 +376,53 @@ func (t *SubAgentTool) executeGoroutine(ctx context.Context, id, prompt, descrip
 			})
 		}
 	}
-	final, err := DrainStream(ctx, stream, h)
-	if err != nil {
-		return agentcore.AgentToolResult{}, fmt.Errorf("sub-agent %q: %w", t.spec.Name, err)
+	corrections := 0
+	for {
+		streamed.Reset()
+		stream := StartRun(ctx, childCtx, runCfg)
+		final, err := DrainStream(ctx, stream, h)
+		if err != nil {
+			return agentcore.AgentToolResult{}, fmt.Errorf("sub-agent %q: %w", t.spec.Name, err)
+		}
+		text := ""
+		if final != nil {
+			text = agentcore.ContentToText(final.Content)
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			text = strings.TrimSpace(streamed.String())
+		}
+		// Surface a failed child run as a tool error so the parent model gets a
+		// signal the delegation failed (the tool executor marks the result
+		// IsError). A child whose final turn stopped on error/aborted otherwise
+		// looks like a successful delegation carrying error text.
+		if final != nil && (final.StopReason == agentcore.StopReasonError || final.StopReason == agentcore.StopReasonAborted) {
+			return agentcore.AgentToolResult{}, fmt.Errorf("sub-agent %q failed (%s): %s", t.spec.Name, final.StopReason, text)
+		}
+		if text == "" {
+			return agentcore.AgentToolResult{
+				Content: agentcore.ContentList{agentcore.NewTextContent(fmt.Sprintf("(sub-agent %q produced no text output after tool use)", t.spec.Name))},
+				IsError: true,
+			}, nil
+		}
+		if hasSubAgentDoneMarker(text) {
+			return agentcore.AgentToolResult{Content: agentcore.ContentList{agentcore.NewTextContent(stripSubAgentDoneMarker(text))}}, nil
+		}
+		if corrections >= maxSubAgentCorrections {
+			return agentcore.AgentToolResult{
+				Content: agentcore.ContentList{agentcore.NewTextContent(fmt.Sprintf(
+					"sub-agent %q did not produce a completed final report (missing %s after %d corrections)",
+					t.spec.Name, subAgentDoneMarker, corrections))},
+				IsError: true,
+				Details: text,
+			}, nil
+		}
+		corrections++
+		childCtx.Messages = append(childCtx.Messages, agentcore.UserMessage{
+			RoleField: agentcore.RoleUser,
+			Content:   agentcore.ContentList{agentcore.NewTextContent(subAgentCorrectionMessage)},
+		})
 	}
-	text := ""
-	if final != nil {
-		text = agentcore.ContentToText(final.Content)
-	}
-	if text == "" {
-		text = fmt.Sprintf("(sub-agent %q produced no text output)", t.spec.Name)
-	}
-	// Surface a failed child run as a tool error so the parent model gets a
-	// signal the delegation failed (the tool executor marks the result
-	// IsError). A child whose final turn stopped on error/aborted otherwise
-	// looks like a successful delegation carrying error text.
-	if final != nil && (final.StopReason == agentcore.StopReasonError || final.StopReason == agentcore.StopReasonAborted) {
-		return agentcore.AgentToolResult{}, fmt.Errorf("sub-agent %q failed (%s): %s", t.spec.Name, final.StopReason, text)
-	}
-	return agentcore.AgentToolResult{Content: agentcore.ContentList{agentcore.NewTextContent(text)}}, nil
 }
 
 // executeProcess runs the child agent loop in a fresh pigo subprocess over stdio
@@ -407,10 +459,23 @@ func (t *SubAgentTool) executeProcess(ctx context.Context, prompt string) (agent
 	if err != nil {
 		return agentcore.AgentToolResult{}, fmt.Errorf("sub-agent %q (process): %w", t.spec.Name, err)
 	}
+	text = strings.TrimSpace(text)
 	if text == "" {
-		text = fmt.Sprintf("(sub-agent %q produced no text output)", t.spec.Name)
+		return agentcore.AgentToolResult{
+			Content: agentcore.ContentList{agentcore.NewTextContent(fmt.Sprintf("(sub-agent %q produced no text output after tool use)", t.spec.Name))},
+			IsError: true,
+		}, nil
 	}
-	return agentcore.AgentToolResult{Content: agentcore.ContentList{agentcore.NewTextContent(text)}}, nil
+	if !hasSubAgentDoneMarker(text) {
+		return agentcore.AgentToolResult{
+			Content: agentcore.ContentList{agentcore.NewTextContent(fmt.Sprintf(
+				"sub-agent %q did not produce a completed final report (missing %s)",
+				t.spec.Name, subAgentDoneMarker))},
+			IsError: true,
+			Details: text,
+		}, nil
+	}
+	return agentcore.AgentToolResult{Content: agentcore.ContentList{agentcore.NewTextContent(stripSubAgentDoneMarker(text))}}, nil
 }
 
 // defaultProcessCall is the production subprocess transport: it launches the
@@ -467,27 +532,52 @@ func RunSubAgentOnce(ctx context.Context, systemPrompt, prompt string, tools []a
 		},
 		Tools: tools,
 	}
-	stream := StartRun(ctx, childCtx, runCfg)
-	final, err := DrainStream(ctx, stream, StreamHandler{})
-	if err != nil {
-		return "", err
-	}
-	text := ""
-	if final != nil {
-		text = agentcore.ContentToText(final.Content)
-	}
-	if final != nil && (final.StopReason == agentcore.StopReasonError || final.StopReason == agentcore.StopReasonAborted) {
-		// When the loop synthesizes an error turn (e.g. a provider connection
-		// failure) the diagnostic lands in ErrorMessage, not Content; fall back
-		// to it so the subprocess surfaces the real cause rather than a bare
-		// "error" stop reason.
-		if text == "" && final.ErrorMessage != "" {
-			text = final.ErrorMessage
+	corrections := 0
+	for {
+		var streamed strings.Builder
+		stream := StartRun(ctx, childCtx, runCfg)
+		final, err := DrainStream(ctx, stream, StreamHandler{
+			OnText: func(delta string) {
+				streamed.WriteString(delta)
+			},
+		})
+		if err != nil {
+			return "", err
+		}
+		text := ""
+		if final != nil {
+			text = agentcore.ContentToText(final.Content)
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			text = strings.TrimSpace(streamed.String())
+		}
+		if final != nil && (final.StopReason == agentcore.StopReasonError || final.StopReason == agentcore.StopReasonAborted) {
+			// When the loop synthesizes an error turn (e.g. a provider connection
+			// failure) the diagnostic lands in ErrorMessage, not Content; fall back
+			// to it so the subprocess surfaces the real cause rather than a bare
+			// "error" stop reason.
+			if text == "" && final.ErrorMessage != "" {
+				text = final.ErrorMessage
+			}
+			if text == "" {
+				text = string(final.StopReason)
+			}
+			return text, fmt.Errorf("sub-agent failed (%s): %s", final.StopReason, text)
 		}
 		if text == "" {
-			text = string(final.StopReason)
+			return "", fmt.Errorf("sub-agent produced no text output after tool use")
 		}
-		return text, fmt.Errorf("sub-agent failed (%s): %s", final.StopReason, text)
+		if hasSubAgentDoneMarker(text) {
+			return stripSubAgentDoneMarker(text), nil
+		}
+		if corrections >= maxSubAgentCorrections {
+			return "", fmt.Errorf("sub-agent did not produce a completed final report (missing %s after %d corrections)", subAgentDoneMarker, corrections)
+		}
+		corrections++
+		childCtx.Messages = append(childCtx.Messages, agentcore.UserMessage{
+			RoleField: agentcore.RoleUser,
+			Content:   agentcore.ContentList{agentcore.NewTextContent(subAgentCorrectionMessage)},
+		})
 	}
-	return text, nil
 }

@@ -53,10 +53,11 @@ func (d *Dispatcher) sessionPayload(sess *AcpSession) map[string]any {
 	ctx := context.Background()
 	configured := d.configuredModelList()
 	return map[string]any{
-		"sessionId":     sess.ID,
-		"configOptions": sessionConfigOptions(ctx, sess, configured),
-		"models":        sessionModels(ctx, sess, configured),
-		"modes":         sessionModes(sess, d.currentConfiguredModel(sess)),
+		"sessionId":         sess.ID,
+		"configOptions":     sessionConfigOptions(ctx, sess, configured),
+		"models":            sessionModels(ctx, sess, configured),
+		"modes":             sessionModes(sess, d.currentConfiguredModel(sess)),
+		"availableCommands": availableCommandsPayload(d.commands, sess.Registry),
 		"_meta": map[string]any{
 			"pigo.startupInfo": startupInfoText(d.version, sess, d.commandCountFor(sess)),
 		},
