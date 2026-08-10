@@ -82,6 +82,70 @@ func TestAgentLoopNoToolCallsSingleTurn(t *testing.T) {
 	}
 }
 
+func TestAgentLoopRetriesUpstream429(t *testing.T) {
+	resetUpstreamBreakerForTest()
+	t.Setenv("PIGO_TURN_RETRY_BASE_MS", "10")
+	calls := 0
+	stream := func(ctx context.Context, model string, llm provider.LlmContext, cfg provider.StreamConfig) (*provider.AssistantMessageEventStream, error) {
+		calls++
+		s := provider.NewAssistantMessageEventStream(0)
+		go func() {
+			if calls == 1 {
+				_ = s.Emit(ctx, provider.StreamDoneEvent{Message: agentcore.AssistantMessage{
+					RoleField:    agentcore.RoleAssistant,
+					StopReason:   agentcore.StopReasonError,
+					ErrorMessage: "transport: upstream 429",
+				}})
+			} else {
+				_ = s.Emit(ctx, provider.StreamDoneEvent{Message: agentcore.AssistantMessage{
+					RoleField:  agentcore.RoleAssistant,
+					StopReason: agentcore.StopReasonEndTurn,
+					Content:    agentcore.ContentList{agentcore.NewTextContent("recovered")},
+				}})
+			}
+			s.Close()
+		}()
+		return s, nil
+	}
+
+	cfg := newRunCfg(stream)
+	agentCtx := &agentcore.AgentContext{Messages: agentcore.MessageList{
+		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("hi")}},
+	}}
+	_, msgs := collectStream(t, agentLoop(context.Background(), agentCtx, cfg))
+
+	if calls != 2 {
+		t.Fatalf("stream calls = %d, want 2 (429 then retry)", calls)
+	}
+	last := agentcore.LastAssistantOf(msgs)
+	if last == nil || last.StopReason != agentcore.StopReasonEndTurn || agentcore.ContentToText(last.Content) != "recovered" {
+		t.Fatalf("final assistant = %+v, want recovered end_turn", last)
+	}
+	resetUpstreamBreakerForTest()
+}
+
+func TestUpstreamBreakerOpensAfterFailures(t *testing.T) {
+	resetUpstreamBreakerForTest()
+	t.Setenv("PIGO_UPSTREAM_BREAKER_THRESHOLD", "2")
+	t.Setenv("PIGO_UPSTREAM_BREAKER_COOLDOWN_MS", "60000")
+	if !upstreamBreakerAllow("fake") {
+		t.Fatal("breaker should start closed")
+	}
+	upstreamBreakerRecord("fake", true)
+	if !upstreamBreakerAllow("fake") {
+		t.Fatal("breaker should stay closed after one failure")
+	}
+	upstreamBreakerRecord("fake", true)
+	if upstreamBreakerAllow("fake") {
+		t.Fatal("breaker should be open after the threshold")
+	}
+	upstreamBreakerRecord("fake", false)
+	if !upstreamBreakerAllow("fake") {
+		t.Fatal("breaker should reset after a success")
+	}
+	resetUpstreamBreakerForTest()
+}
+
 func TestAgentLoopInnerLoopFeedsToolResults(t *testing.T) {
 	// Turn 1: tool call. Turn 2: no tool call → inner loop ends.
 	cfg := newRunCfg(scriptedStream([]agentcore.AssistantMessage{

@@ -24,6 +24,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/smallnest/pigo/internal/agentcore"
@@ -40,6 +42,38 @@ func nowMillis() int64 { return time.Now().UnixMilli() }
 // StopReasonLength before the run is terminated with a clear error. A normal
 // turn resets the counter.
 const maxConsecutiveLength = 3
+
+// maxUpstreamRetries bounds how many times a turn is retried after a transient
+// upstream rate-limit / overload error before the run fails. The backoff grows
+// exponentially so concurrent sub-agents do not immediately hammer the same
+// endpoint again.
+const maxUpstreamRetries = 3
+
+func isRetryableUpstreamError(msg string) bool {
+	lower := strings.ToLower(msg)
+	return strings.Contains(lower, "429") ||
+		strings.Contains(lower, "503") ||
+		strings.Contains(lower, "529") ||
+		strings.Contains(lower, "rate limit")
+}
+
+func waitTurnRetry(ctx context.Context, attempt int) bool {
+	base := time.Second
+	if v := os.Getenv("PIGO_TURN_RETRY_BASE_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			base = time.Duration(n) * time.Millisecond
+		}
+	}
+	delay := base * time.Duration(1<<uint(attempt-1))
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
 
 // TurnUpdate is the optional result of PrepareNextTurn: any non-nil field
 // replaces the corresponding piece of loop state before the next turn. It lets
@@ -154,6 +188,7 @@ func runLoop(ctx context.Context, agentCtx *agentcore.AgentContext, cfg RunConfi
 	}
 	startIdx := len(agentCtx.Messages)
 	consecutiveLength := 0
+	turnRetries := 0
 	// tel accumulates structured telemetry (turn count, per-tool durations,
 	// truncation count, compaction count, latest context-utilization ratio) from
 	// the events emitted below, surfaced as a TelemetryEvent at run end.
@@ -247,6 +282,21 @@ func runLoop(ctx context.Context, agentCtx *agentcore.AgentContext, cfg RunConfi
 				}
 				continue
 			case agentcore.StopReasonError, agentcore.StopReasonAborted:
+				if assistant.StopReason == agentcore.StopReasonError &&
+					isRetryableUpstreamError(assistant.ErrorMessage) &&
+					turnRetries < maxUpstreamRetries {
+					turnRetries++
+					if n := len(agentCtx.Messages); n > 0 {
+						if last, ok := agentCtx.Messages[n-1].(agentcore.AssistantMessage); ok && last.StopReason == agentcore.StopReasonError {
+							agentCtx.Messages = agentCtx.Messages[:n-1]
+						}
+					}
+					if !waitTurnRetry(ctx, turnRetries) {
+						finish()
+						return
+					}
+					continue
+				}
 				// Terminal failure: emit the turn end and stop.
 				_ = emit(agentcore.TurnEndEvent{Message: assistant})
 				finish()

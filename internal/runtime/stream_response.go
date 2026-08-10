@@ -6,6 +6,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/compaction"
@@ -88,12 +89,21 @@ func streamAssistantResponse(ctx context.Context, agentCtx *agentcore.AgentConte
 		}
 	}
 	// 5. build the provider stream.
+	if !upstreamBreakerAllow(cfg.Provider) {
+		msg := newErrorAssistantMessage(cfg, fmt.Errorf("upstream circuit breaker open for provider %q", cfg.Provider))
+		agentCtx.Messages = append(agentCtx.Messages, msg)
+		if err := emit(ctx, agentcore.MessageEndEvent{Message: msg}); err != nil {
+			return agentcore.AssistantMessage{}, err
+		}
+		return msg, nil
+	}
 	stream, err := cfg.Stream(ctx, cfg.Model, llm, provider.StreamConfig{
 		APIKey:        key,
 		ThinkingLevel: cfg.ThinkingLevel,
 		Extra:         cfg.Extra,
 	})
 	if err != nil {
+		upstreamBreakerRecord(cfg.Provider, isRetryableUpstreamError(err.Error()))
 		// Early "cannot build stream" failure: synthesize a terminal message so
 		// the loop has a uniform assistant message to record.
 		msg := newErrorAssistantMessage(cfg, err)
@@ -138,12 +148,18 @@ func streamAssistantResponse(ctx context.Context, agentCtx *agentcore.AgentConte
 				return agentcore.AssistantMessage{}, err
 			}
 		case provider.StreamDoneEvent:
+			upstreamBreakerRecord(cfg.Provider, false)
 			finalizeMessage(agentCtx, e.Message, &addedPartial)
 			if err := emit(ctx, agentcore.MessageEndEvent{Message: e.Message}); err != nil {
 				return agentcore.AssistantMessage{}, err
 			}
 			return e.Message, nil
 		case provider.StreamErrorEvent:
+			msg := e.Message.ErrorMessage
+			if msg == "" && e.Err != nil {
+				msg = e.Err.Error()
+			}
+			upstreamBreakerRecord(cfg.Provider, isRetryableUpstreamError(msg))
 			finalizeMessage(agentCtx, e.Message, &addedPartial)
 			if err := emit(ctx, agentcore.MessageEndEvent{Message: e.Message}); err != nil {
 				return agentcore.AssistantMessage{}, err
@@ -153,6 +169,7 @@ func streamAssistantResponse(ctx context.Context, agentCtx *agentcore.AgentConte
 	}
 
 	// 7. stream ended without done/error: fall back to the stream result.
+	upstreamBreakerRecord(cfg.Provider, false)
 	final, resErr := stream.Result(ctx)
 	if resErr != nil {
 		return newErrorAssistantMessage(cfg, resErr), nil
