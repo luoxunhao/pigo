@@ -406,6 +406,117 @@ func TestAgentLoopLengthStopsAfterGuidanceExhausted(t *testing.T) {
 	}
 }
 
+func invalidArgsTool(name string) execTool {
+	return execTool{
+		name:   name,
+		schema: `{"type":"object","required":["path"]}`,
+		run: func(ctx context.Context, id string, args json.RawMessage, onUpdate agentcore.ToolUpdateFunc) (agentcore.AgentToolResult, error) {
+			return agentcore.AgentToolResult{Content: agentcore.ContentList{agentcore.NewTextContent("unexpected execution")}}, nil
+		},
+	}
+}
+
+func TestAgentLoopInvalidArgsInjectsGuidance(t *testing.T) {
+	p := &fauxProvider{
+		name:   "faux",
+		models: []provider.Model{{Provider: "faux", ID: "faux"}},
+		turns: []fauxTurn{
+			toolCallTurn("c1", "write", `{}`),
+			toolCallTurn("c2", "write", `{}`),
+			toolCallTurn("c3", "write", `{}`),
+			textTurn("concise summary"),
+		},
+	}
+	cfg := newFauxRunCfg(p, invalidArgsTool("write"))
+	agentCtx := &agentcore.AgentContext{Messages: agentcore.MessageList{agentcore.UserMessage{RoleField: agentcore.RoleUser}}}
+	_, msgs := collectStream(t, agentLoop(context.Background(), agentCtx, cfg))
+
+	if p.callCount() != 4 {
+		t.Fatalf("provider calls = %d, want 4 (guidance injected before the 4th turn)", p.callCount())
+	}
+	req := p.requestAt(3)
+	found := false
+	for _, m := range req.Context.Messages {
+		if um, ok := m.(agentcore.UserMessage); ok {
+			if text := textContentOf(um.Content); strings.Contains(text, "output token limit") && strings.Contains(text, "invalid tool calls") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("degenerate-call guidance was not injected after repeated invalid arguments")
+	}
+	last, ok := msgs[len(msgs)-1].(agentcore.AssistantMessage)
+	if !ok || last.StopReason != agentcore.StopReasonEndTurn || textContentOf(last.Content) != "concise summary" {
+		t.Fatalf("last message = %T %+v, want the concise summary end_turn", msgs[len(msgs)-1], msgs[len(msgs)-1])
+	}
+}
+
+func TestAgentLoopInvalidArgsStopsAfterGuidanceExhausted(t *testing.T) {
+	p := &fauxProvider{
+		name:   "faux",
+		models: []provider.Model{{Provider: "faux", ID: "faux"}},
+		turns: []fauxTurn{
+			toolCallTurn("c1", "write", `{}`),
+			toolCallTurn("c2", "write", `{}`),
+			toolCallTurn("c3", "write", `{}`),
+			toolCallTurn("c4", "write", `{}`),
+			toolCallTurn("c5", "write", `{}`),
+			toolCallTurn("c6", "write", `{}`),
+		},
+	}
+	cfg := newFauxRunCfg(p, invalidArgsTool("write"))
+	agentCtx := &agentcore.AgentContext{Messages: agentcore.MessageList{agentcore.UserMessage{RoleField: agentcore.RoleUser}}}
+	_, msgs := collectStream(t, agentLoop(context.Background(), agentCtx, cfg))
+
+	if p.callCount() != 6 {
+		t.Fatalf("provider calls = %d, want 6 (two guidance rounds before giving up)", p.callCount())
+	}
+	last, ok := msgs[len(msgs)-1].(agentcore.AssistantMessage)
+	if !ok || last.StopReason != agentcore.StopReasonError {
+		t.Fatalf("last message = %T %+v, want an error stop", msgs[len(msgs)-1], msgs[len(msgs)-1])
+	}
+	if !strings.Contains(last.ErrorMessage, "degenerate tool calls") {
+		t.Errorf("error message = %q, want a degenerate-call explanation", last.ErrorMessage)
+	}
+}
+
+func TestAgentLoopMixedLengthInvalidArgsInjectsGuidance(t *testing.T) {
+	p := &fauxProvider{
+		name:   "faux",
+		models: []provider.Model{{Provider: "faux", ID: "faux"}},
+		turns: []fauxTurn{
+			lengthToolTurn("c1", "write", `{"path":"x"`),
+			toolCallTurn("c2", "write", `{}`),
+			lengthToolTurn("c3", "write", `{"path":"y"`),
+			textTurn("concise summary"),
+		},
+	}
+	cfg := newFauxRunCfg(p, invalidArgsTool("write"))
+	agentCtx := &agentcore.AgentContext{Messages: agentcore.MessageList{agentcore.UserMessage{RoleField: agentcore.RoleUser}}}
+	_, msgs := collectStream(t, agentLoop(context.Background(), agentCtx, cfg))
+
+	if p.callCount() != 4 {
+		t.Fatalf("provider calls = %d, want 4 (mixed degenerate turns still count)", p.callCount())
+	}
+	req := p.requestAt(3)
+	found := false
+	for _, m := range req.Context.Messages {
+		if um, ok := m.(agentcore.UserMessage); ok {
+			if text := textContentOf(um.Content); strings.Contains(text, "invalid tool calls") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("mixed length/invalid-args turns must not reset the degenerate breaker")
+	}
+	last, ok := msgs[len(msgs)-1].(agentcore.AssistantMessage)
+	if !ok || last.StopReason != agentcore.StopReasonEndTurn {
+		t.Fatalf("last message = %T %+v, want recovery end_turn", msgs[len(msgs)-1], msgs[len(msgs)-1])
+	}
+}
+
 func TestAgentLoopLengthCounterResetsOnNormalTurn(t *testing.T) {
 	p := &fauxProvider{
 		name:   "faux",

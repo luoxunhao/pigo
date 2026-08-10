@@ -38,17 +38,19 @@ import (
 // used for CompactionMessage checkpoints.
 func nowMillis() int64 { return time.Now().UnixMilli() }
 
-// maxConsecutiveLength bounds how many turns in a row may stop with
-// StopReasonLength before the run is terminated with a clear error. A normal
-// turn resets the counter.
+// maxConsecutiveLength bounds how many degenerate turns in a row may pass
+// before the run is steered or terminated. A degenerate turn is a response that
+// made no progress: it was truncated by the output token cap, or every tool
+// call failed argument validation / was synthesized from a truncated call. A
+// normal turn resets the counter.
 const maxConsecutiveLength = 3
 
 // maxForcedShortReplies bounds how many times pigo injects short-reply
 // guidance after repeated output-token truncation before giving up.
 const maxForcedShortReplies = 1
 
-const shortReplyGuidance = "Your previous responses hit the output token limit repeatedly. " +
-	"Do not retry the long output. Reply with a concise summary of at most 300 words and do not call tools."
+const shortReplyGuidance = "Your previous responses hit the output token limit or produced invalid tool calls repeatedly. " +
+	"Do not retry the long output or the failing call. Reply with a concise summary of at most 300 words and do not call tools."
 
 // maxUpstreamRetries bounds how many times a turn is retried after a transient
 // upstream rate-limit / overload error before the run fails. The backoff grows
@@ -194,7 +196,7 @@ func runLoop(ctx context.Context, agentCtx *agentcore.AgentContext, cfg RunConfi
 		cfg.TransformContext = cfg.Reminders.wrapTransform(cfg.TransformContext)
 	}
 	startIdx := len(agentCtx.Messages)
-	consecutiveLength := 0
+	degenerateTurns := 0
 	forcedShortReplies := 0
 	turnRetries := 0
 	// tel accumulates structured telemetry (turn count, per-tool durations,
@@ -255,7 +257,7 @@ func runLoop(ctx context.Context, agentCtx *agentcore.AgentContext, cfg RunConfi
 
 			switch assistant.StopReason {
 			case agentcore.StopReasonLength:
-				consecutiveLength++
+				degenerateTurns++
 				guidance := ""
 				// Repair the stored assistant message before the next provider
 				// request: a truncated tool call can carry invalid JSON, which
@@ -267,7 +269,7 @@ func runLoop(ctx context.Context, agentCtx *agentcore.AgentContext, cfg RunConfi
 						agentCtx.Messages[n-1] = sanitizeTruncatedToolCalls(a)
 					}
 				}
-				if consecutiveLength >= maxConsecutiveLength {
+				if degenerateTurns >= maxConsecutiveLength {
 					forcedShortReplies++
 					if forcedShortReplies > maxForcedShortReplies {
 						errMsg := agentcore.AssistantMessage{
@@ -280,7 +282,7 @@ func runLoop(ctx context.Context, agentCtx *agentcore.AgentContext, cfg RunConfi
 						finish()
 						return
 					}
-					consecutiveLength = 0
+					degenerateTurns = 0
 					guidance = shortReplyGuidance
 				}
 				// Truncated by the token cap: fail every tool call so the model
@@ -323,10 +325,10 @@ func runLoop(ctx context.Context, agentCtx *agentcore.AgentContext, cfg RunConfi
 				return
 			}
 
-			consecutiveLength = 0
 			calls := toAgentToolCalls(assistant.ToolCalls())
 			if len(calls) == 0 {
 				// Natural turn end: no tools to run.
+				degenerateTurns = 0
 				if err := emit(agentcore.TurnEndEvent{Message: assistant}); err != nil {
 					finish()
 					return
@@ -348,6 +350,11 @@ func runLoop(ctx context.Context, agentCtx *agentcore.AgentContext, cfg RunConfi
 			for _, tr := range toolResults {
 				agentCtx.Messages = append(agentCtx.Messages, tr)
 			}
+			if degenerateToolTurn(toolResults) {
+				degenerateTurns++
+			} else {
+				degenerateTurns = 0
+			}
 			if err := emit(agentcore.TurnEndEvent{Message: assistant, ToolResults: toolResults}); err != nil {
 				finish()
 				return
@@ -360,6 +367,25 @@ func runLoop(ctx context.Context, agentCtx *agentcore.AgentContext, cfg RunConfi
 			if afterTurn(ctx, agentCtx, &cfg, true, emit, tel) {
 				finish()
 				return
+			}
+			if degenerateTurns >= maxConsecutiveLength {
+				forcedShortReplies++
+				if forcedShortReplies > maxForcedShortReplies {
+					errMsg := agentcore.AssistantMessage{
+						RoleField:    agentcore.RoleAssistant,
+						StopReason:   agentcore.StopReasonError,
+						ErrorMessage: "run stopped after repeated degenerate tool calls despite short-reply guidance (invalid arguments or output token limit)",
+					}
+					agentCtx.Messages = append(agentCtx.Messages, errMsg)
+					_ = emit(agentcore.TurnEndEvent{Message: errMsg})
+					finish()
+					return
+				}
+				degenerateTurns = 0
+				agentCtx.Messages = append(agentCtx.Messages, agentcore.UserMessage{
+					RoleField: agentcore.RoleUser,
+					Content:   agentcore.ContentList{agentcore.NewTextContent(shortReplyGuidance)},
+				})
 			}
 			// Feed the tool results back into the next turn.
 		}
@@ -584,6 +610,32 @@ func failToolCallsFromTruncatedMessage(agentCtx *agentcore.AgentContext, assista
 		agentCtx.Messages = append(agentCtx.Messages, r)
 	}
 	return results
+}
+
+// degenerateToolTurn reports whether every tool result in a turn represents a
+// no-progress failure: argument validation errors, unknown-tool calls, or the
+// synthetic failure produced for a truncated tool call. A turn that executed
+// any tool (even one that returned IsError for an ordinary command failure)
+// counts as progress and resets the degenerate-turn breaker.
+func degenerateToolTurn(results []agentcore.ToolResultMessage) bool {
+	if len(results) == 0 {
+		return false
+	}
+	for _, tr := range results {
+		if !tr.IsError {
+			return false
+		}
+		if !isDegenerateToolError(agentcore.ContentToText(tr.Content)) {
+			return false
+		}
+	}
+	return true
+}
+
+func isDegenerateToolError(text string) bool {
+	return strings.HasPrefix(text, "Invalid arguments for tool") ||
+		strings.HasPrefix(text, "unknown tool ") ||
+		strings.Contains(text, "The previous response was truncated because it hit the output token limit")
 }
 
 // sanitizeTruncatedToolCalls returns a copy of msg with any tool call whose

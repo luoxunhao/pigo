@@ -245,6 +245,37 @@ func TestChildSessionLengthRecoversWithGuidance(t *testing.T) {
 	}
 }
 
+func TestChildSessionDegenerateLoopStops(t *testing.T) {
+	reg := NewRegistry()
+	child := &fauxProvider{
+		name:   "faux-child",
+		models: []provider.Model{{Provider: "faux-child", ID: "child"}},
+		turns: []fauxTurn{
+			toolCallTurn("c1", "write", `{}`),
+			toolCallTurn("c2", "write", `{}`),
+			toolCallTurn("c3", "write", `{}`),
+			toolCallTurn("c4", "write", `{}`),
+			toolCallTurn("c5", "write", `{}`),
+			toolCallTurn("c6", "write", `{}`),
+		},
+	}
+	tool := NewSubAgentTool(SubAgentSpec{
+		Name:         "task",
+		SystemPrompt: "sys",
+		NewRunConfig: func() RunConfig { return newFauxRunCfg(child, invalidArgsTool("write")) },
+	})
+	tool.SetSubagentRegistry(reg)
+
+	ctx := agentcore.WithSessionID(context.Background(), "parent-1")
+	_, err := tool.Execute(ctx, "call-1", json.RawMessage(`{"prompt":"go"}`), nil)
+	if err == nil {
+		t.Fatal("expected degenerate child loop to stop with an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "degenerate tool calls") {
+		t.Errorf("error %q does not explain the degenerate loop", err.Error())
+	}
+}
+
 func TestChildSessionPersistsBeforeErrorReturn(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
