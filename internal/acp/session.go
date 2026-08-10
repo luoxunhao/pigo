@@ -400,7 +400,7 @@ func (m *SessionManager) Run(ctx context.Context, sess *AcpSession, prompt strin
 		sess.finishTurn(stop, err)
 	}()
 
-	runCtx, cancel := context.WithCancel(ctx)
+	runCtx, cancel := context.WithCancel(agentcore.WithSessionID(ctx, sess.ID))
 	sess.SetCancel(cancel)
 	defer sess.SetCancel(nil)
 

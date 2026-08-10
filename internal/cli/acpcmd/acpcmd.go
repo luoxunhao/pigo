@@ -78,7 +78,7 @@ func Run(ctx context.Context, opts Options, stdin io.Reader, stdout, stderr io.W
 	}
 
 	policy := run.NewToolPolicy(opts.AllowedTools, opts.DisallowedTools)
-	builder := newSessionContextBuilder(opts, env, policy, mgr)
+	builder := newSessionContextBuilder(home, opts, env, policy, mgr)
 
 	runner := &acp.RuntimeRunner{
 		Provider:      env.Provider,
@@ -107,7 +107,7 @@ func Run(ctx context.Context, opts Options, stdin io.Reader, stdout, stderr io.W
 		}
 	}
 
-	if err := acp.ServeStdioWithSessionContext(ctx, runner, home, opts.Model, builder.Build, mgr, dreamCfg, run.SessionHookSeam(), stdin, stdout); err != nil {
+	if err := acp.ServeStdioWithSessionContext(ctx, runner, home, opts.Model, builder.Build, mgr, dreamCfg, run.SessionHookSeam(), builder.SubagentRegistry(), stdin, stdout); err != nil {
 		if err == acp.ErrClosed {
 			return 0
 		}

@@ -44,24 +44,30 @@ const (
 // shape is camelCase, matching ash's SessionMetadata contract closely enough
 // for a future desktop client to read it directly.
 type Metadata struct {
-	SchemaVersion   int             `json:"schemaVersion"`
-	SessionID       string          `json:"sessionId"`
-	SessionName     string          `json:"sessionName"`
-	AgentType       string          `json:"agentType"`
-	ModelName       string          `json:"modelName"`
-	CreatedAt       time.Time       `json:"createdAt"`
-	LastActiveAt    time.Time       `json:"lastActiveAt"`
-	LastFinishedAt  *time.Time      `json:"lastFinishedAt,omitempty"`
-	TurnCount       int             `json:"turnCount"`
-	MessageCount    int             `json:"messageCount"`
-	ToolCallCount   int             `json:"toolCallCount"`
-	Status          Status          `json:"status"`
-	Tags            []string        `json:"tags,omitempty"`
-	WorkspacePath   string          `json:"workspacePath"`
-	WorkspaceHost   string          `json:"workspaceHostname,omitempty"`
-	CustomMetadata  json.RawMessage `json:"customMetadata,omitempty"`
-	ParentSessionID string          `json:"parentSessionId,omitempty"`
+	SchemaVersion    int             `json:"schemaVersion"`
+	SessionID        string          `json:"sessionId"`
+	SessionName      string          `json:"sessionName"`
+	AgentType        string          `json:"agentType"`
+	SessionKind      string          `json:"sessionKind,omitempty"`
+	ModelName        string          `json:"modelName"`
+	CreatedAt        time.Time       `json:"createdAt"`
+	LastActiveAt     time.Time       `json:"lastActiveAt"`
+	LastFinishedAt   *time.Time      `json:"lastFinishedAt,omitempty"`
+	TurnCount        int             `json:"turnCount"`
+	MessageCount     int             `json:"messageCount"`
+	ToolCallCount    int             `json:"toolCallCount"`
+	Status           Status          `json:"status"`
+	Tags             []string        `json:"tags,omitempty"`
+	WorkspacePath    string          `json:"workspacePath"`
+	WorkspaceHost    string          `json:"workspaceHostname,omitempty"`
+	CustomMetadata   json.RawMessage `json:"customMetadata,omitempty"`
+	ParentSessionID  string          `json:"parentSessionId,omitempty"`
+	ParentToolCallID string          `json:"parentToolCallId,omitempty"`
+	SubagentType     string          `json:"subagentType,omitempty"`
 }
+
+// SessionKindSubagent marks a child session created by the task tool.
+const SessionKindSubagent = "subagent"
 
 // DefaultWorkspaceHost is the hostname recorded for local workspaces, matching
 // ash's local workspace identity.

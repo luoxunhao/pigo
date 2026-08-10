@@ -1,0 +1,111 @@
+package runtime
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/smallnest/pigo/internal/agentcore"
+	"github.com/smallnest/pigo/internal/provider"
+	"github.com/smallnest/pigo/internal/sessionstore"
+)
+
+func TestSubAgentToolCreatesChildSession(t *testing.T) {
+	reg := NewRegistry()
+	child := &fauxProvider{
+		name:   "faux-child",
+		models: []provider.Model{{Provider: "faux-child", ID: "child"}},
+		turns:  []fauxTurn{textTurn("child report <<DONE>>")},
+	}
+	tool := NewSubAgentTool(SubAgentSpec{
+		Name:         "task",
+		SystemPrompt: "sys",
+		NewRunConfig: func() RunConfig { return newFauxRunCfg(child) },
+	})
+	tool.SetSubagentRegistry(reg)
+
+	ctx := agentcore.WithSessionID(context.Background(), "parent-1")
+	res, err := tool.Execute(ctx, "call-1", json.RawMessage(`{"prompt":"do it"}`), nil)
+	if err != nil {
+		t.Fatalf("Execute err = %v", err)
+	}
+	childID := SessionID("parent-1", "call-1")
+	if got := agentcore.ContentToText(res.Content); !strings.Contains(got, "[subagent session: "+childID+"]") {
+		t.Fatalf("result missing child session reference: %q", got)
+	}
+	cs := reg.Get(childID)
+	if cs == nil {
+		t.Fatalf("child session %q not registered", childID)
+	}
+	if cs.ParentID != "parent-1" || cs.ToolCallID != "call-1" {
+		t.Errorf("child relationship = parent %q tool %q", cs.ParentID, cs.ToolCallID)
+	}
+	if len(cs.Messages) != 2 {
+		t.Errorf("child messages = %d, want user + assistant", len(cs.Messages))
+	}
+}
+
+func TestChildSessionContinue(t *testing.T) {
+	reg := NewRegistry()
+	child := &fauxProvider{
+		name:   "faux-child",
+		models: []provider.Model{{Provider: "faux-child", ID: "child"}},
+		turns: []fauxTurn{
+			textTurn("first report <<DONE>>"),
+			textTurn("second reply <<DONE>>"),
+		},
+	}
+	tool := NewSubAgentTool(SubAgentSpec{
+		Name:         "task",
+		SystemPrompt: "sys",
+		NewRunConfig: func() RunConfig { return newFauxRunCfg(child) },
+	})
+	tool.SetSubagentRegistry(reg)
+
+	ctx := agentcore.WithSessionID(context.Background(), "parent-1")
+	if _, err := tool.Execute(ctx, "call-1", json.RawMessage(`{"prompt":"do it"}`), nil); err != nil {
+		t.Fatalf("initial Execute err = %v", err)
+	}
+	cs := reg.Get(SessionID("parent-1", "call-1"))
+	if cs == nil {
+		t.Fatal("child session missing after initial task")
+	}
+	if cs.Running() {
+		t.Fatal("child should be idle after the delegated task settles")
+	}
+	text, _, err := cs.Continue(context.Background(), "follow up", nil, nil)
+	if err != nil {
+		t.Fatalf("Continue err = %v", err)
+	}
+	if text != "second reply" {
+		t.Errorf("continue text = %q, want 'second reply'", text)
+	}
+}
+
+func TestChildSessionPersistsSubagentMetadata(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	reg := NewRegistry()
+	reg.SetHome(home)
+	factory := func() RunConfig { return RunConfig{} }
+	child := reg.CreateOrGet("parent-1", "call-1", "task", "sys", nil, factory, nil, cwd)
+	if child.Store == nil {
+		t.Fatal("child session store was not opened")
+	}
+	meta, err := child.Store.LoadMetadata(child.ID)
+	if err != nil {
+		t.Fatalf("LoadMetadata err = %v", err)
+	}
+	if meta.SessionKind != sessionstore.SessionKindSubagent {
+		t.Errorf("SessionKind = %q, want %q", meta.SessionKind, sessionstore.SessionKindSubagent)
+	}
+	if meta.ParentSessionID != "parent-1" || meta.ParentToolCallID != "call-1" || meta.SubagentType != "task" {
+		t.Errorf("child relationship metadata = %+v", meta)
+	}
+	if _, err := os.Stat(filepath.Join(home, "subagents.json")); err != nil {
+		t.Errorf("subagents.json index missing: %v", err)
+	}
+}

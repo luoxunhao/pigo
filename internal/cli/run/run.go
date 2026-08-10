@@ -107,7 +107,7 @@ func SetupEnv(model, baseURL, protocol, providerName, apiKey string, noTools, no
 	// again), and all task calls in a run share one semaphore capping concurrency.
 	if !noTools {
 		sem := runtime.NewSubagentSemaphore()
-		tools = append(tools, SessionTaskTool(cwd, policy, model, resolvedName, prov, resolvedKey, sem))
+		tools = append(tools, SessionTaskTool(cwd, policy, model, resolvedName, prov, resolvedKey, sem, nil))
 	}
 	// Discover external plugins (US-016) and append their tools. Plugin loading
 	// is fault-tolerant: a plugin that fails to start is logged and skipped, and
@@ -163,17 +163,17 @@ func SetupEnv(model, baseURL, protocol, providerName, apiKey string, noTools, no
 		return Env{}, err
 	}
 	return Env{
-		Cwd:          cwd,
-		Tools:        tools,
-		Provider:     prov,
-		ProviderName: resolvedName,
-		APIKey:       resolvedKey,
-		SysPrompt:    sysPrompt,
-		Model:        model,
+		Cwd:                cwd,
+		Tools:              tools,
+		Provider:           prov,
+		ProviderName:       resolvedName,
+		APIKey:             resolvedKey,
+		SysPrompt:          sysPrompt,
+		Model:              model,
 		AppendInstructions: appends,
-		Skills:       skills,
-		Plugins:      mgr,
-		Memory:       memStore,
+		Skills:             skills,
+		Plugins:            mgr,
+		Memory:             memStore,
 	}, nil
 }
 
@@ -241,7 +241,7 @@ func HasReadTool(tools []agentcore.AgentTool) bool {
 // in cwd. It is used both by SetupEnv (single-project drivers) and by the ACP
 // session builder (shared processes), so a task child never inherits the
 // startup directory of a different workspace.
-func SessionTaskTool(cwd string, policy ToolPolicy, model, providerName string, prov provider.Provider, apiKey string, sem chan struct{}) *runtime.SubAgentTool {
+func SessionTaskTool(cwd string, policy ToolPolicy, model, providerName string, prov provider.Provider, apiKey string, sem chan struct{}, registry *runtime.Registry) *runtime.SubAgentTool {
 	childCreds := provider.NewCredentialStore(nil)
 	childCreds.SetOverride(providerName, apiKey)
 	factory := func() runtime.RunConfig {
@@ -258,7 +258,10 @@ func SessionTaskTool(cwd string, policy ToolPolicy, model, providerName string, 
 			},
 		}
 	}
-	return runtime.NewTaskTool(factory, sem)
+	tool := runtime.NewTaskTool(factory, sem)
+	tool.SetSubagentRegistry(registry)
+	tool.SetSubagentCwd(cwd)
+	return tool
 }
 
 // resolveAppendInstructions maps each --append-system-prompt value to the text

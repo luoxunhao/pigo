@@ -168,6 +168,9 @@ type SubAgentSpec struct {
 	// blocks (queues) the acquire rather than erroring. nil disables limiting, so
 	// existing sub-agent specs run unbounded exactly as before.
 	Sem chan struct{}
+	// Cwd is the workspace root the child session belongs to. It is used to
+	// persist child session transcripts under the correct project store.
+	Cwd string
 }
 
 // subAgentArgs is the JSON argument shape for a sub-agent tool call: a
@@ -214,6 +217,7 @@ type SubAgentTool struct {
 	// logic (params shaping, crash-as-error, result forwarding) without building
 	// a real binary; production leaves it nil so Execute uses defaultProcessCall.
 	processCall func(ctx context.Context, cfg SubAgentProcessConfig, params SubAgentRunParams) (string, error)
+	registry    *Registry
 }
 
 // NewSubAgentTool builds a sub-agent tool from a spec. In goroutine mode
@@ -237,6 +241,18 @@ func (t *SubAgentTool) ApplyConfigHook(cfg *RunConfig) {
 	if t.configHook != nil {
 		t.configHook(cfg)
 	}
+}
+
+// SetSubagentRegistry installs the live child-session registry used by the
+// task tool. When set, each task call creates a first-class ChildSession that
+// stays observable and resumable after the delegated task settles.
+func (t *SubAgentTool) SetSubagentRegistry(r *Registry) {
+	t.registry = r
+}
+
+// SetSubagentCwd records the workspace root used for child session persistence.
+func (t *SubAgentTool) SetSubagentCwd(cwd string) {
+	t.spec.Cwd = cwd
 }
 
 func (t *SubAgentTool) Name() string { return t.spec.Name }
@@ -286,6 +302,9 @@ func (t *SubAgentTool) Execute(ctx context.Context, id string, args json.RawMess
 		// does not stream partial updates), so onUpdate is intentionally not
 		// forwarded here; a caller supplying a sink gets no deltas in this mode.
 		return t.executeProcess(ctx, a.Prompt)
+	}
+	if t.registry != nil && agentcore.SessionIDFromContext(ctx) != "" {
+		return t.executeChildSession(ctx, id, a.Prompt, a.Description, onUpdate)
 	}
 	return t.executeGoroutine(ctx, id, a.Prompt, a.Description, onUpdate)
 }
@@ -432,6 +451,86 @@ func (t *SubAgentTool) executeGoroutine(ctx context.Context, id, prompt, descrip
 			Content:   agentcore.ContentList{agentcore.NewTextContent(subAgentCorrectionMessage)},
 		})
 	}
+}
+
+// executeChildSession runs the delegated task through a first-class child
+// session tracked by the registry. The child session stays alive after the task
+// settles so a client can continue it later.
+func (t *SubAgentTool) executeChildSession(ctx context.Context, id, prompt, description string, onUpdate agentcore.ToolUpdateFunc) (agentcore.AgentToolResult, error) {
+	parentID := agentcore.SessionIDFromContext(ctx)
+	factory := func() RunConfig {
+		cfg := t.spec.NewRunConfig()
+		t.ApplyConfigHook(&cfg)
+		return cfg
+	}
+	tools := t.spec.Tools
+	if len(tools) == 0 {
+		if cfg := factory(); cfg.Batch.ToolExecutorConfig.Registry != nil {
+			tools = cfg.Batch.ToolExecutorConfig.Registry.List()
+		}
+	}
+	child := t.registry.CreateOrGet(parentID, id, "task", t.spec.SystemPrompt, tools, factory, nil, t.spec.Cwd)
+
+	parentEmit := agentcore.ProgressEmitterFromContext(ctx)
+	sink := t.registry.eventSink()
+	parentInfo := map[string]any{
+		"sessionId":        child.ID,
+		"parentSessionId":  parentID,
+		"parentToolCallId": id,
+		"subagentType":     "task",
+	}
+	onEvent := func(ev agentcore.AgentEvent) {
+		if sink != nil {
+			sink(parentID, child.ID, ev)
+		}
+		if start, ok := ev.(agentcore.ToolExecutionStartEvent); ok && onUpdate != nil {
+			onUpdate(agentcore.AgentToolResult{
+				Content: agentcore.ContentList{agentcore.NewTextContent("[tool] " + start.ToolName)},
+				Details: parentInfo,
+			})
+		}
+		if parentEmit != nil {
+			if act := activityOf(ev); act != "" {
+				_ = parentEmit(ctx, agentcore.SubAgentProgressEvent{
+					ToolCallID:  id,
+					Description: description,
+					Activity:    act,
+					Tokens:      estimateTokens(0),
+				})
+			}
+		}
+	}
+	text, final, err := child.RunInitial(ctx, prompt, onEvent, func(delta string) {
+		if onUpdate != nil {
+			onUpdate(agentcore.AgentToolResult{
+				Content: agentcore.ContentList{agentcore.NewTextContent(delta)},
+				Details: parentInfo,
+			})
+		}
+	})
+	if err != nil {
+		return agentcore.AgentToolResult{}, fmt.Errorf("sub-agent %q: %w", t.spec.Name, err)
+	}
+	details := map[string]any{
+		"sessionId":        child.ID,
+		"parentSessionId":  parentID,
+		"parentToolCallId": id,
+		"subagentType":     "task",
+	}
+	if final != nil && (final.StopReason == agentcore.StopReasonError || final.StopReason == agentcore.StopReasonAborted) {
+		if text == "" {
+			text = final.ErrorMessage
+		}
+		return agentcore.AgentToolResult{}, fmt.Errorf("sub-agent %q failed (%s): [subagent session: %s]\n%s", t.spec.Name, final.StopReason, child.ID, text)
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		text = fmt.Sprintf("(sub-agent %q produced no text output after tool use)", t.spec.Name)
+	}
+	return agentcore.AgentToolResult{
+		Content: agentcore.ContentList{agentcore.NewTextContent(fmt.Sprintf("[subagent session: %s]\n\n%s", child.ID, text))},
+		Details: details,
+	}, nil
 }
 
 // executeProcess runs the child agent loop in a fresh pigo subprocess over stdio

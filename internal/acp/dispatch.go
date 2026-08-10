@@ -45,6 +45,9 @@ type Dispatcher struct {
 	memoryCfg       *MemoryConfig
 	runner          SessionRunner
 	registry        *runtime.SlashRegistry
+	subagents       *runtime.Registry
+	subagentMappers map[string]*eventMapper
+	subagentMu      sync.Mutex
 	credStore       *provider.CredentialStore
 	models          *ConfiguredModels
 	hookSeam        HookSeamFunc
@@ -100,6 +103,17 @@ func (d *Dispatcher) SetConfiguredModels(m *ConfiguredModels) { d.models = m }
 // registry used by in-process servers; shared servers override the session
 // context factory with a per-cwd registry builder.
 func (d *Dispatcher) SetSlashRegistry(reg *runtime.SlashRegistry) { d.registry = reg }
+
+// SetSubagentRegistry wires the live child-session registry so ACP can route
+// session/prompt to child sessions and forward their events as session/update
+// notifications under the child session id.
+func (d *Dispatcher) SetSubagentRegistry(reg *runtime.Registry) {
+	d.subagents = reg
+	d.subagentMappers = make(map[string]*eventMapper)
+	if reg != nil {
+		reg.SetEventSink(d.subagentEventSink)
+	}
+}
 
 // SetSessionContextFactory installs a per-session context builder. When unset
 // the dispatcher uses the startup sysPrompt/registry/tools as a single-project
@@ -360,6 +374,10 @@ func (d *Dispatcher) HandleNotification(ctx context.Context, method string, para
 	if err := json.Unmarshal(params, &req); err != nil || req.SessionID == "" {
 		return
 	}
+	if child := d.childSession(req.SessionID); child != nil {
+		child.Cancel()
+		return
+	}
 	if sess := d.manager.Get(req.SessionID); sess != nil {
 		if sess.queueLen() > 0 {
 			d.sendTextChunk(req.SessionID, "Cleared queued prompts.")
@@ -416,6 +434,22 @@ func (d *Dispatcher) sessionLoad(params json.RawMessage) (any, *Error) {
 	}
 	if !filepath.IsAbs(req.Cwd) {
 		return nil, NewError(CodeInvalidParams, "cwd must be an absolute path")
+	}
+	if strings.HasPrefix(req.SessionID, "subagent-") && d.subagents != nil {
+		child := d.subagents.Load(req.SessionID)
+		if child == nil {
+			return nil, NewError(CodeInvalidParams, "subagent session not found: "+req.SessionID)
+		}
+		return map[string]any{
+			"sessionId": child.ID,
+			"_meta": map[string]any{
+				"subagentParentInfo": map[string]any{
+					"parentSessionId":  child.ParentID,
+					"parentToolCallId": child.ToolCallID,
+					"subagentType":     child.Type,
+				},
+			},
+		}, nil
 	}
 	ctx, ctxErr := d.sessionCtx(req.Cwd, req.AdditionalDirectories)
 	if ctxErr != nil {
@@ -682,10 +716,75 @@ func (d *Dispatcher) modeAllowed(sess *AcpSession, mode string) bool {
 	return slices.Contains(m.ThinkingLevels, mode)
 }
 
+func (d *Dispatcher) childSession(id string) *runtime.ChildSession {
+	if d.subagents == nil {
+		return nil
+	}
+	return d.subagents.Get(id)
+}
+
+func (d *Dispatcher) subagentEventSink(parentSessionID, childSessionID string, ev agentcore.AgentEvent) {
+	d.subagentMu.Lock()
+	m := d.subagentMappers[childSessionID]
+	if m == nil {
+		cwd := ""
+		if child := d.subagents.Get(childSessionID); child != nil {
+			cwd = child.Cwd
+		}
+		m = newEventMapper(cwd)
+		d.subagentMappers[childSessionID] = m
+	}
+	d.subagentMu.Unlock()
+	for _, update := range m.Map(childSessionID, ev) {
+		_ = d.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(childSessionID, update))
+	}
+}
+
+func (d *Dispatcher) runChildPrompt(ctx context.Context, id RequestID, child *runtime.ChildSession, text string, images []agentcore.Content) {
+	onEvent := func(ev agentcore.AgentEvent) {
+		d.subagentEventSink(child.ParentID, child.ID, ev)
+	}
+	if child.Running() {
+		if err := child.Prompt(text); err != nil {
+			_ = d.transport.SendResponse(ctx, id, nil, NewError(CodeInternalError, err.Error()))
+			return
+		}
+		_ = d.transport.SendResponse(ctx, id, map[string]any{"stopReason": "end_turn"}, nil)
+		return
+	}
+	if len(images) > 0 {
+		_ = d.transport.SendResponse(ctx, id, nil, NewError(CodeInvalidParams, "images are not supported on subagent sessions yet"))
+		return
+	}
+	_, last, err := child.Continue(ctx, text, onEvent, nil)
+	if err != nil {
+		if ctx.Err() != nil {
+			_ = d.transport.SendResponse(ctx, id, map[string]any{"stopReason": "cancelled"}, nil)
+			return
+		}
+		_ = d.transport.SendResponse(ctx, id, nil, NewError(CodeInternalError, err.Error()))
+		return
+	}
+	stop := "end_turn"
+	if last != nil {
+		switch last.StopReason {
+		case agentcore.StopReasonLength:
+			stop = "max_tokens"
+		case agentcore.StopReasonAborted:
+			stop = "cancelled"
+		}
+	}
+	_ = d.transport.SendResponse(ctx, id, map[string]any{"stopReason": stop}, nil)
+}
+
 func (d *Dispatcher) runPrompt(ctx context.Context, id RequestID, params json.RawMessage) {
 	sessionID, text, images, ok := parsePromptParams(params)
 	if !ok {
 		_ = d.transport.SendResponse(ctx, id, nil, NewError(CodeInvalidParams, "missing sessionId or prompt text"))
+		return
+	}
+	if child := d.childSession(sessionID); child != nil {
+		d.runChildPrompt(ctx, id, child, text, images)
 		return
 	}
 	sess := d.manager.Get(sessionID)

@@ -23,12 +23,15 @@ type sessionContextBuilder struct {
 	mgr    *trust.Manager
 	live   *cli.LiveConfig
 	sem    chan struct{}
+	subs   *runtime.Registry
 
 	mu    sync.Mutex
 	cache map[string]*runtime.SlashRegistry
 }
 
-func newSessionContextBuilder(opts Options, env run.Env, policy run.ToolPolicy, mgr *trust.Manager) *sessionContextBuilder {
+func newSessionContextBuilder(home string, opts Options, env run.Env, policy run.ToolPolicy, mgr *trust.Manager) *sessionContextBuilder {
+	subs := runtime.NewRegistry()
+	subs.SetHome(home)
 	return &sessionContextBuilder{
 		opts:   opts,
 		env:    env,
@@ -44,8 +47,15 @@ func newSessionContextBuilder(opts Options, env run.Env, policy run.ToolPolicy, 
 			ContextWindow: cli.DefaultContextWindow,
 		},
 		sem:   runtime.NewSubagentSemaphore(),
+		subs:  subs,
 		cache: make(map[string]*runtime.SlashRegistry),
 	}
+}
+
+// SubagentRegistry exposes the shared child-session registry used by task tools
+// and ACP session/prompt routing.
+func (b *sessionContextBuilder) SubagentRegistry() *runtime.Registry {
+	return b.subs
 }
 
 // Build creates the isolated context for one session. The factory is safe for
@@ -64,7 +74,7 @@ func (b *sessionContextBuilder) Build(cwd string, additionalDirectories []string
 		return acp.SessionContext{}, err
 	}
 	tools := acp.CloneToolsForSession(b.env.Tools, cwd, additionalDirectories, func() *runtime.SubAgentTool {
-		return run.SessionTaskTool(cwd, b.policy, b.env.Model, b.env.ProviderName, b.env.Provider, b.env.APIKey, b.sem)
+		return run.SessionTaskTool(cwd, b.policy, b.env.Model, b.env.ProviderName, b.env.Provider, b.env.APIKey, b.sem, b.subs)
 	})
 	registry, err := b.registryFor(cwd)
 	if err != nil {

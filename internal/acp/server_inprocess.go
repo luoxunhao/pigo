@@ -7,6 +7,7 @@ import (
 	"github.com/smallnest/pigo/internal/agenttool"
 	"github.com/smallnest/pigo/internal/memory"
 	"github.com/smallnest/pigo/internal/provider"
+	"github.com/smallnest/pigo/internal/runtime"
 	"github.com/smallnest/pigo/internal/trust"
 )
 
@@ -73,6 +74,17 @@ func StartInProcess(runner SessionRunner, pigoHome, model, sysPrompt, cwd string
 func StartInProcessWithHooks(runner SessionRunner, pigoHome, model, sysPrompt, cwd string, mgr *trust.Manager, dreamCfg *DreamConfig, hookSeam HookSeamFunc) (*Client, func()) {
 	clientT, serverT := NewChannelPair()
 	disp := newDispatcherWithHooks(runner, serverT, pigoHome, model, sysPrompt, cwd, mgr, dreamCfg, hookSeam)
+	reg := runtime.NewRegistry()
+	reg.SetHome(pigoHome)
+	if rr, ok := runner.(*RuntimeRunner); ok {
+		for _, tool := range rr.Tools {
+			if st, ok := tool.(*runtime.SubAgentTool); ok {
+				st.SetSubagentRegistry(reg)
+				st.SetSubagentCwd(cwd)
+			}
+		}
+	}
+	disp.SetSubagentRegistry(reg)
 	srv := NewServer(serverT, disp)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {

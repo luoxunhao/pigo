@@ -29,10 +29,11 @@ func ServeStdioWithRegistry(ctx context.Context, runner SessionRunner, pigoHome,
 // factory. It is the entry point for shared pigo processes that serve multiple
 // workspaces: the factory rebuilds system prompts, tool roots, and slash
 // registries for each session cwd instead of using the process startup cwd.
-func ServeStdioWithSessionContext(ctx context.Context, runner SessionRunner, pigoHome, model string, factory SessionContextFactory, mgr *trust.Manager, dreamCfg *DreamConfig, hookSeam HookSeamFunc, in io.Reader, out io.Writer) error {
+func ServeStdioWithSessionContext(ctx context.Context, runner SessionRunner, pigoHome, model string, factory SessionContextFactory, mgr *trust.Manager, dreamCfg *DreamConfig, hookSeam HookSeamFunc, subagents *runtime.Registry, in io.Reader, out io.Writer) error {
 	tr := NewStdioTransport(in, out)
 	defer tr.Close()
 	disp := newDispatcherWithHooks(runner, tr, pigoHome, model, "", "", mgr, dreamCfg, hookSeam)
 	disp.SetSessionContextFactory(factory)
+	disp.SetSubagentRegistry(subagents)
 	return NewServer(tr, disp).Serve(ctx)
 }
