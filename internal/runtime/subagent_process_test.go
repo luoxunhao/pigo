@@ -89,6 +89,26 @@ func TestSubAgentGoroutineWhitespaceOnlyResultIsError(t *testing.T) {
 	}
 }
 
+func TestSubAgentGoroutineErrorMessageFallback(t *testing.T) {
+	child := &fauxProvider{
+		name:   "faux-child",
+		models: []provider.Model{{Provider: "faux-child", ID: "child"}},
+		turns:  []fauxTurn{errorTurn("build failed")},
+	}
+	sub := NewSubAgentTool(SubAgentSpec{
+		Name:         "task",
+		SystemPrompt: "sys",
+		NewRunConfig: func() RunConfig { return newFauxRunCfg(child) },
+	})
+	_, err := sub.Execute(context.Background(), "id", json.RawMessage(`{"prompt":"go"}`), nil)
+	if err == nil {
+		t.Fatal("expected error for child run with ErrorMessage only, got nil")
+	}
+	if !strings.Contains(err.Error(), "build failed") {
+		t.Errorf("error %q does not surface the child's ErrorMessage", err.Error())
+	}
+}
+
 func TestSubAgentGoroutineMissingMarkerCorrects(t *testing.T) {
 	child := &fauxProvider{
 		name:   "faux-child",

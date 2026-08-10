@@ -397,6 +397,15 @@ func (t *SubAgentTool) executeGoroutine(ctx context.Context, id, prompt, descrip
 		// IsError). A child whose final turn stopped on error/aborted otherwise
 		// looks like a successful delegation carrying error text.
 		if final != nil && (final.StopReason == agentcore.StopReasonError || final.StopReason == agentcore.StopReasonAborted) {
+			// The diagnostic often lives in ErrorMessage (e.g. an early stream
+			// build failure) rather than Content; surface it so the parent sees
+			// why the delegation failed instead of an empty error.
+			if text == "" && final.ErrorMessage != "" {
+				text = final.ErrorMessage
+			}
+			if text == "" {
+				text = string(final.StopReason)
+			}
 			return agentcore.AgentToolResult{}, fmt.Errorf("sub-agent %q failed (%s): %s", t.spec.Name, final.StopReason, text)
 		}
 		if text == "" {
