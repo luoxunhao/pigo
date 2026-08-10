@@ -341,7 +341,7 @@ func TestAgentLoopLengthSanitizesInvalidToolArgs(t *testing.T) {
 	}
 }
 
-func TestAgentLoopLengthCapStopsRun(t *testing.T) {
+func TestAgentLoopLengthInjectsShortReplyGuidance(t *testing.T) {
 	p := &fauxProvider{
 		name:   "faux",
 		models: []provider.Model{{Provider: "faux", ID: "faux"}},
@@ -349,21 +349,60 @@ func TestAgentLoopLengthCapStopsRun(t *testing.T) {
 			lengthToolTurn("c1", "echo", `{"path":"x"`),
 			lengthToolTurn("c2", "echo", `{"path":"y"`),
 			lengthToolTurn("c3", "echo", `{"path":"z"`),
+			textTurn("concise summary"),
 		},
 	}
 	cfg := newFauxRunCfg(p, echoTool("echo", agentcore.ToolExecutionParallel, false))
 	agentCtx := &agentcore.AgentContext{Messages: agentcore.MessageList{agentcore.UserMessage{RoleField: agentcore.RoleUser}}}
 	_, msgs := collectStream(t, agentLoop(context.Background(), agentCtx, cfg))
 
-	if p.callCount() != 3 {
-		t.Fatalf("provider calls = %d, want 3 (cap before a 4th turn)", p.callCount())
+	if p.callCount() != 4 {
+		t.Fatalf("provider calls = %d, want 4 (guidance injected before the 4th turn)", p.callCount())
+	}
+	req := p.requestAt(3)
+	found := false
+	for _, m := range req.Context.Messages {
+		if um, ok := m.(agentcore.UserMessage); ok {
+			if text := textContentOf(um.Content); strings.Contains(text, "output token limit") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("short-reply guidance was not injected after repeated truncation")
+	}
+	last, ok := msgs[len(msgs)-1].(agentcore.AssistantMessage)
+	if !ok || last.StopReason != agentcore.StopReasonEndTurn || textContentOf(last.Content) != "concise summary" {
+		t.Fatalf("last message = %T %+v, want the concise summary end_turn", msgs[len(msgs)-1], msgs[len(msgs)-1])
+	}
+}
+
+func TestAgentLoopLengthStopsAfterGuidanceExhausted(t *testing.T) {
+	p := &fauxProvider{
+		name:   "faux",
+		models: []provider.Model{{Provider: "faux", ID: "faux"}},
+		turns: []fauxTurn{
+			lengthToolTurn("c1", "echo", `{"path":"a"`),
+			lengthToolTurn("c2", "echo", `{"path":"b"`),
+			lengthToolTurn("c3", "echo", `{"path":"c"`),
+			lengthToolTurn("c4", "echo", `{"path":"d"`),
+			lengthToolTurn("c5", "echo", `{"path":"e"`),
+			lengthToolTurn("c6", "echo", `{"path":"f"`),
+		},
+	}
+	cfg := newFauxRunCfg(p, echoTool("echo", agentcore.ToolExecutionParallel, false))
+	agentCtx := &agentcore.AgentContext{Messages: agentcore.MessageList{agentcore.UserMessage{RoleField: agentcore.RoleUser}}}
+	_, msgs := collectStream(t, agentLoop(context.Background(), agentCtx, cfg))
+
+	if p.callCount() != 6 {
+		t.Fatalf("provider calls = %d, want 6 (two guidance rounds before giving up)", p.callCount())
 	}
 	last, ok := msgs[len(msgs)-1].(agentcore.AssistantMessage)
 	if !ok || last.StopReason != agentcore.StopReasonError {
 		t.Fatalf("last message = %T %+v, want an error stop", msgs[len(msgs)-1], msgs[len(msgs)-1])
 	}
-	if !strings.Contains(last.ErrorMessage, "consecutive truncated") {
-		t.Errorf("error message = %q, want a consecutive-length explanation", last.ErrorMessage)
+	if !strings.Contains(last.ErrorMessage, "despite short-reply guidance") {
+		t.Errorf("error message = %q, want a short-reply guidance explanation", last.ErrorMessage)
 	}
 }
 
@@ -391,9 +430,10 @@ func TestAgentLoopLengthCounterResetsOnNormalTurn(t *testing.T) {
 	agentCtx := &agentcore.AgentContext{Messages: agentcore.MessageList{agentcore.UserMessage{RoleField: agentcore.RoleUser}}}
 	collectStream(t, agentLoop(context.Background(), agentCtx, cfg))
 
-	// One length, one normal reset, then three consecutive lengths hit the cap.
-	if p.callCount() != 5 {
-		t.Fatalf("provider calls = %d, want 5 (counter reset on the normal turn)", p.callCount())
+	// One length, one normal reset, then three consecutive lengths inject
+	// guidance before the fallback end_turn finishes the run.
+	if p.callCount() != 6 {
+		t.Fatalf("provider calls = %d, want 6 (counter reset on the normal turn)", p.callCount())
 	}
 }
 

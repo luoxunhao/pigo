@@ -43,6 +43,13 @@ func nowMillis() int64 { return time.Now().UnixMilli() }
 // turn resets the counter.
 const maxConsecutiveLength = 3
 
+// maxForcedShortReplies bounds how many times pigo injects short-reply
+// guidance after repeated output-token truncation before giving up.
+const maxForcedShortReplies = 1
+
+const shortReplyGuidance = "Your previous responses hit the output token limit repeatedly. " +
+	"Do not retry the long output. Reply with a concise summary of at most 300 words and do not call tools."
+
 // maxUpstreamRetries bounds how many times a turn is retried after a transient
 // upstream rate-limit / overload error before the run fails. The backoff grows
 // exponentially so concurrent sub-agents do not immediately hammer the same
@@ -188,6 +195,7 @@ func runLoop(ctx context.Context, agentCtx *agentcore.AgentContext, cfg RunConfi
 	}
 	startIdx := len(agentCtx.Messages)
 	consecutiveLength := 0
+	forcedShortReplies := 0
 	turnRetries := 0
 	// tel accumulates structured telemetry (turn count, per-tool durations,
 	// truncation count, compaction count, latest context-utilization ratio) from
@@ -248,6 +256,7 @@ func runLoop(ctx context.Context, agentCtx *agentcore.AgentContext, cfg RunConfi
 			switch assistant.StopReason {
 			case agentcore.StopReasonLength:
 				consecutiveLength++
+				guidance := ""
 				// Repair the stored assistant message before the next provider
 				// request: a truncated tool call can carry invalid JSON, which
 				// upstream would reject or hang on. Replace bad arguments with a
@@ -259,15 +268,20 @@ func runLoop(ctx context.Context, agentCtx *agentcore.AgentContext, cfg RunConfi
 					}
 				}
 				if consecutiveLength >= maxConsecutiveLength {
-					errMsg := agentcore.AssistantMessage{
-						RoleField:    agentcore.RoleAssistant,
-						StopReason:   agentcore.StopReasonError,
-						ErrorMessage: fmt.Sprintf("run stopped after %d consecutive truncated responses (output token limit)", maxConsecutiveLength),
+					forcedShortReplies++
+					if forcedShortReplies > maxForcedShortReplies {
+						errMsg := agentcore.AssistantMessage{
+							RoleField:    agentcore.RoleAssistant,
+							StopReason:   agentcore.StopReasonError,
+							ErrorMessage: "run stopped after repeated truncated responses despite short-reply guidance (output token limit)",
+						}
+						agentCtx.Messages = append(agentCtx.Messages, errMsg)
+						_ = emit(agentcore.TurnEndEvent{Message: errMsg})
+						finish()
+						return
 					}
-					agentCtx.Messages = append(agentCtx.Messages, errMsg)
-					_ = emit(agentcore.TurnEndEvent{Message: errMsg})
-					finish()
-					return
+					consecutiveLength = 0
+					guidance = shortReplyGuidance
 				}
 				// Truncated by the token cap: fail every tool call so the model
 				// resends, then continue feeding back.
@@ -279,6 +293,12 @@ func runLoop(ctx context.Context, agentCtx *agentcore.AgentContext, cfg RunConfi
 				if afterTurn(ctx, agentCtx, &cfg, true, emit, tel) {
 					finish()
 					return
+				}
+				if guidance != "" {
+					agentCtx.Messages = append(agentCtx.Messages, agentcore.UserMessage{
+						RoleField: agentcore.RoleUser,
+						Content:   agentcore.ContentList{agentcore.NewTextContent(guidance)},
+					})
 				}
 				continue
 			case agentcore.StopReasonError, agentcore.StopReasonAborted:
