@@ -11,6 +11,7 @@ import (
 	"github.com/smallnest/pigo/internal/acp"
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/cli"
+	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/cli/headless"
 	"github.com/smallnest/pigo/internal/cli/run"
 	"github.com/smallnest/pigo/internal/runtime"
@@ -52,6 +53,9 @@ func RunACP(opts Options) error {
 		ThinkingLevel: opts.ThinkingLevel,
 		Tools:         opts.Tools,
 	}
+	configured := acp.NewConfiguredModels(config.FileConfigPath())
+	_ = configured.Load()
+	runner.ConfiguredModels = configured
 	dreamCfg := &acp.DreamConfig{
 		Model:         opts.Model,
 		BaseURL:       opts.BaseURL,
@@ -59,6 +63,17 @@ func RunACP(opts Options) error {
 		ProviderName:  opts.ProviderName,
 		APIKey:        opts.APIKey,
 		ThinkingLevel: opts.ThinkingLevel,
+	}
+	if entry, found := configured.Find(opts.Model); found {
+		if runner.APIKey == "" {
+			runner.APIKey = entry.APIKey
+		}
+		if runner.ProviderName == "" {
+			runner.ProviderName = entry.Provider
+		}
+		dreamCfg.BaseURL = entry.BaseURL
+		dreamCfg.Protocol = entry.Protocol
+		dreamCfg.ProviderName = entry.Provider
 	}
 	client, stop := acp.StartInProcessWithHooks(runner, home, opts.Model, opts.SysPrompt, cwd, mgr, dreamCfg, run.SessionHookSeam())
 	defer stop()
