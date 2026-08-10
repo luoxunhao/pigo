@@ -350,6 +350,19 @@ func runLoop(ctx context.Context, agentCtx *agentcore.AgentContext, cfg RunConfi
 			for _, tr := range toolResults {
 				agentCtx.Messages = append(agentCtx.Messages, tr)
 			}
+			if ctx.Err() != nil {
+				// The run was cancelled during tool execution: do not feed the
+				// canceled results back into another provider round-trip.
+				aborted := agentcore.AssistantMessage{
+					RoleField:    agentcore.RoleAssistant,
+					StopReason:   agentcore.StopReasonAborted,
+					ErrorMessage: "turn cancelled during tool execution",
+				}
+				agentCtx.Messages = append(agentCtx.Messages, aborted)
+				_ = emit(agentcore.TurnEndEvent{Message: aborted, ToolResults: toolResults})
+				finish()
+				return
+			}
 			if degenerateToolTurn(toolResults) {
 				degenerateTurns++
 			} else {
@@ -635,6 +648,8 @@ func degenerateToolTurn(results []agentcore.ToolResultMessage) bool {
 func isDegenerateToolError(text string) bool {
 	return strings.HasPrefix(text, "Invalid arguments for tool") ||
 		strings.HasPrefix(text, "unknown tool ") ||
+		strings.HasPrefix(text, `tool "bash" failed: bash: command canceled`) ||
+		strings.HasPrefix(text, "tool call aborted") ||
 		strings.Contains(text, "The previous response was truncated because it hit the output token limit")
 }
 

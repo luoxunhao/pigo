@@ -174,6 +174,42 @@ func TestRunHeadlessReportsFailure(t *testing.T) {
 	}
 }
 
+func TestRunHeadlessCanceledRunReportsAborted(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &fauxProvider{
+		name:   "faux",
+		models: []provider.Model{{Provider: "faux", ID: "faux"}},
+		turns: []fauxTurn{
+			toolCallTurn("c1", "bash", `{"command":"cancel"}`),
+		},
+	}
+	tool := execTool{
+		name: "bash",
+		run: func(ctx context.Context, id string, args json.RawMessage, onUpdate agentcore.ToolUpdateFunc) (agentcore.AgentToolResult, error) {
+			cancel()
+			return agentcore.AgentToolResult{
+				Content: agentcore.ContentList{agentcore.NewTextContent(`tool "bash" failed: bash: command canceled`)},
+				IsError: true,
+			}, nil
+		},
+	}
+	cfg := newFauxRunCfg(p, tool)
+	var out bytes.Buffer
+	agentCtx := &agentcore.AgentContext{Messages: agentcore.MessageList{agentcore.UserMessage{RoleField: agentcore.RoleUser}}}
+
+	err := RunHeadless(ctx, agentCtx, HeadlessConfig{Run: cfg, Mode: PrintMode, Out: &out})
+	if err == nil {
+		t.Fatal("canceled run must return a non-nil error")
+	}
+	var failed *ErrRunFailed
+	if !as(err, &failed) {
+		t.Fatalf("error = %T (%v), want *ErrRunFailed", err, err)
+	}
+	if !strings.Contains(failed.Error(), "aborted") && !strings.Contains(failed.Error(), "canceled") {
+		t.Errorf("error message = %q, want aborted or canceled", failed.Error())
+	}
+}
+
 // TestRunHeadlessNilWriter guards the misconfiguration path.
 func TestRunHeadlessNilWriter(t *testing.T) {
 	p := &fauxProvider{turns: []fauxTurn{textTurn("x")}}

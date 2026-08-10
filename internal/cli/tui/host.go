@@ -47,10 +47,10 @@ func (s *runSession) Cwd() string                                { return s.cwd 
 func (s *runSession) Input() *bufio.Reader                       { return nil }
 func (s *runSession) ConfirmMu() *sync.Mutex                     { return nil }
 
-func (s *runSession) CurLeaf() string      { return s.curLeaf }
-func (s *runSession) SetCurLeaf(id string) { s.curLeaf = id }
-func (s *runSession) Persisted() int       { return s.persisted }
-func (s *runSession) SetPersisted(n int)   { s.persisted = n }
+func (s *runSession) CurLeaf() string       { return s.curLeaf }
+func (s *runSession) SetCurLeaf(id string)  { s.curLeaf = id }
+func (s *runSession) Persisted() int        { return s.persisted }
+func (s *runSession) SetPersisted(n int)    { s.persisted = n }
 
 func (s *runSession) LastBtw() *agentcore.AgentContext       { return s.lastBtw }
 func (s *runSession) SetLastBtw(ctx *agentcore.AgentContext) { s.lastBtw = ctx }

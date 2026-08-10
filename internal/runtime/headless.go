@@ -124,6 +124,11 @@ func RunHeadless(ctx context.Context, agentCtx *agentcore.AgentContext, cfg Head
 		return writeErr
 	}
 	if resErr != nil {
+		if ctx.Err() != nil {
+			// The consumer raced the canceled run's terminal result; surface
+			// the cancellation as aborted rather than a raw context error.
+			return &ErrRunFailed{Reason: "aborted"}
+		}
 		return resErr
 	}
 
@@ -140,6 +145,12 @@ func RunHeadless(ctx context.Context, agentCtx *agentcore.AgentContext, cfg Head
 				return err
 			}
 		}
+	}
+
+	if lastAssistant == nil && ctx.Err() != nil {
+		// The run was canceled and never produced a final assistant message;
+		// report it as aborted instead of silently succeeding as end_turn.
+		return &ErrRunFailed{Reason: "aborted"}
 	}
 
 	if lastAssistant != nil {

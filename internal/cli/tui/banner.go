@@ -82,20 +82,15 @@ func renderBanner(theme Theme, opts Options, cwd string) string {
 	}
 
 	var info strings.Builder
-	info.WriteString(title.Render("pigo"))
-	info.WriteString("  ")
-	info.WriteString(theme.System.Render("Terminal AI coding assistant"))
-	info.WriteString("\n\n")
+	info.WriteString(title.Render("pigo") + "  " + theme.System.Render("Terminal AI coding assistant") + "\n\n")
 	for i, r := range rows {
 		if i > 0 {
 			info.WriteByte('\n')
 		}
-		info.WriteString(label.Render(fmt.Sprintf("%-10s ", r[0])))
-		info.WriteString(value.Render(r[1]))
+		info.WriteString(label.Render(fmt.Sprintf("%-10s ", r[0])) + value.Render(r[1]))
 	}
 	if upgradeHint != "" {
-		info.WriteByte('\n')
-		info.WriteString(upgradeHint)
+		info.WriteString("\n" + upgradeHint)
 	}
 
 	return lipgloss.JoinHorizontal(lipgloss.Center, logo.String(), "   ", info.String())

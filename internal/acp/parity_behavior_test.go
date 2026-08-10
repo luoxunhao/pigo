@@ -356,6 +356,97 @@ func TestCancelClearsQueueFeedback(t *testing.T) {
 	}
 }
 
+func TestTurnIdleWatchdogReleasesQueue(t *testing.T) {
+	t.Setenv("PIGO_TURN_IDLE_TIMEOUT", "100ms")
+	client, server := NewChannelPair()
+	defer client.Close()
+	defer server.Close()
+	runner := &fakeRunner{waitCancel: true, started: make(chan struct{})}
+	disp, _ := newTestDispatcher(t, runner, server)
+	srv := NewServer(server, disp)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { _ = srv.Serve(ctx) }()
+
+	_, stopReader := startClientReader(t, client)
+	defer stopReader()
+	ws := filepath.Join(t.TempDir(), "ws")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := client.SendRequest(ctx, MethodSessionNew, map[string]any{"cwd": ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var newResp struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(raw, &newResp); err != nil {
+		t.Fatal(err)
+	}
+
+	type promptReply struct {
+		raw json.RawMessage
+		err error
+	}
+	replyCh := make(chan promptReply, 2)
+	start := func(text string) {
+		go func() {
+			raw, err := client.SendRequest(ctx, MethodSessionPrompt, map[string]any{
+				"sessionId": newResp.SessionID,
+				"prompt":    []map[string]any{{"type": "text", "text": text}},
+			})
+			replyCh <- promptReply{raw: raw, err: err}
+		}()
+	}
+	start("first")
+	select {
+	case <-runner.started:
+	case <-ctx.Done():
+		t.Fatal("runner never started")
+	}
+	start("second")
+
+	// The watchdog must release the turn slot without any event heartbeat, so
+	// the queued second prompt becomes the running turn.
+	queuedStarted := false
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		runner.mu.Lock()
+		n := len(runner.models)
+		runner.mu.Unlock()
+		if n >= 2 {
+			queuedStarted = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !queuedStarted {
+		t.Fatal("queued prompt did not start after the idle watchdog fired")
+	}
+
+	// Cancel the now-running second turn so both prompt goroutines finish.
+	if err := client.SendNotification(MethodSessionCancel, map[string]any{"sessionId": newResp.SessionID}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case r := <-replyCh:
+			if r.err != nil {
+				t.Fatal(r.err)
+			}
+			var resp struct {
+				StopReason string `json:"stopReason"`
+			}
+			if err := json.Unmarshal(r.raw, &resp); err != nil {
+				t.Fatal(err)
+			}
+		case <-ctx.Done():
+			t.Fatal("timed out waiting for prompt replies")
+		}
+	}
+}
+
 func TestSessionStatsCommand(t *testing.T) {
 	home := t.TempDir()
 	ws := filepath.Join(t.TempDir(), "ws")

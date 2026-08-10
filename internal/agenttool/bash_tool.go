@@ -28,6 +28,12 @@ const bashDefaultTimeout = 2 * time.Minute
 // bashMaxTimeout caps any requested timeout.
 const bashMaxTimeout = 10 * time.Minute
 
+// bashWaitDelay bounds how long cmd.Wait may keep waiting on inherited
+// stdout/stderr pipes after the direct shell has exited. On Windows a canceled
+// shell can leave grandchildren holding the pipes open, so the delay turns an
+// indefinite cmd.Run() hang into a bounded return.
+const bashWaitDelay = 3 * time.Second
+
 // bashMaxOutputBytes caps how many bytes of combined stdout/stderr the bash tool
 // returns to the model. A single command can emit megabytes (build logs, a big
 // cat), which — unlike the timeout cap — would otherwise flow into context whole
@@ -300,6 +306,9 @@ func (t *BashTool) Execute(ctx context.Context, id string, args json.RawMessage,
 
 	shell, flag := resolveShell(t.Shell, runtime.GOOS, shellLookPath)
 	cmd := exec.CommandContext(runCtx, shell, flag, a.Command)
+	cmd.WaitDelay = bashWaitDelay
+	assignTreeKill, cleanupTreeKill := wireProcessTreeKill(cmd)
+	defer cleanupTreeKill()
 	if t.Dir != "" {
 		cmd.Dir = t.Dir
 	}
@@ -310,7 +319,11 @@ func (t *BashTool) Execute(ctx context.Context, id string, args json.RawMessage,
 	cmd.Stdout = sw
 	cmd.Stderr = sw
 
-	err := cmd.Run()
+	err := cmd.Start()
+	if err == nil {
+		assignTreeKill(cmd.Process.Pid)
+		err = cmd.Wait()
+	}
 
 	mu.Lock()
 	output := combined.String()
@@ -385,6 +398,8 @@ func (t *BashTool) startBackground(a bashToolArgs) (agentcore.AgentToolResult, e
 
 	shell, flag := resolveShell(t.Shell, runtime.GOOS, shellLookPath)
 	cmd := exec.CommandContext(jobCtx, shell, flag, a.Command)
+	cmd.WaitDelay = bashWaitDelay
+	assignTreeKill, cleanupTreeKill := wireProcessTreeKill(cmd)
 	if t.Dir != "" {
 		cmd.Dir = t.Dir
 	}
@@ -396,12 +411,15 @@ func (t *BashTool) startBackground(a bashToolArgs) (agentcore.AgentToolResult, e
 
 	if err := cmd.Start(); err != nil {
 		cancel()
+		cleanupTreeKill()
 		job.finish(-1, err.Error())
 		return errorResult(fmt.Sprintf("bash: could not start background command: %v", err)), nil
 	}
+	assignTreeKill(cmd.Process.Pid)
 
 	go func() {
 		err := cmd.Wait()
+		cleanupTreeKill()
 		cancel()
 		exitCode := 0
 		errMsg := ""

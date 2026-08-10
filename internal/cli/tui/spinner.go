@@ -123,7 +123,9 @@ func randomVerb() string {
 
 // formatElapsed renders a duration compactly: "42s", "1m 54s", or "1h 2m".
 func formatElapsed(d time.Duration) string {
-	d = max(0, d)
+	if d < 0 {
+		d = 0
+	}
 	secs := int(d.Seconds())
 	if secs < 60 {
 		return fmt.Sprintf("%ds", secs)
@@ -180,3 +182,4 @@ var spinnerVerbs = []string{
 	"Warping", "Whatchamacalliting", "Whirlpooling", "Whirring", "Whisking",
 	"Wibbling", "Working", "Wrangling", "Zesting", "Zigzagging",
 }
+

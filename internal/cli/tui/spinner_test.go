@@ -74,7 +74,6 @@ func TestSpinnerPinOverridesVerb(t *testing.T) {
 		t.Errorf("after unpin, view %q should not show the pinned label", got)
 	}
 }
-
 // tokens stream and the effort stat is hidden with no thinking level.
 func TestSpinnerViewOmitsEmptyStats(t *testing.T) {
 	s := newSpinner(DefaultTheme())

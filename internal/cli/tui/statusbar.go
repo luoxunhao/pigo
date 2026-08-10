@@ -77,7 +77,9 @@ func (s *statusBar) SetTelemetry(ev telemetryEventView) {
 		return
 	}
 	pct := int(ev.util*100 + 0.5)
-	pct = max(0, pct)
+	if pct < 0 {
+		pct = 0
+	}
 	if pct > 100 {
 		pct = 100
 	}
@@ -295,9 +297,7 @@ func (s statusBar) segments() []segment {
 // N dirty entries and "⇡N" for N commits ahead, each shown only when non-zero.
 func (s statusBar) gitText() string {
 	var b strings.Builder
-	b.WriteString(glyphGit)
-	b.WriteByte(' ')
-	b.WriteString(s.git.branch)
+	b.WriteString(glyphGit + " " + s.git.branch)
 	if s.git.dirty > 0 {
 		fmt.Fprintf(&b, " %s%d", glyphDirty, s.git.dirty)
 	}

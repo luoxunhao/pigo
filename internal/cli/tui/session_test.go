@@ -91,20 +91,27 @@ func TestBuildConfigAssembly(t *testing.T) {
 		t.Fatalf("newRunSessionWithStore: %v", err)
 	}
 
-	if s.live.Model != "opus-test" {
-		t.Errorf("live.Model = %q, want opus-test", s.live.Model)
+	cfg := s.buildConfig()
+	if cfg.Model != "opus-test" {
+		t.Errorf("cfg.Model = %q, want opus-test", cfg.Model)
 	}
-	if s.live.ProviderName != "anthropic" {
-		t.Errorf("live.ProviderName = %q, want anthropic", s.live.ProviderName)
+	if cfg.Provider != "anthropic" {
+		t.Errorf("cfg.Provider = %q, want anthropic", cfg.Provider)
 	}
-	if s.live.ThinkingLevel != agentcore.ThinkingLevel("high") {
-		t.Errorf("live.ThinkingLevel = %q, want high", s.live.ThinkingLevel)
+	if cfg.ThinkingLevel != agentcore.ThinkingLevel("high") {
+		t.Errorf("cfg.ThinkingLevel = %q, want high", cfg.ThinkingLevel)
 	}
-	if s.live.ContextWindow <= 0 {
-		t.Errorf("live.ContextWindow = %d, want a positive default", s.live.ContextWindow)
+	if cfg.ContextWindow <= 0 {
+		t.Errorf("cfg.ContextWindow = %d, want a positive default", cfg.ContextWindow)
 	}
-	if s.reg == nil {
-		t.Error("reg is nil, want the assembled tool registry")
+	if !cfg.Compaction.Enabled {
+		t.Error("cfg.Compaction.Enabled = false, want true (DefaultCompactionSettings)")
+	}
+	if cfg.Batch.Registry == nil {
+		t.Error("cfg.Batch.Registry is nil, want the assembled tool registry")
+	}
+	if cfg.Stream == nil {
+		t.Error("cfg.Stream is nil, want a stream fn derived from the provider")
 	}
 }
 
@@ -199,31 +206,5 @@ func TestPersistAfterCompaction(t *testing.T) {
 	}
 	if len(msgs) != 2 {
 		t.Fatalf("persisted messages = %d, want 2 (flattened compacted context)", len(msgs))
-	}
-}
-
-// TestACPSessionPersistNoop verifies that an ACP-backed runSession never writes
-// its own transcript: the ACP server owns persistence, so persist() is a no-op
-// even when the context has new messages. This is the guard that removes the
-// previous double-write between the ACP server and the TUI.
-func TestACPSessionPersistNoop(t *testing.T) {
-	store := newTestStore(t)
-	s, _, err := newRunSessionWithStore(store, Options{Model: "m", ProviderName: "p"})
-	if err != nil {
-		t.Fatalf("newRunSessionWithStore: %v", err)
-	}
-	s.acpBacked = true
-	s.agentCtx.Messages = append(s.agentCtx.Messages,
-		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("hi")}},
-		agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant, Content: agentcore.ContentList{agentcore.NewTextContent("yo")}},
-	)
-	if err := s.persist(); err != nil {
-		t.Fatalf("persist (acp-backed): %v", err)
-	}
-	if s.persisted != 0 {
-		t.Errorf("persisted = %d, want 0 (no local write)", s.persisted)
-	}
-	if _, _, err := store.Load(s.header.ID); err == nil {
-		t.Fatal("acp-backed persist wrote a transcript to the local store")
 	}
 }

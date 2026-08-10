@@ -57,6 +57,8 @@ type AcpSession struct {
 	turnMu     sync.Mutex
 	turnCond   *sync.Cond
 	turnActive bool
+	turnGen    uint64
+	finished   bool
 	queue      []*queuedPrompt
 	delivered  []*queuedPrompt
 }
@@ -111,6 +113,9 @@ func (s *AcpSession) Cancel() {
 	if c != nil {
 		c()
 	}
+	// Force-release the current turn slot even if the runner is stuck in a
+	// long-running tool, so later prompts cannot queue forever behind it.
+	s.finishTurn("cancelled", ErrTurnCancelled)
 }
 
 // tryRun claims the single turn slot. It returns true when the caller becomes
@@ -120,7 +125,7 @@ func (s *AcpSession) tryRun(p *queuedPrompt) bool {
 	defer s.turnMu.Unlock()
 	s.initTurnQueueLocked()
 	if !s.turnActive {
-		s.turnActive = true
+		s.claimTurnLocked()
 		return true
 	}
 	s.queue = append(s.queue, p)
@@ -139,7 +144,7 @@ func (s *AcpSession) waitForTurn(p *queuedPrompt) {
 		}
 		if !s.turnActive && len(s.queue) > 0 && s.queue[0] == p {
 			s.queue = s.queue[1:]
-			s.turnActive = true
+			s.claimTurnLocked()
 			return
 		}
 		s.turnCond.Wait()
@@ -185,9 +190,24 @@ func (s *AcpSession) popQueue(all bool) []*queuedPrompt {
 }
 
 // finishTurn releases the turn slot and resolves every prompt delivered during
-// the run. Leftover queue entries wake the next runner.
+// the run. It is idempotent: a watchdog force-release and the run's deferred
+// finish share the same generation, so only the first caller resolves
+// delivered prompts and wakes the queue. Leftover queue entries wake the next
+// runner.
 func (s *AcpSession) finishTurn(stopReason string, runErr error) {
 	s.turnMu.Lock()
+	gen := s.turnGen
+	s.turnMu.Unlock()
+	s.finishTurnGen(gen, stopReason, runErr)
+}
+
+func (s *AcpSession) finishTurnGen(gen uint64, stopReason string, runErr error) {
+	s.turnMu.Lock()
+	if s.finished || gen != s.turnGen {
+		s.turnMu.Unlock()
+		return
+	}
+	s.finished = true
 	s.turnActive = false
 	for _, p := range s.delivered {
 		p.stopReason = stopReason
@@ -205,6 +225,20 @@ func (s *AcpSession) initTurnQueueLocked() {
 	if s.turnCond == nil {
 		s.turnCond = sync.NewCond(&s.turnMu)
 	}
+}
+
+// claimTurnLocked marks the single turn slot as claimed by a new generation.
+func (s *AcpSession) claimTurnLocked() {
+	s.turnActive = true
+	s.turnGen++
+	s.finished = false
+}
+
+// currentTurnGen returns the generation of the currently claimed turn.
+func (s *AcpSession) currentTurnGen() uint64 {
+	s.turnMu.Lock()
+	defer s.turnMu.Unlock()
+	return s.turnGen
 }
 
 // SessionRunner executes one prompt turn against pigo's agent loop. The runner
@@ -384,6 +418,7 @@ func (m *SessionManager) DeleteEverywhere(sessionID string) error {
 // slot is always released, even when persistence fails, so a later prompt
 // cannot queue forever behind a failed sessionstore write.
 func (m *SessionManager) Run(ctx context.Context, sess *AcpSession, prompt string, images []agentcore.Content, beforeToolCall agentcore.BeforeToolCallFunc, onEvent func(agentcore.AgentEvent), hooks TurnHooks) (last *agentcore.AssistantMessage, err error) {
+	gen := sess.currentTurnGen()
 	defer func() {
 		stop := "end_turn"
 		switch {
@@ -397,12 +432,63 @@ func (m *SessionManager) Run(ctx context.Context, sess *AcpSession, prompt strin
 				stop = "cancelled"
 			}
 		}
-		sess.finishTurn(stop, err)
+		sess.finishTurnGen(gen, stop, err)
 	}()
 
 	runCtx, cancel := context.WithCancel(agentcore.WithSessionID(ctx, sess.ID))
 	sess.SetCancel(cancel)
 	defer sess.SetCancel(nil)
+
+	if timeout := turnIdleTimeout(); timeout > 0 {
+		watchdogDone := make(chan struct{})
+		defer close(watchdogDone)
+		runDone := make(chan struct{})
+		defer close(runDone)
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		heartbeat := make(chan struct{}, 1)
+		origOnEvent := onEvent
+		onEvent = func(ev agentcore.AgentEvent) {
+			select {
+			case heartbeat <- struct{}{}:
+			default:
+			}
+			if origOnEvent != nil {
+				origOnEvent(ev)
+			}
+		}
+		go func() {
+			for {
+				select {
+				case <-heartbeat:
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					timer.Reset(timeout)
+				case <-timer.C:
+					cancel()
+					select {
+					case <-runDone:
+						// The run is unwinding after cancel; its deferred
+						// finish will release the queue safely after it has
+						// finished persisting.
+						return
+					case <-time.After(watchdogGrace):
+						sess.finishTurnGen(gen, "cancelled", errors.New("turn idle timeout"))
+						sess.Cancel()
+						return
+					case <-watchdogDone:
+						return
+					}
+				case <-watchdogDone:
+					return
+				}
+			}
+		}()
+	}
 
 	if sess.SteeringMode == "" {
 		sess.SteeringMode = "one-at-a-time"

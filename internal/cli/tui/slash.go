@@ -195,7 +195,10 @@ func (mn slashMenu) window() (int, int) {
 	if n <= maxMenuRows {
 		return 0, n
 	}
-	start := max(0, mn.selected-maxMenuRows+1)
+	start := mn.selected - maxMenuRows + 1
+	if start < 0 {
+		start = 0
+	}
 	if start > n-maxMenuRows {
 		start = n - maxMenuRows
 	}

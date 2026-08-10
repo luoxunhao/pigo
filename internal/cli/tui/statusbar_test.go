@@ -27,15 +27,15 @@ func TestStatusBarRendersAllFields(t *testing.T) {
 	out := s.Render(width)
 
 	for _, want := range []string{
-		"pigo",           // app badge
-		"claude-opus",    // model
-		"high",           // thinking level
-		"~/project",      // cwd
-		"master",         // git branch
+		"pigo",          // app badge
+		"claude-opus",   // model
+		"high",          // thinking level
+		"~/project",     // cwd
+		"master",        // git branch
 		glyphDirty + "3", // dirty marker
 		glyphAhead + "4", // ahead marker
-		"42%",            // context usage
-		"running: Read",  // task
+		"42%",           // context usage
+		"running: Read", // task
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("render missing %q; got %q", want, out)

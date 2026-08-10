@@ -145,7 +145,9 @@ func (in input) LineCount() int { return in.ta.LineCount() }
 // SetWidth resizes the editor to the terminal width so wrapping and the prompt
 // column line up with the rest of the shell.
 func (in *input) SetWidth(w int) {
-	w = max(0, w)
+	if w < 0 {
+		w = 0
+	}
 	in.width = w
 	in.ta.SetWidth(w)
 }

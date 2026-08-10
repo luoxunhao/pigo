@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -130,6 +132,58 @@ func TestBashToolCancel(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Errorf("cancel took too long: %s (process not killed?)", elapsed)
 	}
+}
+
+func TestBashToolCancelKillsProcessTreeWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-only")
+	}
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "grandchild.pid")
+	scriptPath := filepath.Join(dir, "spawn.ps1")
+	ps := "$p = Start-Process powershell.exe -ArgumentList '-NoProfile','-Command','Start-Sleep 60' -PassThru; $p.Id | Out-File -Encoding ascii '" + pidFile + "'; Start-Sleep 60"
+	if err := os.WriteFile(scriptPath, []byte(ps), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"" + scriptPath + "\""
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	raw, _ := json.Marshal(map[string]any{"command": command})
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	_, gerr := (&BashTool{}).Execute(ctx, "call-1", raw, nil)
+	if gerr == nil {
+		t.Fatalf("expected cancellation error, got nil")
+	}
+	if !strings.Contains(gerr.Error(), "canceled") {
+		t.Errorf("error = %q, want to mention canceled", gerr.Error())
+	}
+	if elapsed := time.Since(start); elapsed > 8*time.Second {
+		t.Errorf("cancel took too long: %s (process tree not killed?)", elapsed)
+	}
+
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("read grandchild pid: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatalf("parse grandchild pid %q: %v", data, err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		probe := exec.Command("powershell.exe", "-NoProfile", "-Command", "if (Get-Process -Id "+strconv.Itoa(pid)+" -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }")
+		if err := probe.Run(); err != nil {
+			return // grandchild is gone; Job Object killed the tree
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("grandchild process %d survived cancellation", pid)
 }
 
 func TestBashToolMissingCommand(t *testing.T) {

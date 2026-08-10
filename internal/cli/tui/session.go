@@ -2,7 +2,7 @@
 // session store (US-009, FR-16/17). It is the TUI counterpart to the REPL's
 // replDeps + streamRun + cli.PersistTurn plumbing (internal/cli/repl): it
 // assembles an AgentContext + RunConfig from the model's Options, feeds them to
-// the event bridge (bridge.go's startRun 鈫?runtime.StartRun/DrainStream), and
+// the event bridge (bridge.go's startRun → runtime.StartRun/DrainStream), and
 // persists the growing conversation to ~/.pigo/sessions after each turn.
 //
 // It deliberately imports the SHARED lower-level packages the REPL also uses
@@ -18,11 +18,15 @@ import (
 	"os"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/agenttool"
 	"github.com/smallnest/pigo/internal/cli"
 	"github.com/smallnest/pigo/internal/cli/headless"
 	"github.com/smallnest/pigo/internal/cli/run"
+	"github.com/smallnest/pigo/internal/cli/ui"
+	"github.com/smallnest/pigo/internal/compaction"
 	"github.com/smallnest/pigo/internal/hooks"
 	"github.com/smallnest/pigo/internal/memory"
 	"github.com/smallnest/pigo/internal/plugin"
@@ -31,14 +35,6 @@ import (
 	"github.com/smallnest/pigo/internal/session"
 	"github.com/smallnest/pigo/internal/trust"
 )
-
-// rebuildDoneMsg reports the outcome of a manual /rebuild to the model: summary
-// is the status line to show in the transcript, err is set when the rebuild
-// failed (the context is then left unchanged).
-type rebuildDoneMsg struct {
-	summary string
-	err     error
-}
 
 // runSession holds the assembled per-session state for a TUI run: the persisted
 // store + header, the growing conversation context, the live (mutable) run
@@ -101,13 +97,9 @@ type runSession struct {
 	// and invalidates the branch prefix. persist() honors this by re-saving the
 	// flattened context linearly and resetting the branch cursor, then clears it.
 	compacted bool
-	// acpBacked marks a session driven through the in-process ACP server. The
-	// server already persists every run to the project-scoped store, so the TUI
-	// must not write a second copy; persist() becomes a no-op.
-	acpBacked bool
 
 	// cancelRun cancels the in-flight run's context; startRun sets it and the
-	// two-stage interrupt (Model.interruptFn 鈫?interrupt) calls it. It is nil
+	// two-stage interrupt (Model.interruptFn → interrupt) calls it. It is nil
 	// before the first run and after a run is cancelled.
 	cancelRun context.CancelFunc
 
@@ -131,11 +123,11 @@ type runSession struct {
 // It is the production entry; newRunSessionWithStore holds the store-agnostic
 // core so tests can drive it against a temp-dir store.
 func newRunSession(opts Options) (*runSession, []agentcore.Message, error) {
-	proj, err := headless.ProjectStore()
+	store, err := headless.SessionStore()
 	if err != nil {
 		return nil, nil, err
 	}
-	return newRunSessionWithStore(proj.TranscriptStore(), opts)
+	return newRunSessionWithStore(store, opts)
 }
 
 // newRunSessionWithStore is the store-agnostic core of newRunSession: given an
@@ -206,7 +198,7 @@ func newRunSessionWithStore(store *session.Store, opts Options) (*runSession, []
 	// Project trust (US-018, #134): load the persisted trust store for the
 	// launch directory, mirroring the REPL. A load failure (or an unresolvable
 	// cwd) is non-fatal: trust is disabled (mgr stays nil) and the TUI still
-	// runs 鈥?the store is surfaced rather than silently overwritten.
+	// runs — the store is surfaced rather than silently overwritten.
 	mgr, mgrErr := trust.NewManager(trust.DefaultPath())
 	if mgrErr != nil {
 		fmt.Fprintf(os.Stderr, "pigo: trust store unavailable, trust disabled: %v\n", mgrErr)
@@ -218,19 +210,19 @@ func newRunSessionWithStore(store *session.Store, opts Options) (*runSession, []
 	}
 
 	s := &runSession{
-		store:      store,
-		header:     header,
-		agentCtx:   agentCtx,
-		live:       live,
-		reg:        run.ToolRegistry(opts.Tools),
-		reminders:  run.TodoReminders(opts.Tools),
-		creds:      creds,
-		cwd:        cwd,
-		trust:      mgr,
-		slash:      newSlashRegistry(opts, live),
-		telemetry:  cli.NewTelemetryHolder(),
-		curLeaf:    curLeaf,
-		persisted:  len(history),
+		store:     store,
+		header:    header,
+		agentCtx:  agentCtx,
+		live:      live,
+		reg:       run.ToolRegistry(opts.Tools),
+		reminders: run.TodoReminders(opts.Tools),
+		creds:     creds,
+		cwd:       cwd,
+		trust:     mgr,
+		slash:     newSlashRegistry(opts, live),
+		telemetry: cli.NewTelemetryHolder(),
+		curLeaf:   curLeaf,
+		persisted: len(history),
 		memoryRoot: run.MemoryRootFromTools(opts.Tools),
 		memstore:   run.MemoryStoreFromTools(opts.Tools),
 	}
@@ -293,17 +285,151 @@ func chainTUIEvent(prev, next func(agentcore.AgentEvent)) func(agentcore.AgentEv
 	}
 }
 
+// buildConfig assembles the RunConfig for one turn from the live config and
+// collaborators. It replicates repl.streamRun's assembly (same LoopConfig fields,
+// tool registry and reminders) minus the interactive trust confirmation hook: the
+// TUI has no stdin prompt to confirm side-effect tool calls on, so tools run
+// under the trust granted up front by --approve (Options.Approve) rather than a
+// per-call BeforeToolCall prompt. The stream fn is derived from the live provider
+// and the API key resolved through the credential store, exactly as the REPL does.
+func (s *runSession) buildConfig() runtime.RunConfig {
+	cfg := runtime.RunConfig{
+		LoopConfig: runtime.LoopConfig{
+			Model:         s.live.Model,
+			Provider:      s.live.ProviderName,
+			ThinkingLevel: s.live.ThinkingLevel,
+			Stream:        provider.StreamFnFromProvider(s.live.Provider),
+			GetAPIKey:     s.creds.GetAPIKey,
+			ContextWindow: s.live.ContextWindow,
+			Compaction:    compaction.DefaultCompactionSettings,
+		},
+		Batch: agenttool.BatchConfig{
+			ToolExecutorConfig: agenttool.ToolExecutorConfig{
+				Registry: s.reg,
+			},
+		},
+		Reminders: s.reminders,
+		SessionID: s.header.ID,
+		MemoryRoot: s.memoryRoot,
+	}
+	// Per-turn wiring of the tool-execution + Stop seams; nil dispatcher is a
+	// no-op so the hot path pays nothing when no hooks are configured (FR-18).
+	if s.dispatcher != nil {
+		run.InstallSeams(&cfg, s.dispatcher, s.hookDeps)
+	}
+	// When remote control is active, route side-effect tool-call confirmations to
+	// the paired browser (no-op when no client is connected or the cwd is trusted,
+	// so the non-remote path is unchanged). The trust manager is read from the
+	// shared store; a nil manager disables the seam.
+	if s.remote != nil {
+		if mgr, err := trust.NewManager(trust.DefaultPath()); err == nil {
+			cfg.Batch.ToolExecutorConfig.BeforeToolCall = remoteConfirmSeam(s.remote, mgr, s.hookDeps.ProjectDir)
+		}
+	}
+	return cfg
+}
+
+// rebuildDoneMsg reports the outcome of a manual /rebuild to the model: summary
+// is the status line to show in the transcript, err is set when the rebuild
+// failed (the context is then left unchanged).
+type rebuildDoneMsg struct {
+	summary string
+	err     error
+}
+
+// rebuildCmd runs a context rebuild off the tea loop (the no-checkpoint fallback
+// makes a summarization LLM call, so it must not block the UI goroutine) and
+// yields a rebuildDoneMsg the model folds into the transcript. It mirrors the
+// REPL's runManualRebuild.
+func (s *runSession) rebuildCmd() tea.Cmd {
+	return func() tea.Msg {
+		summary, err := s.rebuild()
+		return rebuildDoneMsg{summary: summary, err: err}
+	}
+}
+
+// rebuild reconstructs the shared context from the session's persisted checkpoint
+// (collapsing the pre-watermark prefix to the checkpoint summary and preserving
+// the recent tail verbatim), falling back to lossy compaction when no checkpoint
+// exists. It replaces agentCtx.Messages in place on success and flags compacted
+// so persist() re-saves the flattened context linearly (as after a /compact).
+func (s *runSession) rebuild() (string, error) {
+	msgs := s.agentCtx.Messages
+	before := compaction.EstimateContextTokens(msgs).Tokens
+	// Checkpoints live under <memoryRoot>/sessions/<id>/; recover from the same
+	// root the loop writes to. Empty when memory is disabled — RebuildFromCheckpoint
+	// then falls back to lossy compaction.
+	memoryRoot := s.memoryRoot
+	cfg := s.buildConfig()
+	res, err := runtime.RebuildFromCheckpoint(context.Background(), msgs, s.header.ID, memoryRoot, &cfg, nil)
+	if err != nil {
+		return "", err
+	}
+	if res.NoOp {
+		return fmt.Sprintf("nothing to rebuild (%d tokens, %d messages)", before, len(msgs)), nil
+	}
+	s.agentCtx.Messages = res.Messages
+	s.compacted = true
+	source := "checkpoint"
+	if !res.FromCheckpoint {
+		source = "compaction (no checkpoint)"
+	}
+	return fmt.Sprintf("context rebuilt from %s: %d → %d tokens, collapsed %d messages, kept %d",
+		source, res.TokensBefore, res.TokensAfter, res.SummarizedCount, res.KeptCount), nil
+}
+
+
+// prompt to the growing context as a user message, then hands the context and a
+// freshly-built config to the event bridge (bridge.startRun → runtime.StartRun +
+// DrainStream on a goroutine), returning the bridge channel and the first
+// waitForEvent Cmd so Update can pump the run's events. The context grows in
+// place (agentCtx is a pointer), so the next turn continues the conversation.
+func (s *runSession) startRun(prompt string) (chan tea.Msg, tea.Cmd) {
+	content, err := ui.BuildUserContent(prompt)
+	if err != nil {
+		// A malformed image reference must not swallow the turn: fall back to the
+		// raw prompt as plain text so the run still starts.
+		content = agentcore.ContentList{agentcore.NewTextContent(prompt)}
+	}
+	// UserPromptSubmit runs before the prompt is committed to the context: a block
+	// aborts the turn (emitting a runEndMsg carrying the reason) without leaving a
+	// dangling user message; additionalContext is injected into this turn only.
+	if s.dispatcher != nil {
+		pc := runtime.RunConfig{Reminders: s.reminders}
+		if block, reason := run.DispatchUserPromptSubmit(context.Background(), s.dispatcher, &pc, s.hookDeps, prompt); block {
+			ch := newEventChan()
+			go func() { ch <- runEndMsg{err: fmt.Errorf("prompt blocked by hook: %s", reason)} }()
+			return ch, waitForEvent(ch)
+		}
+		s.reminders = pc.Reminders
+	}
+	s.agentCtx.Messages = append(s.agentCtx.Messages, agentcore.UserMessage{
+		RoleField: agentcore.RoleUser,
+		Content:   content,
+	})
+	// Use a cancellable context so the two-stage interrupt (FR-14) can stop this
+	// run: cancelling propagates through StartRun/DrainStream, which then emits a
+	// runEndMsg and the model returns to idle.
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cancelRun = cancel
+	return startRun(ctx, s.agentCtx, s.buildConfig(), s.onEvent)
+}
+
+// interrupt cancels the in-flight run, if any. It is bound to Model.interruptFn
+// by withSession so pressing Esc / Ctrl+C while running stops the current run
+// instead of quitting the program (FR-14). Safe to call when no run is active.
+func (s *runSession) interrupt() {
+	if s.cancelRun != nil {
+		s.cancelRun()
+	}
+}
+
 // persist writes the messages produced since the last persist as a new branch
 // descending from the active leaf, advancing the leaf and the persisted cursor.
 // It mirrors cli.PersistTurn: growing the on-disk tree with AppendBranch (rather
 // than a linear rewrite) keeps history intact. A no-op when nothing new was
 // produced, so an idle turn-end never regenerates entry ids.
 func (s *runSession) persist() error {
-	// ACP-driven sessions are persisted by the server; writing here would
-	// duplicate the transcript (the double-write this refactor removes).
-	if s.acpBacked || s.store == nil {
-		return nil
-	}
 	// A compaction during the run rewrote Messages into a summary + recent tail,
 	// so the append-a-tail branch model no longer holds: the prefix changed and
 	// the slice may be shorter than persisted. Re-save the flattened context
@@ -344,7 +470,7 @@ func (s *runSession) persist() error {
 // so the user sees the conversation so far before re-prompting (the TUI analogue
 // of repl.replayTranscript). User and assistant text become their respective
 // blocks; assistant tool calls render as system lines (tool cards land in #389).
-// Tool-result messages are omitted here 鈥?their content is echoed live during a
+// Tool-result messages are omitted here — their content is echoed live during a
 // run, and replaying raw results would clutter the resumed view.
 func seedTranscript(t *transcript, history []agentcore.Message) {
 	for _, m := range history {
@@ -358,7 +484,7 @@ func seedTranscript(t *transcript, history []agentcore.Message) {
 				t.finalizeTurn(msg)
 			}
 			for _, c := range msg.ToolCalls() {
-				t.addSystem("路 " + c.Name)
+				t.addSystem("· " + c.Name)
 			}
 		}
 	}

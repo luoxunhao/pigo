@@ -293,6 +293,39 @@ func TestAgentLoopLengthFailsToolCalls(t *testing.T) {
 	}
 }
 
+func TestAgentLoopCancelAfterToolExecutionStops(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &fauxProvider{
+		name:   "faux",
+		models: []provider.Model{{Provider: "faux", ID: "faux"}},
+		turns: []fauxTurn{
+			toolCallTurn("c1", "bash", `{"command":"cancel"}`),
+		},
+	}
+	tool := execTool{
+		name: "bash",
+		run: func(ctx context.Context, id string, args json.RawMessage, onUpdate agentcore.ToolUpdateFunc) (agentcore.AgentToolResult, error) {
+			cancel()
+			return agentcore.AgentToolResult{
+				Content: agentcore.ContentList{agentcore.NewTextContent(`tool "bash" failed: bash: command canceled`)},
+				IsError: true,
+			}, nil
+		},
+	}
+	cfg := newFauxRunCfg(p, tool)
+	agentCtx := &agentcore.AgentContext{Messages: agentcore.MessageList{agentcore.UserMessage{RoleField: agentcore.RoleUser}}}
+
+	_, msgs := collectStream(t, agentLoop(ctx, agentCtx, cfg))
+
+	if p.callCount() != 1 {
+		t.Fatalf("provider calls = %d, want 1 (no retry after cancel)", p.callCount())
+	}
+	last := agentcore.LastAssistantOf(msgs)
+	if last == nil || last.StopReason != agentcore.StopReasonAborted {
+		t.Fatalf("final assistant = %+v, want aborted", last)
+	}
+}
+
 func lengthToolTurn(id, name, rawArgs string) fauxTurn {
 	msg := agentcore.AssistantMessage{
 		RoleField:  agentcore.RoleAssistant,

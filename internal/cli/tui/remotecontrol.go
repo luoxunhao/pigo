@@ -167,8 +167,7 @@ func (m Model) runRemoteControl(line string) (tea.Model, tea.Cmd) {
 		var b strings.Builder
 		fmt.Fprintf(&b, "Remote control started. Open this URL on a device on the same network:\n\n  %s\n", url)
 		if qr, qerr := remotecontrol.Render(url); qerr == nil {
-			b.WriteByte('\n')
-			b.WriteString(qr)
+			b.WriteString("\n" + qr)
 		}
 		b.WriteString("\nRun /remote-control stop to end the session.")
 		m.transcript.addSystem(b.String())

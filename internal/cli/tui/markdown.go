@@ -66,7 +66,10 @@ func rendererFor(width int) *glamour.TermRenderer {
 	if r, ok := mdCache[width]; ok {
 		return r
 	}
-	wrap := max(0, width)
+	wrap := width
+	if wrap < 0 {
+		wrap = 0
+	}
 	style := "dark"
 	if !mdDark {
 		style = "light"

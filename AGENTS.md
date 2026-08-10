@@ -1,6 +1,6 @@
 # AGENTS.md
 
-pigo 是一个用 Go 编写的 coding agent。核心通过 ACP（Agent Client Protocol，JSON-RPC 2.0 over stdio）对外提供服务，TUI/REPL 也统一走 ACP；外部客户端包括 Zed 和 pi-web。
+pigo 是一个用 Go 编写的 coding agent。核心通过 ACP（Agent Client Protocol，JSON-RPC 2.0 over stdio）对外部客户端提供服务（Zed、pi-web 等）；TUI/REPL 直连 runtime（zero-transport），不经过 ACP。
 
 ## 快速开始
 
@@ -46,7 +46,7 @@ pigo.exe -v                       # 打印版本信息
   - 斜杠命令实现集中在 `internal/acp/extensions.go`。
   - 新增 ACP 客户端只做客户端侧映射，不要新建 `xx_extensions.go`；协议方法只加一次，所有客户端共享。
 - 会话删除必须走 `internal/sessionstore` 的 store API，保持磁盘持久化一致。
-- 新增能力默认通过 ACP 暴露，TUI/REPL 复用同一通道，避免旁路实现。
+- 新增能力默认在核心层实现；外部客户端通过 ACP 暴露，TUI/REPL 通过共享 runtime 直连，避免旁路实现。
 - 提交信息使用中文，subject 概括改动，必要时 body 说明动机；未经明确要求不 push。
 
 ## 责任边界
