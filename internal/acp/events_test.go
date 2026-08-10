@@ -99,6 +99,63 @@ func TestMapToolStartEnd(t *testing.T) {
 	}
 }
 
+func TestMapToolExecutionUpdateText(t *testing.T) {
+	m := newEventMapper("")
+	updates := m.Map("s1", agentcore.ToolExecutionUpdateEvent{
+		ToolCallID: "call-1",
+		ToolName:   "task",
+		PartialResult: agentcore.AgentToolResult{
+			Content: agentcore.ContentList{agentcore.NewTextContent("Reading internal/acp/dispatch.go")},
+			Details: map[string]any{
+				"sessionId":        "subagent-abc",
+				"parentSessionId":  "parent-1",
+				"parentToolCallId": "call-1",
+				"subagentType":     "task",
+			},
+		},
+	})
+	if len(updates) != 1 {
+		t.Fatalf("updates = %+v", updates)
+	}
+	u := updates[0]
+	if u["sessionUpdate"] != "tool_call_update" || u["status"] != "in_progress" {
+		t.Fatalf("update shape = %+v", u)
+	}
+	content, ok := u["content"].([]map[string]any)
+	if !ok || len(content) != 1 || content[0]["text"] != "Reading internal/acp/dispatch.go" {
+		t.Fatalf("update content = %+v", u["content"])
+	}
+	meta, ok := u["_meta"].(map[string]any)
+	if !ok {
+		t.Fatalf("update _meta missing: %+v", u)
+	}
+	parent, ok := meta["subagentParentInfo"].(map[string]any)
+	if !ok || parent["sessionId"] != "subagent-abc" {
+		t.Fatalf("subagentParentInfo = %+v", meta["subagentParentInfo"])
+	}
+}
+
+func TestMapSubAgentProgress(t *testing.T) {
+	m := newEventMapper("")
+	updates := m.Map("s1", agentcore.SubAgentProgressEvent{
+		ToolCallID:  "call-1",
+		Description: "探索 ACP 层",
+		Activity:    "Running bash",
+		Tokens:      42,
+	})
+	if len(updates) != 1 {
+		t.Fatalf("updates = %+v", updates)
+	}
+	u := updates[0]
+	if u["sessionUpdate"] != "tool_call_update" || u["status"] != "in_progress" {
+		t.Fatalf("update shape = %+v", u)
+	}
+	content, ok := u["content"].([]map[string]any)
+	if !ok || len(content) != 1 || content[0]["text"] != "Running bash" {
+		t.Fatalf("update content = %+v", u["content"])
+	}
+}
+
 func TestMapToolPending(t *testing.T) {
 	m := newEventMapper("")
 	updates := m.Map("s1", agentcore.ToolExecutionPendingEvent{

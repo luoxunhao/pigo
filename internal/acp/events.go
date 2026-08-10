@@ -81,6 +81,19 @@ func (m *eventMapper) Map(sessionID string, ev agentcore.AgentEvent) []map[strin
 		return []map[string]any{toolCallPending(e.ToolCallID, e.ToolName, e.Args)}
 	case agentcore.ToolExecutionStartEvent:
 		return []map[string]any{m.toolCallStart(e)}
+	case agentcore.ToolExecutionUpdateEvent:
+		text := agentcore.ContentToText(e.PartialResult.Content)
+		if text == "" {
+			return nil
+		}
+		update := toolCallUpdateText(e.ToolCallID, e.ToolName, text)
+		attachSubagentMeta(update, e.PartialResult.Details)
+		return []map[string]any{update}
+	case agentcore.SubAgentProgressEvent:
+		if e.Activity == "" {
+			return nil
+		}
+		return []map[string]any{toolCallUpdateText(e.ToolCallID, "task", e.Activity)}
 	case agentcore.ToolExecutionEndEvent:
 		return []map[string]any{m.toolCallEnd(e)}
 	case agentcore.TelemetryEvent:
@@ -421,6 +434,25 @@ func toolCallStart(id, name string, rawInput any) map[string]any {
 		"kind":          inferToolKind(name),
 		"status":        "in_progress",
 		"rawInput":      rawInput,
+	}
+}
+
+func toolCallUpdateText(id, name, text string) map[string]any {
+	return map[string]any{
+		"sessionUpdate": "tool_call_update",
+		"toolCallId":    id,
+		"title":         name,
+		"kind":          inferToolKind(name),
+		"status":        "in_progress",
+		"content":       []map[string]any{{"type": "text", "text": text}},
+	}
+}
+
+func attachSubagentMeta(update map[string]any, details any) {
+	if m, ok := details.(map[string]any); ok {
+		if _, ok := m["sessionId"]; ok {
+			update["_meta"] = map[string]any{"subagentParentInfo": m}
+		}
 	}
 }
 
