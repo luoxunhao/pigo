@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/smallnest/pigo/internal/agentcore"
+	"github.com/smallnest/pigo/internal/agenttool"
 	"github.com/smallnest/pigo/internal/provider"
 	"github.com/smallnest/pigo/internal/sessionstore"
 )
@@ -108,6 +109,43 @@ func TestChildSessionPersistsSubagentMetadata(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, "subagents.json")); err != nil {
 		t.Errorf("subagents.json index missing: %v", err)
+	}
+}
+
+func TestChildSessionAdvertisesRegistryTools(t *testing.T) {
+	reg := NewRegistry()
+	var gotTools []agentcore.AgentTool
+	capturing := provider.StreamFn(func(ctx context.Context, model string, llm provider.LlmContext, cfg provider.StreamConfig) (*provider.AssistantMessageEventStream, error) {
+		gotTools = llm.Tools
+		child := &fauxProvider{
+			name:   "faux-child",
+			models: []provider.Model{{Provider: "faux-child", ID: "child"}},
+			turns:  []fauxTurn{textTurn("done <<DONE>>")},
+		}
+		return provider.StreamFnFromProvider(child)(ctx, model, llm, cfg)
+	})
+	toolReg := agenttool.NewToolRegistry()
+	_ = toolReg.Register(echoTool("read", agentcore.ToolExecutionParallel, false))
+	_ = toolReg.Register(echoTool("bash", agentcore.ToolExecutionParallel, false))
+	factory := func() RunConfig {
+		return RunConfig{
+			LoopConfig: LoopConfig{Model: "child", Stream: capturing},
+			Batch:      agenttool.BatchConfig{ToolExecutorConfig: agenttool.ToolExecutorConfig{Registry: toolReg}},
+		}
+	}
+	tool := NewSubAgentTool(SubAgentSpec{
+		Name:         "task",
+		SystemPrompt: "sys",
+		NewRunConfig: factory,
+	})
+	tool.SetSubagentRegistry(reg)
+
+	ctx := agentcore.WithSessionID(context.Background(), "parent-1")
+	if _, err := tool.Execute(ctx, "call-1", json.RawMessage(`{"prompt":"go"}`), nil); err != nil {
+		t.Fatalf("Execute err = %v", err)
+	}
+	if len(gotTools) != 2 {
+		t.Fatalf("child was advertised %d tools, want 2 from the registry", len(gotTools))
 	}
 }
 
