@@ -23,7 +23,7 @@ func TestSessionContextBuilderTrustFingerprintInvalidatesRegistry(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	builder := newSessionContextBuilder(Options{}, run.Env{
+	builder := newSessionContextBuilder(t.TempDir(), Options{}, run.Env{
 		ProviderName: "test",
 	}, run.ToolPolicy{}, mgr)
 
