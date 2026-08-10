@@ -109,3 +109,65 @@ func TestChildSessionPersistsSubagentMetadata(t *testing.T) {
 		t.Errorf("subagents.json index missing: %v", err)
 	}
 }
+
+func TestChildSessionErrorWithContentRecovered(t *testing.T) {
+	reg := NewRegistry()
+	report := strings.Repeat("architecture report content. ", 20)
+	child := &fauxProvider{
+		name:   "faux-child",
+		models: []provider.Model{{Provider: "faux-child", ID: "child"}},
+		turns:  []fauxTurn{errorContentTurn(report)},
+	}
+	tool := NewSubAgentTool(SubAgentSpec{
+		Name:         "task",
+		SystemPrompt: "sys",
+		NewRunConfig: func() RunConfig { return newFauxRunCfg(child) },
+	})
+	tool.SetSubagentRegistry(reg)
+
+	ctx := agentcore.WithSessionID(context.Background(), "parent-1")
+	res, err := tool.Execute(ctx, "call-1", json.RawMessage(`{"prompt":"go"}`), nil)
+	if err != nil {
+		t.Fatalf("Execute err = %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("child error stop with substantial content must be recovered: %+v", res)
+	}
+	if got := agentcore.ContentToText(res.Content); !strings.Contains(got, strings.TrimSpace(report)) {
+		t.Errorf("result missing the streamed report: %q", got)
+	}
+	if cs := reg.Get(SessionID("parent-1", "call-1")); cs == nil {
+		t.Fatal("child session missing after recovered result")
+	}
+}
+
+func TestChildSessionPersistsBeforeErrorReturn(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	reg := NewRegistry()
+	reg.SetHome(home)
+	child := &fauxProvider{
+		name:   "faux-child",
+		models: []provider.Model{{Provider: "faux-child", ID: "child"}},
+		turns:  []fauxTurn{errorTurn("boom")},
+	}
+	tool := NewSubAgentTool(SubAgentSpec{
+		Name:         "task",
+		SystemPrompt: "sys",
+		Cwd:          cwd,
+		NewRunConfig: func() RunConfig { return newFauxRunCfg(child) },
+	})
+	tool.SetSubagentRegistry(reg)
+
+	ctx := agentcore.WithSessionID(context.Background(), "parent-1")
+	if _, err := tool.Execute(ctx, "call-1", json.RawMessage(`{"prompt":"go"}`), nil); err == nil {
+		t.Fatal("expected child error to surface, got nil")
+	}
+	cs := reg.Get(SessionID("parent-1", "call-1"))
+	if cs == nil {
+		t.Fatal("child session missing after error")
+	}
+	if len(cs.Messages) < 2 {
+		t.Errorf("child messages = %d, want the user prompt and the error assistant persisted", len(cs.Messages))
+	}
+}

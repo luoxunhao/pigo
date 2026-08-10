@@ -382,6 +382,9 @@ func (s *ChildSession) RunInitial(
 		s.mu.Lock()
 		s.Messages = agentCtx.Messages
 		s.mu.Unlock()
+		if perr := s.persist(); perr != nil {
+			return "", nil, perr
+		}
 		if err != nil {
 			return "", nil, err
 		}
@@ -395,6 +398,12 @@ func (s *ChildSession) RunInitial(
 			text = strings.TrimSpace(streamed.String())
 		}
 		if final != nil && (final.StopReason == agentcore.StopReasonError || final.StopReason == agentcore.StopReasonAborted) {
+			if final.StopReason == agentcore.StopReasonError && final.ErrorMessage == "" && len(text) >= minSubAgentErrorContentLen {
+				if hasSubAgentDoneMarker(text) {
+					text = stripSubAgentDoneMarker(text)
+				}
+				break
+			}
 			if text == "" && final.ErrorMessage != "" {
 				text = final.ErrorMessage
 			}

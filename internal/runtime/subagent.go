@@ -124,6 +124,11 @@ const (
 	// incomplete and exactly which marker is required.
 	subAgentCorrectionMessage = "Your previous response did not end with `<<DONE>>`. " +
 		"Complete any remaining work and end your final message with `<<DONE>>`."
+	// minSubAgentErrorContentLen treats an error stop with substantial streamed
+	// content but no ErrorMessage as a completed result. Providers sometimes
+	// emit a terminal error after the model has already streamed the full
+	// report; discarding that content turns a real result into an empty failure.
+	minSubAgentErrorContentLen = 200
 )
 
 // SubAgentSpec declares a spawnable sub-agent: its identity (surfaced to the
@@ -416,6 +421,12 @@ func (t *SubAgentTool) executeGoroutine(ctx context.Context, id, prompt, descrip
 		// IsError). A child whose final turn stopped on error/aborted otherwise
 		// looks like a successful delegation carrying error text.
 		if final != nil && (final.StopReason == agentcore.StopReasonError || final.StopReason == agentcore.StopReasonAborted) {
+			if final.StopReason == agentcore.StopReasonError && final.ErrorMessage == "" && len(text) >= minSubAgentErrorContentLen {
+				if hasSubAgentDoneMarker(text) {
+					text = stripSubAgentDoneMarker(text)
+				}
+				return agentcore.AgentToolResult{Content: agentcore.ContentList{agentcore.NewTextContent(text)}}, nil
+			}
 			// The diagnostic often lives in ErrorMessage (e.g. an early stream
 			// build failure) rather than Content; surface it so the parent sees
 			// why the delegation failed instead of an empty error.
@@ -500,7 +511,7 @@ func (t *SubAgentTool) executeChildSession(ctx context.Context, id, prompt, desc
 			}
 		}
 	}
-	text, final, err := child.RunInitial(ctx, prompt, onEvent, func(delta string) {
+	text, _, err := child.RunInitial(ctx, prompt, onEvent, func(delta string) {
 		if onUpdate != nil {
 			onUpdate(agentcore.AgentToolResult{
 				Content: agentcore.ContentList{agentcore.NewTextContent(delta)},
@@ -516,12 +527,6 @@ func (t *SubAgentTool) executeChildSession(ctx context.Context, id, prompt, desc
 		"parentSessionId":  parentID,
 		"parentToolCallId": id,
 		"subagentType":     "task",
-	}
-	if final != nil && (final.StopReason == agentcore.StopReasonError || final.StopReason == agentcore.StopReasonAborted) {
-		if text == "" {
-			text = final.ErrorMessage
-		}
-		return agentcore.AgentToolResult{}, fmt.Errorf("sub-agent %q failed (%s): [subagent session: %s]\n%s", t.spec.Name, final.StopReason, child.ID, text)
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -661,6 +666,12 @@ func RunSubAgentOnce(ctx context.Context, systemPrompt, prompt string, tools []a
 			text = strings.TrimSpace(streamed.String())
 		}
 		if final != nil && (final.StopReason == agentcore.StopReasonError || final.StopReason == agentcore.StopReasonAborted) {
+			if final.StopReason == agentcore.StopReasonError && final.ErrorMessage == "" && len(text) >= minSubAgentErrorContentLen {
+				if hasSubAgentDoneMarker(text) {
+					text = stripSubAgentDoneMarker(text)
+				}
+				return text, nil
+			}
 			// When the loop synthesizes an error turn (e.g. a provider connection
 			// failure) the diagnostic lands in ErrorMessage, not Content; fall back
 			// to it so the subprocess surfaces the real cause rather than a bare

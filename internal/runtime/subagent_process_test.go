@@ -109,6 +109,43 @@ func TestSubAgentGoroutineErrorMessageFallback(t *testing.T) {
 	}
 }
 
+func errorContentTurn(text string) fauxTurn {
+	partial := agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant}
+	withText := partial
+	withText.Content = agentcore.ContentList{agentcore.NewTextContent(text)}
+	final := withText
+	final.StopReason = agentcore.StopReasonError
+	return fauxTurn{
+		provider.StreamStartEvent{Partial: partial},
+		provider.StreamTextEvent{Partial: withText},
+		provider.StreamDoneEvent{Message: final},
+	}
+}
+
+func TestSubAgentGoroutineErrorWithContentRecovered(t *testing.T) {
+	report := strings.Repeat("architecture report content. ", 20)
+	child := &fauxProvider{
+		name:   "faux-child",
+		models: []provider.Model{{Provider: "faux-child", ID: "child"}},
+		turns:  []fauxTurn{errorContentTurn(report)},
+	}
+	sub := NewSubAgentTool(SubAgentSpec{
+		Name:         "task",
+		SystemPrompt: "sys",
+		NewRunConfig: func() RunConfig { return newFauxRunCfg(child) },
+	})
+	res, err := sub.Execute(context.Background(), "id", json.RawMessage(`{"prompt":"go"}`), nil)
+	if err != nil {
+		t.Fatalf("Execute err = %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("error stop with substantial content must be recovered as a result: %+v", res)
+	}
+	if got := agentcore.ContentToText(res.Content); got != strings.TrimSpace(report) {
+		t.Errorf("result = %q, want the streamed report", got)
+	}
+}
+
 func TestSubAgentGoroutineMissingMarkerCorrects(t *testing.T) {
 	child := &fauxProvider{
 		name:   "faux-child",
