@@ -131,6 +131,37 @@ const (
 	minSubAgentErrorContentLen = 200
 )
 
+// maxSubAgentErrorSnippet bounds how much streamed child text is attached to a
+// failure when the loop already produced a diagnostic ErrorMessage. The parent
+// needs the real cause first; a long truncated report should not drown it.
+const maxSubAgentErrorSnippet = 240
+
+// subAgentFailureText builds the failure text for a child run that stopped on
+// error/aborted. When the loop synthesized a diagnostic in ErrorMessage (e.g.
+// the output-token-length breaker), that message is preserved and any streamed
+// text is attached as a short trailing snippet. Without this, a truncated
+// assistant message's text would hide the real cause from the parent agent.
+func subAgentFailureText(final *agentcore.AssistantMessage, text string) string {
+	if final == nil {
+		return ""
+	}
+	text = strings.TrimSpace(text)
+	if final.ErrorMessage != "" {
+		if text == "" || text == final.ErrorMessage {
+			return final.ErrorMessage
+		}
+		runes := []rune(text)
+		if len(runes) > maxSubAgentErrorSnippet {
+			runes = runes[:maxSubAgentErrorSnippet]
+		}
+		return final.ErrorMessage + " (last output: " + string(runes) + ")"
+	}
+	if text == "" {
+		return string(final.StopReason)
+	}
+	return text
+}
+
 // SubAgentSpec declares a spawnable sub-agent: its identity (surfaced to the
 // model as a tool), the system prompt and tools its child context runs with,
 // and a factory for the child's run configuration (provider stream, batch
@@ -428,15 +459,9 @@ func (t *SubAgentTool) executeGoroutine(ctx context.Context, id, prompt, descrip
 				return agentcore.AgentToolResult{Content: agentcore.ContentList{agentcore.NewTextContent(text)}}, nil
 			}
 			// The diagnostic often lives in ErrorMessage (e.g. an early stream
-			// build failure) rather than Content; surface it so the parent sees
-			// why the delegation failed instead of an empty error.
-			if text == "" && final.ErrorMessage != "" {
-				text = final.ErrorMessage
-			}
-			if text == "" {
-				text = string(final.StopReason)
-			}
-			return agentcore.AgentToolResult{}, fmt.Errorf("sub-agent %q failed (%s): %s", t.spec.Name, final.StopReason, text)
+			// build failure or the output-token-length breaker); keep it ahead
+			// of any streamed text so the parent sees why the delegation failed.
+			return agentcore.AgentToolResult{}, fmt.Errorf("sub-agent %q failed (%s): %s", t.spec.Name, final.StopReason, subAgentFailureText(final, text))
 		}
 		if text == "" {
 			return agentcore.AgentToolResult{
@@ -673,16 +698,10 @@ func RunSubAgentOnce(ctx context.Context, systemPrompt, prompt string, tools []a
 				return text, nil
 			}
 			// When the loop synthesizes an error turn (e.g. a provider connection
-			// failure) the diagnostic lands in ErrorMessage, not Content; fall back
-			// to it so the subprocess surfaces the real cause rather than a bare
-			// "error" stop reason.
-			if text == "" && final.ErrorMessage != "" {
-				text = final.ErrorMessage
-			}
-			if text == "" {
-				text = string(final.StopReason)
-			}
-			return text, fmt.Errorf("sub-agent failed (%s): %s", final.StopReason, text)
+			// failure or the output-token-length breaker) the diagnostic lands in
+			// ErrorMessage; keep it ahead of any streamed text so the subprocess
+			// surfaces the real cause.
+			return text, fmt.Errorf("sub-agent failed (%s): %s", final.StopReason, subAgentFailureText(final, text))
 		}
 		if text == "" {
 			return "", fmt.Errorf("sub-agent produced no text output after tool use")

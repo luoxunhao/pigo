@@ -122,6 +122,20 @@ func errorContentTurn(text string) fauxTurn {
 	}
 }
 
+func errorContentWithMessageTurn(text, msg string) fauxTurn {
+	partial := agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant}
+	withText := partial
+	withText.Content = agentcore.ContentList{agentcore.NewTextContent(text)}
+	final := withText
+	final.StopReason = agentcore.StopReasonError
+	final.ErrorMessage = msg
+	return fauxTurn{
+		provider.StreamStartEvent{Partial: partial},
+		provider.StreamTextEvent{Partial: withText},
+		provider.StreamDoneEvent{Message: final},
+	}
+}
+
 func TestSubAgentGoroutineErrorWithContentRecovered(t *testing.T) {
 	report := strings.Repeat("architecture report content. ", 20)
 	child := &fauxProvider{
@@ -143,6 +157,33 @@ func TestSubAgentGoroutineErrorWithContentRecovered(t *testing.T) {
 	}
 	if got := agentcore.ContentToText(res.Content); got != strings.TrimSpace(report) {
 		t.Errorf("result = %q, want the streamed report", got)
+	}
+}
+
+func TestSubAgentGoroutineErrorWithContentSurfacesDiagnostic(t *testing.T) {
+	report := strings.Repeat("architecture report content. ", 20)
+	child := &fauxProvider{
+		name:   "faux-child",
+		models: []provider.Model{{Provider: "faux-child", ID: "child"}},
+		turns: []fauxTurn{errorContentWithMessageTurn(
+			report,
+			"run stopped after repeated truncated responses despite short-reply guidance (output token limit)",
+		)},
+	}
+	sub := NewSubAgentTool(SubAgentSpec{
+		Name:         "task",
+		SystemPrompt: "sys",
+		NewRunConfig: func() RunConfig { return newFauxRunCfg(child) },
+	})
+	_, err := sub.Execute(context.Background(), "id", json.RawMessage(`{"prompt":"go"}`), nil)
+	if err == nil {
+		t.Fatal("expected error for child run with ErrorMessage and content, got nil")
+	}
+	if !strings.Contains(err.Error(), "repeated truncated responses despite short-reply guidance") {
+		t.Errorf("error %q hides the length-breaker diagnostic", err.Error())
+	}
+	if !strings.Contains(err.Error(), "architecture report content") {
+		t.Errorf("error %q omits the trailing streamed snippet", err.Error())
 	}
 }
 
@@ -400,6 +441,27 @@ func TestRunSubAgentOnce(t *testing.T) {
 		// subprocess must surface it rather than a bare "error" stop reason.
 		if !strings.Contains(err.Error(), "boom") {
 			t.Errorf("error %q does not contain the 'boom' diagnostic", err.Error())
+		}
+	})
+
+	t.Run("error with content surfaces diagnostic", func(t *testing.T) {
+		p := &fauxProvider{
+			name:   "faux",
+			models: []provider.Model{{Provider: "faux", ID: "faux"}},
+			turns: []fauxTurn{errorContentWithMessageTurn(
+				"now I have enough information to write the report",
+				"run stopped after repeated truncated responses despite short-reply guidance (output token limit)",
+			)},
+		}
+		_, err := RunSubAgentOnce(context.Background(), "sys", "do it", nil, newFauxRunCfg(p))
+		if err == nil {
+			t.Fatal("expected error for child run with ErrorMessage and content, got nil")
+		}
+		if !strings.Contains(err.Error(), "repeated truncated responses despite short-reply guidance") {
+			t.Errorf("error %q hides the length-breaker diagnostic", err.Error())
+		}
+		if !strings.Contains(err.Error(), "enough information") {
+			t.Errorf("error %q omits the trailing streamed snippet", err.Error())
 		}
 	})
 

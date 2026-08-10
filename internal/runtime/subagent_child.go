@@ -427,13 +427,7 @@ func (s *ChildSession) RunInitial(
 				}
 				break
 			}
-			if text == "" && final.ErrorMessage != "" {
-				text = final.ErrorMessage
-			}
-			if text == "" {
-				text = string(final.StopReason)
-			}
-			return text, final, fmt.Errorf("sub-agent failed (%s): %s", final.StopReason, text)
+			return text, final, fmt.Errorf("sub-agent failed (%s): %s", final.StopReason, subAgentFailureText(final, text))
 		}
 		if final != nil && final.ErrorMessage != "" && !strings.Contains(text, final.ErrorMessage) {
 			if text != "" {

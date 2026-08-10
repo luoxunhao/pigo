@@ -180,6 +180,71 @@ func TestChildSessionErrorWithContentRecovered(t *testing.T) {
 	}
 }
 
+func TestChildSessionErrorWithContentSurfacesDiagnostic(t *testing.T) {
+	reg := NewRegistry()
+	report := strings.Repeat("architecture report content. ", 20)
+	child := &fauxProvider{
+		name:   "faux-child",
+		models: []provider.Model{{Provider: "faux-child", ID: "child"}},
+		turns: []fauxTurn{errorContentWithMessageTurn(
+			report,
+			"run stopped after repeated truncated responses despite short-reply guidance (output token limit)",
+		)},
+	}
+	tool := NewSubAgentTool(SubAgentSpec{
+		Name:         "task",
+		SystemPrompt: "sys",
+		NewRunConfig: func() RunConfig { return newFauxRunCfg(child) },
+	})
+	tool.SetSubagentRegistry(reg)
+
+	ctx := agentcore.WithSessionID(context.Background(), "parent-1")
+	_, err := tool.Execute(ctx, "call-1", json.RawMessage(`{"prompt":"go"}`), nil)
+	if err == nil {
+		t.Fatal("expected error for child run with ErrorMessage and content, got nil")
+	}
+	if !strings.Contains(err.Error(), "repeated truncated responses despite short-reply guidance") {
+		t.Errorf("error %q hides the length-breaker diagnostic", err.Error())
+	}
+	if !strings.Contains(err.Error(), "architecture report content") {
+		t.Errorf("error %q omits the trailing streamed snippet", err.Error())
+	}
+}
+
+func TestChildSessionLengthRecoversWithGuidance(t *testing.T) {
+	reg := NewRegistry()
+	child := &fauxProvider{
+		name:   "faux-child",
+		models: []provider.Model{{Provider: "faux-child", ID: "child"}},
+		turns: []fauxTurn{
+			lengthToolTurn("c1", "write", `{"path":"report.md"`),
+			lengthToolTurn("c2", "write", `{"path":"report.md"`),
+			lengthToolTurn("c3", "write", `{"path":"report.md"`),
+			textTurn("concise summary <<DONE>>"),
+		},
+	}
+	tool := NewSubAgentTool(SubAgentSpec{
+		Name:         "task",
+		SystemPrompt: "sys",
+		NewRunConfig: func() RunConfig {
+			return newFauxRunCfg(child, echoTool("write", agentcore.ToolExecutionParallel, false))
+		},
+	})
+	tool.SetSubagentRegistry(reg)
+
+	ctx := agentcore.WithSessionID(context.Background(), "parent-1")
+	res, err := tool.Execute(ctx, "call-1", json.RawMessage(`{"prompt":"go"}`), nil)
+	if err != nil {
+		t.Fatalf("Execute err = %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("child must recover after short-reply guidance: %+v", res)
+	}
+	if got := agentcore.ContentToText(res.Content); !strings.Contains(got, "concise summary") {
+		t.Errorf("result = %q, want the concise summary", got)
+	}
+}
+
 func TestChildSessionPersistsBeforeErrorReturn(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
