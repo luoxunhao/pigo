@@ -37,6 +37,7 @@ type ChildSession struct {
 	Home         string
 	Store        *sstore.Store
 	Header       session.SessionHeader
+	reg          *Registry
 
 	mu             sync.Mutex
 	Messages       agentcore.MessageList
@@ -55,6 +56,7 @@ type Registry struct {
 	index    map[string]childRef
 	sink     EventSink
 	home     string
+	stores   map[string]*sstore.Store
 }
 
 type childRef struct {
@@ -74,6 +76,7 @@ func NewRegistry() *Registry {
 	return &Registry{
 		sessions: make(map[string]*ChildSession),
 		index:    make(map[string]childRef),
+		stores:   make(map[string]*sstore.Store),
 	}
 }
 
@@ -138,6 +141,7 @@ func (r *Registry) CreateOrGet(
 		ConfigHook:   hook,
 		Cwd:          cwd,
 		Home:         r.home,
+		reg:          r,
 		inputCh:      make(chan agentcore.AgentMessage, 64),
 	}
 	r.sessions[id] = s
@@ -170,6 +174,7 @@ func (r *Registry) Load(id string) *ChildSession {
 		Type:       ref.Type,
 		Cwd:        ref.Cwd,
 		Home:       r.home,
+		reg:        r,
 		inputCh:    make(chan agentcore.AgentMessage, 64),
 	}
 	r.sessions[id] = s
@@ -188,11 +193,29 @@ func (r *Registry) saveIndexLocked() {
 	_ = os.WriteFile(filepath.Join(r.home, "subagents.json"), data, 0o644)
 }
 
+// storeFor returns the shared project store for a workspace. All child
+// sessions in one registry reuse the same Store so concurrent persistence is
+// serialized by the store's own mutex instead of racing on shared index and
+// metadata files.
+func (r *Registry) storeFor(cwd string) (*sstore.Store, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if st, ok := r.stores[cwd]; ok {
+		return st, nil
+	}
+	st, err := sstore.OpenForWorkspace(r.home, cwd)
+	if err != nil {
+		return nil, err
+	}
+	r.stores[cwd] = st
+	return st, nil
+}
+
 func (s *ChildSession) ensurePersisted() error {
-	if s.Home == "" || s.Cwd == "" {
+	if s.reg == nil || s.Home == "" || s.Cwd == "" {
 		return nil
 	}
-	st, err := sstore.OpenForWorkspace(s.Home, s.Cwd)
+	st, err := s.reg.storeFor(s.Cwd)
 	if err != nil {
 		return err
 	}

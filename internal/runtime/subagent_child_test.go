@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/smallnest/pigo/internal/agentcore"
@@ -169,5 +170,36 @@ func TestChildSessionPersistsBeforeErrorReturn(t *testing.T) {
 	}
 	if len(cs.Messages) < 2 {
 		t.Errorf("child messages = %d, want the user prompt and the error assistant persisted", len(cs.Messages))
+	}
+}
+
+func TestConcurrentChildSessionsShareStore(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	reg := NewRegistry()
+	reg.SetHome(home)
+	factory := func() RunConfig { return RunConfig{} }
+
+	var wg sync.WaitGroup
+	children := make([]*ChildSession, 3)
+	for i := range children {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			children[i] = reg.CreateOrGet("parent-1", "call-"+string(rune('a'+i)), "task", "sys", nil, factory, nil, cwd)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, cs := range children {
+		if cs == nil {
+			t.Fatalf("child %d missing", i)
+		}
+		if cs.Store == nil {
+			t.Fatalf("child %d store was not opened (concurrent persistence race)", i)
+		}
+	}
+	if len(reg.stores) != 1 {
+		t.Errorf("registry stores = %d, want one shared store per cwd", len(reg.stores))
 	}
 }
