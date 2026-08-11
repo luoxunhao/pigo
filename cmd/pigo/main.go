@@ -38,10 +38,7 @@ import (
 	"github.com/smallnest/pigo/internal/cli/tui"
 	"github.com/smallnest/pigo/internal/cli/ui"
 	"github.com/smallnest/pigo/internal/dream"
-	"github.com/smallnest/pigo/internal/httpapi"
 	"github.com/smallnest/pigo/internal/selfupdate"
-	"github.com/smallnest/pigo/internal/sessionstore"
-	"github.com/smallnest/pigo/internal/trust"
 )
 
 // Build metadata, injected at release time via -ldflags by goreleaser
@@ -376,22 +373,10 @@ func dispatch(ctx context.Context, opts cliOptions, out, errOut io.Writer) int {
 		return 0
 	}
 	if opts.httpREPL {
-		runner, err := makePromptRunner(opts)
+		cfg, err := httpServeConfig(opts)
 		if err != nil {
 			fmt.Fprintf(errOut, "pigo: %v\n", err)
 			return 1
-		}
-		pigoHome, err := sessionstore.PigoHome()
-		if err != nil {
-			fmt.Fprintf(errOut, "pigo: %v\n", err)
-			return 1
-		}
-		cfg := httpapi.Config{
-			Version:      version,
-			PigoHome:     pigoHome,
-			ConfigPath:   config.FileConfigPath(),
-			TrustPath:    trust.DefaultPath(),
-			PromptRunner: runner,
 		}
 		if err := repl.RunHTTP(ctx, cfg, os.Stdin, out); err != nil {
 			fmt.Fprintf(errOut, "pigo: %v\n", err)
@@ -400,22 +385,10 @@ func dispatch(ctx context.Context, opts cliOptions, out, errOut io.Writer) int {
 		return 0
 	}
 	if opts.httpHeadless {
-		runner, err := makePromptRunner(opts)
+		cfg, err := httpServeConfig(opts)
 		if err != nil {
 			fmt.Fprintf(errOut, "pigo: %v\n", err)
 			return 1
-		}
-		pigoHome, err := sessionstore.PigoHome()
-		if err != nil {
-			fmt.Fprintf(errOut, "pigo: %v\n", err)
-			return 1
-		}
-		cfg := httpapi.Config{
-			Version:      version,
-			PigoHome:     pigoHome,
-			ConfigPath:   config.FileConfigPath(),
-			TrustPath:    trust.DefaultPath(),
-			PromptRunner: runner,
 		}
 		if err := headless.RunHTTPOnce(ctx, cfg, opts.prompt, out); err != nil {
 			fmt.Fprintf(errOut, "pigo: %v\n", err)
@@ -450,6 +423,18 @@ func dispatch(ctx context.Context, opts cliOptions, out, errOut io.Writer) int {
 		if resumeID == "" && !isTTY {
 			fmt.Fprintln(errOut, "pigo: no prompt (use -p \"...\" or positional args)")
 			return 2
+		}
+		if os.Getenv("PIGO_HTTP_DEFAULT") == "1" {
+			cfg, err := httpServeConfig(opts)
+			if err != nil {
+				fmt.Fprintf(errOut, "pigo: %v\n", err)
+				return 1
+			}
+			if err := repl.RunHTTP(ctx, cfg, os.Stdin, out); err != nil {
+				fmt.Fprintf(errOut, "pigo: %v\n", err)
+				return 1
+			}
+			return 0
 		}
 		env, err := run.SetupEnv(opts.model, opts.baseURL, opts.protocol, opts.provider, opts.apiKey, opts.noTools, opts.noSkills, opts.systemPrompt, opts.appendSystemPrompt, opts.memory.Memory.Enabled, run.NewToolPolicy(opts.allowedTools, opts.disallowedTools))
 		if err != nil {
@@ -515,6 +500,19 @@ func dispatch(ctx context.Context, opts cliOptions, out, errOut io.Writer) int {
 			NoPromptTemplates: opts.noPromptTemplates,
 			Dream:             opts.dreamCfg,
 		}); err != nil {
+			fmt.Fprintf(errOut, "pigo: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+
+	if os.Getenv("PIGO_HTTP_DEFAULT") == "1" {
+		cfg, err := httpServeConfig(opts)
+		if err != nil {
+			fmt.Fprintf(errOut, "pigo: %v\n", err)
+			return 1
+		}
+		if err := headless.RunHTTPOnce(ctx, cfg, opts.prompt, out); err != nil {
 			fmt.Fprintf(errOut, "pigo: %v\n", err)
 			return 1
 		}

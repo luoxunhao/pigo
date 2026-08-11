@@ -11,7 +11,27 @@ import (
 	"github.com/smallnest/pigo/internal/cli/run"
 	"github.com/smallnest/pigo/internal/httpapi"
 	"github.com/smallnest/pigo/internal/httpapi/gen"
+	"github.com/smallnest/pigo/internal/sessionstore"
+	"github.com/smallnest/pigo/internal/trust"
 )
+
+func httpServeConfig(opts cliOptions) (httpapi.Config, error) {
+	runner, err := makePromptRunner(opts)
+	if err != nil {
+		return httpapi.Config{}, err
+	}
+	pigoHome, err := sessionstore.PigoHome()
+	if err != nil {
+		return httpapi.Config{}, err
+	}
+	return httpapi.Config{
+		Version:      version,
+		PigoHome:     pigoHome,
+		ConfigPath:   config.FileConfigPath(),
+		TrustPath:    trust.DefaultPath(),
+		PromptRunner: runner,
+	}, nil
+}
 
 func makePromptRunner(opts cliOptions) (httpapi.PromptRunner, error) {
 	env, err := run.SetupEnv(
