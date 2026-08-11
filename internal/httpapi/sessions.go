@@ -20,6 +20,7 @@ type SessionService struct {
 	configPath string
 	mu         sync.Mutex
 	stores     map[string]*sessionstore.Store
+	modeKnown  func(string) bool
 }
 
 // NewSessionService builds a session service rooted at pigoHome.
@@ -29,7 +30,12 @@ func NewSessionService(pigoHome string) *SessionService {
 
 // NewSessionServiceWithConfig builds a session service with an explicit config path.
 func NewSessionServiceWithConfig(pigoHome, configPath string) *SessionService {
-	return &SessionService{pigoHome: pigoHome, configPath: configPath, stores: make(map[string]*sessionstore.Store)}
+	return &SessionService{pigoHome: pigoHome, configPath: configPath, stores: make(map[string]*sessionstore.Store), modeKnown: knownMode}
+}
+
+// SetModeKnownChecker overrides the mode validation function used by config updates.
+func (s *SessionService) SetModeKnownChecker(fn func(string) bool) {
+	s.modeKnown = fn
 }
 
 func (s *SessionService) storeFor(directory string) (*sessionstore.Store, error) {
@@ -350,7 +356,7 @@ func (s *SessionService) UpdateConfig(sessionID string, req gen.UpdateSessionReq
 		custom["thinkingLevel"] = *req.ThinkingLevel
 	}
 	if req.Mode != nil && *req.Mode != "" {
-		if !knownMode(*req.Mode) {
+		if !s.modeKnown(*req.Mode) {
 			return gen.ConfigOptionsResult{}, &APIError{Status: http.StatusBadRequest, Code: CodeModeNotFound, Message: "unknown mode: " + *req.Mode}
 		}
 		custom["mode"] = *req.Mode
@@ -390,7 +396,7 @@ func (s *SessionService) SetMode(sessionID string, req gen.SetModeRequest) (gen.
 	if req.Directory == "" || !filepath.IsAbs(req.Directory) {
 		return gen.ModeResult{}, InvalidParams("directory must be an absolute path")
 	}
-	if !knownMode(req.ModeId) {
+	if !s.modeKnown(req.ModeId) {
 		return gen.ModeResult{}, &APIError{Status: http.StatusBadRequest, Code: CodeModeNotFound, Message: "unknown mode: " + req.ModeId}
 	}
 	store, err := s.storeFor(req.Directory)

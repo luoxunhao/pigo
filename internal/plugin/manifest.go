@@ -35,11 +35,22 @@ type Manifest struct {
 	Tools []ToolSpec `json:"tools,omitempty"`
 	// Commands are the slash commands this plugin registers.
 	Commands []CommandSpec `json:"commands,omitempty"`
+	// Modes are the agent modes this plugin registers.
+	Modes []ModeSpec `json:"modes,omitempty"`
 	// Events lists the agent lifecycle event types this plugin subscribes to
 	// (US-017, #133). pigo delivers only these via one-way `event` notifications;
 	// an empty list means the plugin observes no events. Valid values are the
 	// agentcore.Event* discriminants (e.g. "agent_start", "tool_execution_end").
 	Events []string `json:"events,omitempty"`
+}
+
+// ModeSpec declares one agent mode a plugin provides.
+type ModeSpec struct {
+	Name         string   `json:"name"`
+	Description  string   `json:"description"`
+	Tools        []string `json:"tools,omitempty"`
+	Model        string   `json:"model,omitempty"`
+	SystemPrompt string   `json:"systemPrompt,omitempty"`
 }
 
 // ToolSpec declares one tool a plugin exposes. Schema is the JSON Schema for the

@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 
@@ -67,5 +69,22 @@ func TestConfigServiceProviders(t *testing.T) {
 	}
 	if len(got.Models) != 0 {
 		t.Fatalf("models after delete = %+v", got.Models)
+	}
+}
+
+func TestConfigServiceDiscover(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"m1","name":"M1","context_length":128000}]}`))
+	}))
+	defer ts.Close()
+	svc := NewConfigService(filepath.Join(t.TempDir(), "config.toml"))
+	protocol := "openai"
+	res, apiErr := svc.Discover(gen.DiscoverModelsRequest{BaseUrl: ts.URL, Protocol: &protocol})
+	if apiErr != nil {
+		t.Fatal(apiErr)
+	}
+	if len(res.Models) != 1 || res.Models[0].ModelId != "m1" {
+		t.Fatalf("res = %+v", res)
 	}
 }

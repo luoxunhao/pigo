@@ -63,6 +63,32 @@ type ContextUsage struct {
 	Used *int `json:"used,omitempty"`
 }
 
+// DiscoverModelsRequest defines model for DiscoverModelsRequest.
+type DiscoverModelsRequest struct {
+	ApiKey   *string `json:"apiKey,omitempty"`
+	BaseUrl  string  `json:"baseUrl"`
+	Name     *string `json:"name,omitempty"`
+	Protocol *string `json:"protocol,omitempty"`
+}
+
+// DiscoverModelsResult defines model for DiscoverModelsResult.
+type DiscoverModelsResult struct {
+	BaseUrl  string            `json:"baseUrl"`
+	Models   []DiscoveredModel `json:"models"`
+	Protocol string            `json:"protocol"`
+	Provider string            `json:"provider"`
+}
+
+// DiscoveredModel defines model for DiscoveredModel.
+type DiscoveredModel struct {
+	ContextWindow  *int      `json:"contextWindow,omitempty"`
+	MaxTokens      *int      `json:"maxTokens,omitempty"`
+	ModelId        string    `json:"modelId"`
+	Name           string    `json:"name"`
+	SupportsImages *bool     `json:"supportsImages,omitempty"`
+	ThinkingLevels *[]string `json:"thinkingLevels,omitempty"`
+}
+
 // ErrorBody defines model for ErrorBody.
 type ErrorBody struct {
 	Error ErrorDetail `json:"error"`
@@ -260,6 +286,18 @@ type SetTrustRequest struct {
 	Path     string `json:"path"`
 }
 
+// TestModelRequest defines model for TestModelRequest.
+type TestModelRequest struct {
+	ModelId string `json:"modelId"`
+}
+
+// TestModelResult defines model for TestModelResult.
+type TestModelResult struct {
+	ModelResponse  *string `json:"modelResponse,omitempty"`
+	ResponseTimeMs *int    `json:"responseTimeMs,omitempty"`
+	Success        bool    `json:"success"`
+}
+
 // TrustEntry defines model for TrustEntry.
 type TrustEntry struct {
 	Decision string `json:"decision"`
@@ -341,6 +379,12 @@ type GetSessionStatusParams struct {
 
 // UpdateConfigJSONRequestBody defines body for UpdateConfig for application/json ContentType.
 type UpdateConfigJSONRequestBody = UpdateConfigRequest
+
+// DiscoverModelsJSONRequestBody defines body for DiscoverModels for application/json ContentType.
+type DiscoverModelsJSONRequestBody = DiscoverModelsRequest
+
+// TestModelJSONRequestBody defines body for TestModel for application/json ContentType.
+type TestModelJSONRequestBody = TestModelRequest
 
 // UpsertProviderJSONRequestBody defines body for UpsertProvider for application/json ContentType.
 type UpsertProviderJSONRequestBody = ProviderInput
@@ -462,6 +506,22 @@ type ClientInterface interface {
 
 	// ListProviders performs a GET /api/v1/config/providers (the `ListProviders` operationId) request.
 	ListProviders(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DiscoverModelsWithBody performs a POST /api/v1/config/providers/discover (the `DiscoverModels` operationId) request,
+	// with any type of body and a specified content type.
+	DiscoverModelsWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DiscoverModels performs a POST /api/v1/config/providers/discover (the `DiscoverModels` operationId) request.
+	// Takes a body of the `application/json` content type.
+	DiscoverModels(ctx context.Context, body DiscoverModelsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// TestModelWithBody performs a POST /api/v1/config/providers/test (the `TestModel` operationId) request,
+	// with any type of body and a specified content type.
+	TestModelWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// TestModel performs a POST /api/v1/config/providers/test (the `TestModel` operationId) request.
+	// Takes a body of the `application/json` content type.
+	TestModel(ctx context.Context, body TestModelJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// DeleteProvider performs a DELETE /api/v1/config/providers/{providerId} (the `DeleteProvider` operationId) request.
 	DeleteProvider(ctx context.Context, providerId string, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -643,6 +703,62 @@ func (c *Client) UpdateConfig(ctx context.Context, body UpdateConfigJSONRequestB
 // ListProviders performs a GET /api/v1/config/providers (the `ListProviders` operationId) request.
 func (c *Client) ListProviders(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListProvidersRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// DiscoverModelsWithBody performs a POST /api/v1/config/providers/discover (the `DiscoverModels` operationId) request,
+// with any type of body and a specified content type.
+func (c *Client) DiscoverModelsWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDiscoverModelsRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// DiscoverModels performs a POST /api/v1/config/providers/discover (the `DiscoverModels` operationId) request.
+// Takes a body of the `application/json` content type.
+func (c *Client) DiscoverModels(ctx context.Context, body DiscoverModelsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDiscoverModelsRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// TestModelWithBody performs a POST /api/v1/config/providers/test (the `TestModel` operationId) request,
+// with any type of body and a specified content type.
+func (c *Client) TestModelWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewTestModelRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// TestModel performs a POST /api/v1/config/providers/test (the `TestModel` operationId) request.
+// Takes a body of the `application/json` content type.
+func (c *Client) TestModel(ctx context.Context, body TestModelJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewTestModelRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -1259,6 +1375,86 @@ func NewListProvidersRequest(server string) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewDiscoverModelsRequest calls the generic DiscoverModels builder with application/json body
+func NewDiscoverModelsRequest(server string, body DiscoverModelsJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewDiscoverModelsRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewDiscoverModelsRequestWithBody constructs an http.Request for the DiscoverModels method, with any body, and a specified content type
+func NewDiscoverModelsRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/config/providers/discover")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewTestModelRequest calls the generic TestModel builder with application/json body
+func NewTestModelRequest(server string, body TestModelJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewTestModelRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewTestModelRequestWithBody constructs an http.Request for the TestModel method, with any body, and a specified content type
+func NewTestModelRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/config/providers/test")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -2495,6 +2691,26 @@ type ClientWithResponsesInterface interface {
 	// Returns a wrapper object for the known response body format(s).
 	ListProvidersWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListProvidersResponse, error)
 
+	// DiscoverModelsWithBodyWithResponse performs a POST /api/v1/config/providers/discover (the `DiscoverModels` operationId) request,
+	// with any type of body and a specified content type.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	DiscoverModelsWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*DiscoverModelsResponse, error)
+
+	// DiscoverModelsWithResponse performs a POST /api/v1/config/providers/discover (the `DiscoverModels` operationId) request.
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	DiscoverModelsWithResponse(ctx context.Context, body DiscoverModelsJSONRequestBody, reqEditors ...RequestEditorFn) (*DiscoverModelsResponse, error)
+
+	// TestModelWithBodyWithResponse performs a POST /api/v1/config/providers/test (the `TestModel` operationId) request,
+	// with any type of body and a specified content type.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	TestModelWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*TestModelResponse, error)
+
+	// TestModelWithResponse performs a POST /api/v1/config/providers/test (the `TestModel` operationId) request.
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	TestModelWithResponse(ctx context.Context, body TestModelJSONRequestBody, reqEditors ...RequestEditorFn) (*TestModelResponse, error)
+
 	// DeleteProviderWithResponse performs a DELETE /api/v1/config/providers/{providerId} (the `DeleteProvider` operationId) request.
 	//
 	// Returns a wrapper object for the known response body format(s).
@@ -2831,6 +3047,102 @@ func (r ListProvidersResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r ListProvidersResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type DiscoverModelsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *DiscoverModelsResult
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r DiscoverModelsResponse) GetJSON200() *DiscoverModelsResult {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r DiscoverModelsResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetBody returns the raw response body bytes
+func (r DiscoverModelsResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r DiscoverModelsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DiscoverModelsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DiscoverModelsResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type TestModelResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *TestModelResult
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r TestModelResponse) GetJSON200() *TestModelResult {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r TestModelResponse) GetJSON400() *Error {
+	return r.JSON400
+}
+
+// GetBody returns the raw response body bytes
+func (r TestModelResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r TestModelResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r TestModelResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r TestModelResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -3981,6 +4293,50 @@ func (c *ClientWithResponses) ListProvidersWithResponse(ctx context.Context, req
 	return ParseListProvidersResponse(rsp)
 }
 
+// DiscoverModelsWithBodyWithResponse performs a POST /api/v1/config/providers/discover (the `DiscoverModels` operationId) request,
+// with any type of body and a specified content type.
+//
+// Returns a wrapper object for the known response body format(s).
+func (c *ClientWithResponses) DiscoverModelsWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*DiscoverModelsResponse, error) {
+	rsp, err := c.DiscoverModelsWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDiscoverModelsResponse(rsp)
+}
+
+// DiscoverModelsWithResponse performs a POST /api/v1/config/providers/discover (the `DiscoverModels` operationId) request.
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+func (c *ClientWithResponses) DiscoverModelsWithResponse(ctx context.Context, body DiscoverModelsJSONRequestBody, reqEditors ...RequestEditorFn) (*DiscoverModelsResponse, error) {
+	rsp, err := c.DiscoverModels(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDiscoverModelsResponse(rsp)
+}
+
+// TestModelWithBodyWithResponse performs a POST /api/v1/config/providers/test (the `TestModel` operationId) request,
+// with any type of body and a specified content type.
+//
+// Returns a wrapper object for the known response body format(s).
+func (c *ClientWithResponses) TestModelWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*TestModelResponse, error) {
+	rsp, err := c.TestModelWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseTestModelResponse(rsp)
+}
+
+// TestModelWithResponse performs a POST /api/v1/config/providers/test (the `TestModel` operationId) request.
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+func (c *ClientWithResponses) TestModelWithResponse(ctx context.Context, body TestModelJSONRequestBody, reqEditors ...RequestEditorFn) (*TestModelResponse, error) {
+	rsp, err := c.TestModel(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseTestModelResponse(rsp)
+}
+
 // DeleteProviderWithResponse performs a DELETE /api/v1/config/providers/{providerId} (the `DeleteProvider` operationId) request.
 //
 // Returns a wrapper object for the known response body format(s).
@@ -4460,6 +4816,72 @@ func ParseListProvidersResponse(rsp *http.Response) (*ListProvidersResponse, err
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDiscoverModelsResponse parses an HTTP response from a DiscoverModelsWithResponse call
+func ParseDiscoverModelsResponse(rsp *http.Response) (*DiscoverModelsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DiscoverModelsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest DiscoverModelsResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseTestModelResponse parses an HTTP response from a TestModelWithResponse call
+func ParseTestModelResponse(rsp *http.Response) (*TestModelResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &TestModelResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest TestModelResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
 
 	}
 

@@ -123,6 +123,30 @@ func (p *Plugin) CallCommand(ctx context.Context, name string, args json.RawMess
 	return res, nil
 }
 
+// ModeApplyParams is the parameter object for a mode/apply request.
+type ModeApplyParams struct {
+	Mode string `json:"mode"`
+	Args string `json:"args,omitempty"`
+}
+
+// ModeApplyResult is the reply to a mode/apply request.
+type ModeApplyResult struct {
+	Notifications []CommandNotification `json:"notifications,omitempty"`
+}
+
+// ApplyMode asks the plugin to apply one of its declared modes.
+func (p *Plugin) ApplyMode(ctx context.Context, mode, args string) (ModeApplyResult, error) {
+	raw, err := p.client.Call(ctx, "mode/apply", ModeApplyParams{Mode: mode, Args: args})
+	if err != nil {
+		return ModeApplyResult{}, fmt.Errorf("plugin %q: mode/apply %q: %w", p.Manifest.Name, mode, err)
+	}
+	var res ModeApplyResult
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return ModeApplyResult{}, fmt.Errorf("plugin %q: decode mode/apply result for %q: %w", p.Manifest.Name, mode, err)
+	}
+	return res, nil
+}
+
 // Subscribes reports whether the plugin asked to receive the given event type in
 // its manifest (US-017, #133). pigo only delivers subscribed events.
 func (p *Plugin) Subscribes(eventType string) bool {

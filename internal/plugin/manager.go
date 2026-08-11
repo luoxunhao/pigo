@@ -110,6 +110,15 @@ func (m *Manager) Commands() []PluginCommand {
 	return out
 }
 
+// Modes returns the aggregated agent modes of every loaded plugin.
+func (m *Manager) Modes() []ModeSpec {
+	var out []ModeSpec
+	for _, p := range m.plugins {
+		out = append(out, p.Manifest.Modes...)
+	}
+	return out
+}
+
 // Subscribers reports whether any loaded plugin subscribes to the given event
 // type. It lets a caller skip building an event payload when nobody is listening
 // (US-017, #133).

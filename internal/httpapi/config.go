@@ -1,10 +1,15 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/smallnest/pigo/internal/cli/config"
+	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/httpapi/gen"
+	"github.com/smallnest/pigo/internal/provider"
 )
 
 // ConfigService owns global config and provider management.
@@ -128,6 +133,94 @@ func (s *ConfigService) DeleteProvider(providerID string) *APIError {
 	}
 	cfg.Models = kept
 	return s.save(cfg)
+}
+
+func (s *ConfigService) Discover(req gen.DiscoverModelsRequest) (gen.DiscoverModelsResult, *APIError) {
+	if req.BaseUrl == "" {
+		return gen.DiscoverModelsResult{}, InvalidParams("baseUrl is required")
+	}
+	protocol := "openai"
+	if req.Protocol != nil {
+		protocol = *req.Protocol
+	}
+	normalized, err := normalizeProtocol(protocol)
+	if err != nil {
+		return gen.DiscoverModelsResult{}, InvalidParams(err.Error())
+	}
+	apiKey := ""
+	if req.ApiKey != nil {
+		apiKey = *req.ApiKey
+	}
+	models, err := discoverModelList(req.BaseUrl, apiKey, normalized)
+	if err != nil {
+		return gen.DiscoverModelsResult{}, Internal(err.Error())
+	}
+	providerName := fallbackProviderID(req.BaseUrl)
+	if req.Name != nil && *req.Name != "" {
+		providerName = *req.Name
+	}
+	return gen.DiscoverModelsResult{
+		Provider: providerName,
+		BaseUrl:  req.BaseUrl,
+		Protocol: normalized,
+		Models:   models,
+	}, nil
+}
+
+func (s *ConfigService) TestModel(req gen.TestModelRequest) (gen.TestModelResult, *APIError) {
+	cfg, apiErr := s.load()
+	if apiErr != nil {
+		return gen.TestModelResult{}, apiErr
+	}
+	entry, ok := cfg.FindModel(req.ModelId)
+	if !ok {
+		return gen.TestModelResult{Success: false}, nil
+	}
+	protocol, err := normalizeProtocol(entry.Protocol)
+	if err != nil {
+		return gen.TestModelResult{Success: false}, InvalidParams(err.Error())
+	}
+	prov, err := provider.ResolveConfiguredProvider(entry.Provider, entry.BaseURL, protocol, []provider.Model{
+		{Provider: entry.Provider, ID: entry.ModelID, DisplayName: entry.Name},
+	})
+	if err != nil {
+		return gen.TestModelResult{Success: false}, Internal(err.Error())
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	start := time.Now()
+	stream, err := provider.StreamFnFromProvider(prov)(ctx, entry.ModelID, provider.LlmContext{
+		SystemPrompt: "Reply with exactly: pong",
+		Messages: agentcore.MessageList{
+			agentcore.UserMessage{
+				RoleField: agentcore.RoleUser,
+				Content:   agentcore.ContentList{agentcore.NewTextContent("ping")},
+			},
+		},
+	}, provider.StreamConfig{APIKey: entry.APIKey, ThinkingLevel: agentcore.ThinkingOff})
+	if err != nil {
+		return gen.TestModelResult{Success: false}, Internal(err.Error())
+	}
+	responseText := ""
+	for ev := range stream.Events() {
+		switch e := ev.(type) {
+		case provider.StreamTextEvent:
+			responseText = agentcore.ContentToText(e.Partial.Content)
+		case provider.StreamErrorEvent:
+			details := e.Message.ErrorMessage
+			if details == "" && e.Err != nil {
+				details = e.Err.Error()
+			}
+			return gen.TestModelResult{Success: false, ResponseTimeMs: intPtr(int(time.Since(start).Milliseconds()))}, nil
+		case provider.StreamDoneEvent:
+			doneText := strings.TrimSpace(agentcore.ContentToText(e.Message.Content))
+			if doneText == "" {
+				doneText = strings.TrimSpace(responseText)
+			}
+			return gen.TestModelResult{Success: true, ResponseTimeMs: intPtr(int(time.Since(start).Milliseconds())), ModelResponse: &doneText}, nil
+		}
+	}
+	return gen.TestModelResult{Success: false, ResponseTimeMs: intPtr(int(time.Since(start).Milliseconds()))}, nil
 }
 
 func configResponse(cfg config.FileConfig) gen.ConfigResult {

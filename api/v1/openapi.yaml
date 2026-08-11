@@ -551,6 +551,44 @@ paths:
       responses:
         "204":
           description: Provider deleted.
+  /api/v1/config/providers/discover:
+    post:
+      operationId: discoverModels
+      tags: [config]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DiscoverModelsRequest"
+      responses:
+        "200":
+          description: Discovered models.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiscoverModelsResult"
+        "400":
+          $ref: "#/components/responses/Error"
+  /api/v1/config/providers/test:
+    post:
+      operationId: testModel
+      tags: [config]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TestModelRequest"
+      responses:
+        "200":
+          description: Model test result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TestModelResult"
+        "400":
+          $ref: "#/components/responses/Error"
   /api/v1/modes:
     get:
       operationId: listModes
@@ -973,6 +1011,69 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ModelEntry"
+    DiscoverModelsRequest:
+      type: object
+      required: [baseUrl]
+      properties:
+        name:
+          type: string
+        baseUrl:
+          type: string
+        apiKey:
+          type: string
+        protocol:
+          type: string
+    DiscoveredModel:
+      type: object
+      required: [modelId, name]
+      properties:
+        modelId:
+          type: string
+        name:
+          type: string
+        contextWindow:
+          type: integer
+          nullable: true
+        maxTokens:
+          type: integer
+          nullable: true
+        thinkingLevels:
+          type: array
+          items:
+            type: string
+        supportsImages:
+          type: boolean
+          nullable: true
+    DiscoverModelsResult:
+      type: object
+      required: [provider, baseUrl, protocol, models]
+      properties:
+        provider:
+          type: string
+        baseUrl:
+          type: string
+        protocol:
+          type: string
+        models:
+          type: array
+          items:
+            $ref: "#/components/schemas/DiscoveredModel"
+    TestModelRequest:
+      type: object
+      required: [modelId]
+      properties:
+        modelId:
+          type: string
+    TestModelResult:
+      type: object
+      required: [success]
+      properties:
+        success:
+          type: boolean
+        responseTimeMs:
+          type: integer
+        modelResponse:
+          type: string
     ModesResult:
       type: object
       required: [modes]

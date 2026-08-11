@@ -13,7 +13,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/smallnest/pigo/internal/cli/run"
 	"github.com/smallnest/pigo/internal/httpapi"
+	"github.com/smallnest/pigo/internal/plugin"
 )
 
 const defaultServePort = 4096
@@ -38,10 +40,18 @@ func runServe(args []string, version string, out, errOut io.Writer) int {
 		return 2
 	}
 
+	pluginMgr, err := plugin.Discover(run.PluginsDir(), errOut, errOut)
+	if err != nil {
+		fmt.Fprintf(errOut, "pigo serve: %v\n", err)
+		return 1
+	}
+	defer pluginMgr.Close()
+
 	handler, err := httpapi.NewRouter(httpapi.Config{
 		Version:        version,
 		Password:       opts.password,
 		AllowedOrigins: opts.cors,
+		PluginManager:  pluginMgr,
 	})
 	if err != nil {
 		fmt.Fprintf(errOut, "pigo serve: %v\n", err)

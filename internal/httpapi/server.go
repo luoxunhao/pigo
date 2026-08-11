@@ -7,6 +7,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/httpapi/gen"
+	"github.com/smallnest/pigo/internal/plugin"
 	"github.com/smallnest/pigo/internal/sessionstore"
 	"github.com/smallnest/pigo/internal/trust"
 )
@@ -20,6 +21,7 @@ type Config struct {
 	ConfigPath     string
 	PromptRunner   PromptRunner
 	TrustPath      string
+	PluginManager  *plugin.Manager
 }
 
 // Server implements the generated HTTP API surface.
@@ -34,6 +36,7 @@ type Server struct {
 	trust    *TrustService
 	perms    *PermissionManager
 	config   *ConfigService
+	modes    *ModeService
 }
 
 // NewServer builds a Server from config.
@@ -54,6 +57,8 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.ConfigPath != "" {
 		sessionService = NewSessionServiceWithConfig(pigoHome, cfg.ConfigPath)
 	}
+	modeService := NewModeService(cfg.PluginManager)
+	sessionService.SetModeKnownChecker(modeService.Known)
 	broker := NewEventBroker()
 	trustPath := cfg.TrustPath
 	if trustPath == "" {
@@ -72,7 +77,7 @@ func NewServer(cfg Config) (*Server, error) {
 	if configPath == "" {
 		configPath = config.FileConfigPath()
 	}
-	return &Server{version: cfg.Version, spec: spec, doc: doc, sessions: sessionService, events: broker, prompts: prompts, commands: NewCommandService(sessionService), trust: NewTrustService(trustManager), perms: NewPermissionManager(broker), config: NewConfigService(configPath)}, nil
+	return &Server{version: cfg.Version, spec: spec, doc: doc, sessions: sessionService, events: broker, prompts: prompts, commands: NewCommandService(sessionService), trust: NewTrustService(trustManager), perms: NewPermissionManager(broker), config: NewConfigService(configPath), modes: modeService}, nil
 }
 
 // NewRouter assembles the chi router with middleware and API routes.
@@ -215,6 +220,14 @@ func (s *Server) SetSessionMode(w http.ResponseWriter, r *http.Request, sessionI
 	var body gen.SetModeRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		WriteError(w, r, InvalidParams("invalid request body"))
+		return
+	}
+	if !s.modes.Known(body.ModeId) {
+		WriteError(w, r, &APIError{Status: http.StatusBadRequest, Code: CodeModeNotFound, Message: "unknown mode: " + body.ModeId})
+		return
+	}
+	if apiErr := s.modes.Apply(body.ModeId, ""); apiErr != nil {
+		WriteError(w, r, apiErr)
 		return
 	}
 	resp, apiErr := s.sessions.SetMode(sessionId, body)
@@ -405,5 +418,35 @@ func (s *Server) DeleteProvider(w http.ResponseWriter, r *http.Request, provider
 
 // ListModes implements GET /api/v1/modes.
 func (s *Server) ListModes(w http.ResponseWriter, _ *http.Request, _ gen.ListModesParams) {
-	responseJSON(w, http.StatusOK, gen.ModesResult{Modes: defaultModes()})
+	responseJSON(w, http.StatusOK, gen.ModesResult{Modes: s.modes.List()})
+}
+
+// DiscoverModels implements POST /api/v1/config/providers/discover.
+func (s *Server) DiscoverModels(w http.ResponseWriter, r *http.Request) {
+	var body gen.DiscoverModelsRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		WriteError(w, r, InvalidParams("invalid request body"))
+		return
+	}
+	resp, apiErr := s.config.Discover(body)
+	if apiErr != nil {
+		WriteError(w, r, apiErr)
+		return
+	}
+	responseJSON(w, http.StatusOK, resp)
+}
+
+// TestModel implements POST /api/v1/config/providers/test.
+func (s *Server) TestModel(w http.ResponseWriter, r *http.Request) {
+	var body gen.TestModelRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		WriteError(w, r, InvalidParams("invalid request body"))
+		return
+	}
+	resp, apiErr := s.config.TestModel(body)
+	if apiErr != nil {
+		WriteError(w, r, apiErr)
+		return
+	}
+	responseJSON(w, http.StatusOK, resp)
 }
