@@ -109,9 +109,6 @@ func (t *BashTool) Name() string { return "bash" }
 func (t *BashTool) Description() string {
 	return "Run a shell command, streaming stdout/stderr. Supports a timeout " +
 		"and cancellation. A non-zero exit code is reported as an error. " +
-		"Set run_in_background=true for long-running commands (dev servers, " +
-		"watchers): it returns immediately with a bash_id you drain with " +
-		"bash_output and stop with kill_bash. " +
 		"On Windows the command runs under bash if available (Git Bash/WSL), " +
 		"else PowerShell, else cmd — prefer portable commands."
 }
@@ -122,8 +119,7 @@ func (t *BashTool) Schema() json.RawMessage {
   "type": "object",
   "properties": {
     "command":    {"type": "string", "description": "Shell command line to run."},
-    "timeout_ms": {"type": "integer", "description": "Timeout in milliseconds (capped at 10 minutes). Ignored in background unless set.", "minimum": 0},
-    "run_in_background": {"type": "boolean", "description": "Run detached and return immediately with a bash_id; drain output with bash_output, stop with kill_bash."}
+    "timeout_ms": {"type": "integer", "description": "Timeout in milliseconds (capped at 10 minutes).", "minimum": 0}
   },
   "required": ["command"],
   "additionalProperties": false

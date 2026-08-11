@@ -56,13 +56,13 @@ func TestSetupEnvAppliesAllowList(t *testing.T) {
 // TestSetupEnvAppliesDenyList confirms a blacklist removes the named tools while
 // leaving everything else — including the side-effect tools not named — in place.
 func TestSetupEnvAppliesDenyList(t *testing.T) {
-	got := setupToolNames(t, NewToolPolicy(nil, []string{"bash", "bash_output", "kill_bash"}))
-	for _, denied := range []string{"bash", "bash_output", "kill_bash"} {
+	got := setupToolNames(t, NewToolPolicy(nil, []string{"bash", "write"}))
+	for _, denied := range []string{"bash", "write"} {
 		if contains(got, denied) {
 			t.Errorf("%q survived the deny list: %q", denied, got)
 		}
 	}
-	for _, kept := range []string{"read", "write", "edit", "grep"} {
+	for _, kept := range []string{"read", "edit", "grep", "find"} {
 		if !contains(got, kept) {
 			t.Errorf("%q was removed but was not denied: %q", kept, got)
 		}
