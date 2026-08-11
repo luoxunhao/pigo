@@ -1,0 +1,5 @@
+package: httpclient
+output: internal/httpclient/client.gen.go
+generate:
+  client: true
+  models: true

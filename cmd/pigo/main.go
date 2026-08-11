@@ -171,6 +171,9 @@ func main() {
 		}
 		os.Exit(pkgcmd.Run(os.Args[1], os.Args[2:], os.Stdout, os.Stderr))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "serve" {
+		os.Exit(runServe(os.Args[2:], version, os.Stdout, os.Stderr))
+	}
 
 	var opts cliOptions
 	flag.StringVarP(&opts.prompt, "print", "p", "", "prompt to run in headless print mode")

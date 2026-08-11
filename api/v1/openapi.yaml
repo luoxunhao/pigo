@@ -1,0 +1,1031 @@
+openapi: 3.0.3
+info:
+  title: pigo HTTP API
+  description: Primary API for pigo serve. ACP is a standard adapter over this API.
+  version: 0.1.0
+servers:
+  - url: /
+tags:
+  - name: system
+    description: Health, OpenAPI and documentation endpoints.
+paths:
+  /api/v1/health:
+    get:
+      operationId: getHealth
+      tags: [system]
+      security: []
+      responses:
+        "200":
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /api/v1/openapi.json:
+    get:
+      operationId: getOpenAPISpec
+      tags: [system]
+      security: []
+      responses:
+        "200":
+          description: OpenAPI specification.
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/v1/doc:
+    get:
+      operationId: getAPIDoc
+      tags: [system]
+      security: []
+      responses:
+        "200":
+          description: HTML documentation page.
+          content:
+            text/html:
+              schema:
+                type: string
+  /api/v1/session:
+    post:
+      operationId: createSession
+      tags: [session]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewSessionRequest"
+      responses:
+        "200":
+          description: Session created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+    get:
+      operationId: listSessions
+      tags: [session]
+      parameters:
+        - name: directory
+          in: query
+          schema:
+            type: string
+        - name: before
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+      responses:
+        "200":
+          description: Session list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionListResult"
+        "400":
+          $ref: "#/components/responses/Error"
+  /api/v1/session/{sessionId}:
+    delete:
+      operationId: deleteSession
+      tags: [session]
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: directory
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Session deleted.
+        "400":
+          $ref: "#/components/responses/Error"
+    patch:
+      operationId: updateSessionConfig
+      tags: [session]
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSessionRequest"
+      responses:
+        "200":
+          description: Session config updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigOptionsResult"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/session/{sessionId}/mode:
+    post:
+      operationId: setSessionMode
+      tags: [session]
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetModeRequest"
+      responses:
+        "200":
+          description: Mode updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModeResult"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/session/{sessionId}/load:
+    post:
+      operationId: loadSession
+      tags: [session]
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoadSessionRequest"
+      responses:
+        "200":
+          description: Session loaded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionLoadResult"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/session/{sessionId}/close:
+    post:
+      operationId: closeSession
+      tags: [session]
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: directory
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Session closed.
+        "400":
+          $ref: "#/components/responses/Error"
+  /api/v1/session/{sessionId}/status:
+    get:
+      operationId: getSessionStatus
+      tags: [session]
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: directory
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Session status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionStatusResult"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/session/{sessionId}/messages:
+    get:
+      operationId: getSessionMessages
+      tags: [session]
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: directory
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: before
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+      responses:
+        "200":
+          description: Message page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageListResult"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/events:
+    get:
+      operationId: getEvents
+      tags: [events]
+      parameters:
+        - name: after
+          in: query
+          schema:
+            type: integer
+        - name: directory
+          in: query
+          schema:
+            type: string
+        - name: sessionId
+          in: query
+          schema:
+            type: string
+        - name: types
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: SSE event stream.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "410":
+          $ref: "#/components/responses/Error"
+  /api/v1/session/{sessionId}/prompt:
+    post:
+      operationId: promptSession
+      tags: [prompt]
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PromptRequest"
+      responses:
+        "200":
+          description: Prompt completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PromptResponse"
+        "400":
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+  /api/v1/session/{sessionId}/prompt_async:
+    post:
+      operationId: promptSessionAsync
+      tags: [prompt]
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PromptRequest"
+      responses:
+        "202":
+          description: Prompt accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PromptAsyncResponse"
+        "400":
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+  /api/v1/session/{sessionId}/cancel:
+    post:
+      operationId: cancelSessionPrompt
+      tags: [prompt]
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Prompt cancelled.
+  /api/v1/commands:
+    get:
+      operationId: listCommands
+      tags: [commands]
+      parameters:
+        - name: directory
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Command list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandListResult"
+  /api/v1/session/{sessionId}/command:
+    post:
+      operationId: executeCommand
+      tags: [commands]
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CommandRequest"
+      responses:
+        "200":
+          description: Command executed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PromptResponse"
+        "400":
+          $ref: "#/components/responses/Error"
+  /api/v1/permission/trust:
+    get:
+      operationId: listTrust
+      tags: [permission]
+      responses:
+        "200":
+          description: Trust decisions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrustListResult"
+    post:
+      operationId: setTrust
+      tags: [permission]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetTrustRequest"
+      responses:
+        "204":
+          description: Trust decision saved.
+        "400":
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteTrust
+      tags: [permission]
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Trust decision removed.
+  /api/v1/session/{sessionId}/permissions/{permissionId}/reply:
+    post:
+      operationId: replyPermission
+      tags: [permission]
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: permissionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PermissionReplyRequest"
+      responses:
+        "204":
+          description: Permission reply accepted.
+        "400":
+          $ref: "#/components/responses/Error"
+        "410":
+          $ref: "#/components/responses/Error"
+  /api/v1/config:
+    get:
+      operationId: getConfig
+      tags: [config]
+      responses:
+        "200":
+          description: Global config.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigResult"
+    patch:
+      operationId: updateConfig
+      tags: [config]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateConfigRequest"
+      responses:
+        "200":
+          description: Config updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigResult"
+        "400":
+          $ref: "#/components/responses/Error"
+  /api/v1/config/providers:
+    get:
+      operationId: listProviders
+      tags: [config]
+      responses:
+        "200":
+          description: Provider list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProvidersResult"
+  /api/v1/config/providers/{providerId}:
+    put:
+      operationId: upsertProvider
+      tags: [config]
+      parameters:
+        - name: providerId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProviderInput"
+      responses:
+        "204":
+          description: Provider saved.
+        "400":
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteProvider
+      tags: [config]
+      parameters:
+        - name: providerId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Provider deleted.
+  /api/v1/modes:
+    get:
+      operationId: listModes
+      tags: [modes]
+      parameters:
+        - name: directory
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Mode list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModesResult"
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+  responses:
+    Error:
+      description: Error response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+  schemas:
+    Health:
+      type: object
+      required: [healthy, version]
+      properties:
+        healthy:
+          type: boolean
+        version:
+          type: string
+    ErrorBody:
+      type: object
+      required: [error]
+      properties:
+        error:
+          $ref: "#/components/schemas/ErrorDetail"
+    ErrorDetail:
+      type: object
+      required: [code, message, requestId]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+        requestId:
+          type: string
+    NewSessionRequest:
+      type: object
+      required: [directory]
+      properties:
+        directory:
+          type: string
+        additionalDirectories:
+          type: array
+          items:
+            type: string
+        model:
+          type: string
+        mode:
+          type: string
+        title:
+          type: string
+        mcpServers:
+          type: array
+          items:
+            type: object
+    Session:
+      type: object
+      required: [sessionId, directory, configOptions, availableModes, availableCommands]
+      properties:
+        sessionId:
+          type: string
+        directory:
+          type: string
+        configOptions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConfigOption"
+        availableModes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Mode"
+        availableCommands:
+          type: array
+          items:
+            $ref: "#/components/schemas/AvailableCommand"
+    SessionSummary:
+      type: object
+      required: [sessionId, directory]
+      properties:
+        sessionId:
+          type: string
+        directory:
+          type: string
+        title:
+          type: string
+        updatedAt:
+          type: string
+        additionalDirectories:
+          type: array
+          items:
+            type: string
+    SessionListResult:
+      type: object
+      required: [sessions]
+      properties:
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionSummary"
+        nextCursor:
+          type: string
+          nullable: true
+    LoadSessionRequest:
+      type: object
+      required: [directory]
+      properties:
+        directory:
+          type: string
+        additionalDirectories:
+          type: array
+          items:
+            type: string
+        limit:
+          type: integer
+          default: 50
+          maximum: 200
+        before:
+          type: string
+    SessionLoadResult:
+      type: object
+      required: [sessionId, directory, configOptions, messages, hasMore]
+      properties:
+        sessionId:
+          type: string
+        directory:
+          type: string
+        configOptions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConfigOption"
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/Message"
+        hasMore:
+          type: boolean
+        nextCursor:
+          type: string
+          nullable: true
+    SessionStatusResult:
+      type: object
+      required: [sessionId, status]
+      properties:
+        sessionId:
+          type: string
+        status:
+          type: string
+        model:
+          type: string
+        mode:
+          type: string
+        thinkingLevel:
+          type: string
+        queuedCount:
+          type: integer
+        contextUsage:
+          $ref: "#/components/schemas/ContextUsage"
+    UpdateSessionRequest:
+      type: object
+      required: [directory]
+      properties:
+        directory:
+          type: string
+        model:
+          type: string
+        thinkingLevel:
+          type: string
+        mode:
+          type: string
+    ConfigOptionsResult:
+      type: object
+      required: [configOptions]
+      properties:
+        configOptions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConfigOption"
+    SetModeRequest:
+      type: object
+      required: [directory, modeId]
+      properties:
+        directory:
+          type: string
+        modeId:
+          type: string
+    ModeResult:
+      type: object
+      required: [currentModeId, availableModes]
+      properties:
+        currentModeId:
+          type: string
+        availableModes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Mode"
+    ContextUsage:
+      type: object
+      properties:
+        used:
+          type: integer
+        size:
+          type: integer
+    Message:
+      type: object
+      required: [id, role, timestamp, content]
+      properties:
+        id:
+          type: string
+        role:
+          type: string
+        timestamp:
+          type: string
+        content:
+          type: array
+          items:
+            type: object
+        model:
+          type: string
+          nullable: true
+        usage:
+          type: object
+          nullable: true
+    MessageListResult:
+      type: object
+      required: [messages, hasMore]
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/Message"
+        hasMore:
+          type: boolean
+        nextCursor:
+          type: string
+          nullable: true
+    PromptRequest:
+      type: object
+      required: [directory, prompt]
+      properties:
+        directory:
+          type: string
+        prompt:
+          type: array
+          items:
+            type: object
+        model:
+          type: string
+        mode:
+          type: string
+        thinkingLevel:
+          type: string
+    PromptResponse:
+      type: object
+      required: [messageId, stopReason]
+      properties:
+        messageId:
+          type: string
+        stopReason:
+          type: string
+        text:
+          type: string
+        usage:
+          type: object
+          nullable: true
+    PromptAsyncResponse:
+      type: object
+      required: [messageId, accepted]
+      properties:
+        messageId:
+          type: string
+        accepted:
+          type: boolean
+    CommandRequest:
+      type: object
+      required: [directory, command]
+      properties:
+        directory:
+          type: string
+        command:
+          type: string
+        arguments:
+          type: string
+    CommandListResult:
+      type: object
+      required: [commands]
+      properties:
+        commands:
+          type: array
+          items:
+            $ref: "#/components/schemas/AvailableCommand"
+    TrustEntry:
+      type: object
+      required: [path, decision]
+      properties:
+        path:
+          type: string
+        decision:
+          type: string
+    TrustListResult:
+      type: object
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/TrustEntry"
+    SetTrustRequest:
+      type: object
+      required: [path, decision]
+      properties:
+        path:
+          type: string
+        decision:
+          type: string
+    PermissionReplyRequest:
+      type: object
+      required: [optionId]
+      properties:
+        optionId:
+          type: string
+    ConfigResult:
+      type: object
+      required: [model, models]
+      properties:
+        model:
+          type: string
+        models:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModelEntry"
+    UpdateConfigRequest:
+      type: object
+      properties:
+        model:
+          type: string
+    ModelEntry:
+      type: object
+      required: [provider, modelId, name, baseUrl, protocol]
+      properties:
+        provider:
+          type: string
+        modelId:
+          type: string
+        name:
+          type: string
+        baseUrl:
+          type: string
+        protocol:
+          type: string
+        contextWindow:
+          type: integer
+        maxTokens:
+          type: integer
+        thinkingLevels:
+          type: array
+          items:
+            type: string
+        supportsImages:
+          type: boolean
+        enabled:
+          type: boolean
+        apiKeyConfigured:
+          type: boolean
+    ProvidersResult:
+      type: object
+      required: [defaultModel, providers]
+      properties:
+        defaultModel:
+          type: string
+        providers:
+          type: array
+          items:
+            $ref: "#/components/schemas/Provider"
+    Provider:
+      type: object
+      required: [id, name, models]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        models:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModelEntry"
+    ProviderInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        baseUrl:
+          type: string
+        protocol:
+          type: string
+        apiKey:
+          type: string
+        models:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModelEntry"
+    ModesResult:
+      type: object
+      required: [modes]
+      properties:
+        modes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Mode"
+    ConfigOption:
+      type: object
+      required: [id, name, type]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        currentValue:
+          type: string
+        options:
+          type: array
+          items:
+            type: object
+    Mode:
+      type: object
+      required: [id, name, description]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        tools:
+          type: array
+          items:
+            type: string
+        model:
+          type: string
+          nullable: true
+        systemPrompt:
+          type: string
+    AvailableCommand:
+      type: object
+      required: [name, description]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        input:
+          type: object
+          properties:
+            hint:
+              type: string
