@@ -38,6 +38,7 @@ import (
 	"github.com/smallnest/pigo/internal/cli/tui"
 	"github.com/smallnest/pigo/internal/cli/ui"
 	"github.com/smallnest/pigo/internal/dream"
+	"github.com/smallnest/pigo/internal/runtime"
 	"github.com/smallnest/pigo/internal/selfupdate"
 )
 
@@ -424,18 +425,6 @@ func dispatch(ctx context.Context, opts cliOptions, out, errOut io.Writer) int {
 			fmt.Fprintln(errOut, "pigo: no prompt (use -p \"...\" or positional args)")
 			return 2
 		}
-		if os.Getenv("PIGO_HTTP_DEFAULT") == "1" {
-			cfg, err := httpServeConfig(opts)
-			if err != nil {
-				fmt.Fprintf(errOut, "pigo: %v\n", err)
-				return 1
-			}
-			if err := repl.RunHTTP(ctx, cfg, os.Stdin, out); err != nil {
-				fmt.Fprintf(errOut, "pigo: %v\n", err)
-				return 1
-			}
-			return 0
-		}
 		env, err := run.SetupEnv(opts.model, opts.baseURL, opts.protocol, opts.provider, opts.apiKey, opts.noTools, opts.noSkills, opts.systemPrompt, opts.appendSystemPrompt, opts.memory.Memory.Enabled, run.NewToolPolicy(opts.allowedTools, opts.disallowedTools))
 		if err != nil {
 			fmt.Fprintf(errOut, "pigo: %v\n", err)
@@ -481,6 +470,18 @@ func dispatch(ctx context.Context, opts cliOptions, out, errOut io.Writer) int {
 			}
 			return 0
 		}
+		if httpDefaultEnabled() {
+			cfg, err := httpServeConfig(opts)
+			if err != nil {
+				fmt.Fprintf(errOut, "pigo: %v\n", err)
+				return 1
+			}
+			if err := repl.RunHTTP(ctx, cfg, os.Stdin, out); err != nil {
+				fmt.Fprintf(errOut, "pigo: %v\n", err)
+				return 1
+			}
+			return 0
+		}
 		if err := repl.Run(repl.Options{
 			Model:             opts.model,
 			ProviderName:      env.ProviderName,
@@ -506,7 +507,12 @@ func dispatch(ctx context.Context, opts cliOptions, out, errOut io.Writer) int {
 		return 0
 	}
 
-	if os.Getenv("PIGO_HTTP_DEFAULT") == "1" {
+	mode, err := headless.ParseOutputMode(opts.outputFmt)
+	if err != nil {
+		fmt.Fprintf(errOut, "pigo: %v\n", err)
+		return 2
+	}
+	if mode == runtime.PrintMode && httpDefaultEnabled() {
 		cfg, err := httpServeConfig(opts)
 		if err != nil {
 			fmt.Fprintf(errOut, "pigo: %v\n", err)
@@ -517,12 +523,6 @@ func dispatch(ctx context.Context, opts cliOptions, out, errOut io.Writer) int {
 			return 1
 		}
 		return 0
-	}
-
-	mode, err := headless.ParseOutputMode(opts.outputFmt)
-	if err != nil {
-		fmt.Fprintf(errOut, "pigo: %v\n", err)
-		return 2
 	}
 
 	env, err := run.SetupEnv(opts.model, opts.baseURL, opts.protocol, opts.provider, opts.apiKey, opts.noTools, opts.noSkills, opts.systemPrompt, opts.appendSystemPrompt, opts.memory.Memory.Enabled, run.NewToolPolicy(opts.allowedTools, opts.disallowedTools))

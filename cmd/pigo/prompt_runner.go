@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/smallnest/pigo/internal/acp"
@@ -14,6 +15,10 @@ import (
 	"github.com/smallnest/pigo/internal/sessionstore"
 	"github.com/smallnest/pigo/internal/trust"
 )
+
+func httpDefaultEnabled() bool {
+	return os.Getenv("PIGO_HTTP_DEFAULT") != "0"
+}
 
 func httpServeConfig(opts cliOptions) (httpapi.Config, error) {
 	runner, err := makePromptRunner(opts)
