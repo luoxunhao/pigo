@@ -46,10 +46,31 @@ const goalMaxAutomaticTurns = 25
 // pi-goal's noProgressTurns).
 const goalMaxNoProgress = 3
 
+// Options are the injectable I/O boundaries for a goal run. When nil/zero they
+// fall back to the REPL terminal seams, so existing callers keep working
+// unchanged.
+type Options struct {
+	// Context, when non-nil, is the parent context for the autonomous loop.
+	// The REPL leaves it nil (background); serve passes the HTTP/ACP request
+	// context so session/cancel can stop a running goal.
+	Context context.Context
+	// BeforeToolCall replaces the local trust/stdin confirmation prompt. Serve
+	// uses this to route side-effect tools through session/request_permission.
+	BeforeToolCall agentcore.BeforeToolCallFunc
+	// Persist replaces cli.PersistTurn so a serve host can persist the goal
+	// loop's messages with its own branch-aware store.
+	Persist func() error
+}
+
 // runGoal parses and dispatches a /goal invocation. setCancel publishes the
 // active run's cancel func so the REPL's SIGINT handler can interrupt an
 // autonomous run (same plumbing as a normal turn).
 func RunGoal(setCancel func(context.CancelFunc), out io.Writer, host cli.Host, line string) {
+	RunGoalWithOptions(setCancel, out, host, line, Options{})
+}
+
+// RunGoalWithOptions is RunGoal with injectable terminal/store seams.
+func RunGoalWithOptions(setCancel func(context.CancelFunc), out io.Writer, host cli.Host, line string, opts Options) {
 	args := strings.TrimSpace(strings.TrimPrefix(line, "/goal"))
 
 	switch {
@@ -77,7 +98,7 @@ func RunGoal(setCancel func(context.CancelFunc), out io.Writer, host cli.Host, l
 		}
 		host.Goal().Resume()
 		fmt.Fprintf(out, "resuming goal: %s\n", ui.OneLine(snap.Objective))
-		runGoalLoop(setCancel, out, host)
+		runGoalLoop(setCancel, out, host, opts)
 		return
 	}
 
@@ -97,7 +118,7 @@ func RunGoal(setCancel func(context.CancelFunc), out io.Writer, host cli.Host, l
 	} else {
 		fmt.Fprintf(out, "goal set: %s\n", ui.OneLine(objective))
 	}
-	runGoalLoop(setCancel, out, host)
+	runGoalLoop(setCancel, out, host, opts)
 }
 
 // newGoalID returns a short unique id for a goal (used to key goal_complete's
@@ -191,11 +212,15 @@ func goalFollowUpDecision(snap agenttool.GoalSnapshot) (cont bool, terminal agen
 // the run or goalFollowUpDecision trips a guard. On return it prints the outcome
 // and persists the turn. The run reuses the REPL's SIGINT cancel plumbing via
 // setCancel.
-func runGoalLoop(setCancel func(context.CancelFunc), out io.Writer, host cli.Host) {
+func runGoalLoop(setCancel func(context.CancelFunc), out io.Writer, host cli.Host, opts Options) {
 	goalReg := goalToolRegistry(host.Registry(), host.Goal())
 	reminders := goalReminders(host.Registry(), host.Goal())
 
-	runCtx, cancel := context.WithCancel(context.Background())
+	base := context.Background()
+	if opts.Context != nil {
+		base = opts.Context
+	}
+	runCtx, cancel := context.WithCancel(base)
 	setCancel(cancel)
 	defer func() {
 		cancel()
@@ -206,6 +231,11 @@ func runGoalLoop(setCancel func(context.CancelFunc), out io.Writer, host cli.Hos
 	// settle folds in only the assistant turns produced since the previous one:
 	// their output tokens (budget) and whether any tool ran (no-progress guard).
 	lastSeen := len(host.AgentCtx().Messages)
+
+	beforeToolCall := opts.BeforeToolCall
+	if beforeToolCall == nil {
+		beforeToolCall = trust.BeforeToolCall(host.Trust(), host.Cwd(), host.Input(), out, host.ConfirmMu())
+	}
 
 	cfg := runtime.RunConfig{
 		LoopConfig: runtime.LoopConfig{
@@ -220,7 +250,7 @@ func runGoalLoop(setCancel func(context.CancelFunc), out io.Writer, host cli.Hos
 		Batch: agenttool.BatchConfig{
 			ToolExecutorConfig: agenttool.ToolExecutorConfig{
 				Registry:       goalReg,
-				BeforeToolCall: trust.BeforeToolCall(host.Trust(), host.Cwd(), host.Input(), out, host.ConfirmMu()),
+				BeforeToolCall: beforeToolCall,
 			},
 		},
 		Reminders: reminders,
@@ -264,7 +294,11 @@ func runGoalLoop(setCancel func(context.CancelFunc), out io.Writer, host cli.Hos
 	drainGoalStream(runCtx, out, host, stream)
 
 	printGoalOutcome(out, host.Goal().Snapshot())
-	cli.PersistTurn(out, host)
+	if opts.Persist != nil {
+		_ = opts.Persist()
+	} else {
+		cli.PersistTurn(out, host)
+	}
 }
 
 // goalToolRegistry returns a registry holding every tool from base plus the two

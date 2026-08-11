@@ -52,7 +52,7 @@ func TestCommandServiceCoreSessionCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc := NewCommandService(sessions, nil, nil, nil, nil, nil)
+	svc := NewCommandService(sessions, nil, nil, nil, nil, nil, nil, nil)
 	ctx := context.Background()
 
 	tree, apiErr := svc.Execute(ctx, created.SessionId, gen.CommandRequest{Directory: workspace, Command: "tree"})

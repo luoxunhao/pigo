@@ -40,8 +40,8 @@ func TestCommandServiceListAndExecute(t *testing.T) {
 		Expand:      func(args string) string { return "weather prompt" },
 	})
 	reg.AddBuiltin(runtime.SlashCommand{
-		Name:        "goal",
-		Description: "goal loop not wired over serve yet",
+		Name:        "rewind",
+		Description: "rewind not wired over serve yet",
 		Action:      func(string) string { return "" },
 	})
 	broker := NewEventBroker()
@@ -49,7 +49,7 @@ func TestCommandServiceListAndExecute(t *testing.T) {
 		text := "reply: " + run.Text
 		return gen.PromptResponse{MessageId: run.MessageID, StopReason: "end_turn", Text: &text}, nil
 	}, broker)
-	svc := NewCommandService(sessions, prompts, reg, nil, nil, nil)
+	svc := NewCommandService(sessions, prompts, reg, nil, nil, nil, nil, broker)
 	list := svc.List()
 	if len(list.Commands) == 0 {
 		t.Fatal("empty command list")
@@ -58,7 +58,7 @@ func TestCommandServiceListAndExecute(t *testing.T) {
 		t.Fatalf("command list too small: %d", len(list.Commands))
 	}
 	for _, cmd := range list.Commands {
-		if cmd.Name == "goal" {
+		if cmd.Name == "rewind" {
 			t.Fatal("unsupported command should not be advertised")
 		}
 	}

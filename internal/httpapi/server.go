@@ -3,9 +3,11 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/httpapi/gen"
 	"github.com/smallnest/pigo/internal/plugin"
@@ -22,6 +24,10 @@ type CompactFunc func(ctx context.Context, sessionID, directory string) (string,
 // report.
 type DreamFunc func(ctx context.Context, args string) (string, error)
 
+// GoalFunc runs one /goal invocation over serve and streams progress to out.
+// beforeToolCall is the serve permission seam installed by the prompt manager.
+type GoalFunc func(ctx context.Context, sessionID, directory, args string, out io.Writer, beforeToolCall agentcore.BeforeToolCallFunc) (string, error)
+
 // Config controls the HTTP server behavior.
 type Config struct {
 	Version             string
@@ -37,6 +43,7 @@ type Config struct {
 	SlashRegistry       *runtime.SlashRegistry
 	CompactFunc         CompactFunc
 	DreamFunc           DreamFunc
+	GoalFunc            GoalFunc
 }
 
 // Server implements the generated HTTP API surface.
@@ -102,7 +109,7 @@ func NewServer(cfg Config) (*Server, error) {
 		configPath = config.FileConfigPath()
 	}
 	remote := NewRemoteControlService()
-	return &Server{version: cfg.Version, spec: spec, doc: doc, sessions: sessionService, events: broker, prompts: prompts, commands: NewCommandService(sessionService, prompts, cfg.SlashRegistry, cfg.CompactFunc, cfg.DreamFunc, remote), trust: NewTrustService(trustManager), perms: perms, config: NewConfigService(configPath), modes: modeService, remote: remote}, nil
+	return &Server{version: cfg.Version, spec: spec, doc: doc, sessions: sessionService, events: broker, prompts: prompts, commands: NewCommandService(sessionService, prompts, cfg.SlashRegistry, cfg.CompactFunc, cfg.DreamFunc, cfg.GoalFunc, remote, broker), trust: NewTrustService(trustManager), perms: perms, config: NewConfigService(configPath), modes: modeService, remote: remote}, nil
 }
 
 // NewRouter assembles the chi router with middleware and API routes.

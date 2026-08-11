@@ -62,6 +62,7 @@ func httpServeConfigWithAutoReject(opts cliOptions, autoReject bool) (httpapi.Co
 		SlashRegistry:       comps.slash,
 		CompactFunc:         comps.compact,
 		DreamFunc:           comps.dream,
+		GoalFunc:            comps.goal,
 	}, nil
 }
 
@@ -70,6 +71,7 @@ type serveComponents struct {
 	slash   *runtime.SlashRegistry
 	compact httpapi.CompactFunc
 	dream   httpapi.DreamFunc
+	goal    httpapi.GoalFunc
 }
 
 func makePromptRunner(opts cliOptions) (*serveComponents, error) {
@@ -236,6 +238,7 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 	return &serveComponents{
 		runner: promptRun,
 		slash:  slash,
+		goal:   makeGoalFunc(opts, env, pigoHome, thinking),
 		compact: func(ctx context.Context, sessionID, directory string) (string, error) {
 			store, storeErr := sessionstore.OpenForWorkspace(pigoHome, directory)
 			if storeErr != nil {

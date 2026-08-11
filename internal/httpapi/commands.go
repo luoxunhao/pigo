@@ -17,7 +17,7 @@ import (
 // would only return a placeholder.
 var serveUnsupportedCommands = map[string]bool{
 	"exit": true, "quit": true,
-	"goal": true, "rewind": true,
+	"rewind": true,
 }
 
 // CommandService exposes slash commands over HTTP.
@@ -27,14 +27,16 @@ type CommandService struct {
 	slash    *runtime.SlashRegistry
 	compact  func(ctx context.Context, sessionID, directory string) (string, error)
 	dream    func(ctx context.Context, args string) (string, error)
+	goal     GoalFunc
 	remote   *RemoteControlService
+	broker   *EventBroker
 }
 
 // NewCommandService builds a command service. slash carries the full pigo
 // command registry (skills, plugins, prompt templates and built-ins); when nil
 // the service falls back to a small static list.
-func NewCommandService(sessions *SessionService, prompts *PromptManager, slash *runtime.SlashRegistry, compact func(ctx context.Context, sessionID, directory string) (string, error), dream func(ctx context.Context, args string) (string, error), remote *RemoteControlService) *CommandService {
-	return &CommandService{sessions: sessions, prompts: prompts, slash: slash, compact: compact, dream: dream, remote: remote}
+func NewCommandService(sessions *SessionService, prompts *PromptManager, slash *runtime.SlashRegistry, compact func(ctx context.Context, sessionID, directory string) (string, error), dream func(ctx context.Context, args string) (string, error), goal GoalFunc, remote *RemoteControlService, broker *EventBroker) *CommandService {
+	return &CommandService{sessions: sessions, prompts: prompts, slash: slash, compact: compact, dream: dream, goal: goal, remote: remote, broker: broker}
 }
 
 func (c *CommandService) List() gen.CommandListResult {
@@ -243,7 +245,19 @@ func (c *CommandService) Execute(ctx context.Context, sessionID string, req gen.
 			return gen.PromptResponse{}, Internal(err.Error())
 		}
 		return actionResponse(text), nil
-	case "exit", "quit", "goal", "rewind":
+	case "goal":
+		if c.goal == nil {
+			return gen.PromptResponse{}, Internal("goal backend is not configured")
+		}
+		var out goalOutput
+		out.broker = c.broker
+		out.sessionID = sessionID
+		text, err := c.goal(ctx, sessionID, req.Directory, args, &out, c.prompts.beforeToolCall(sessionID, req.Directory))
+		if err != nil {
+			return gen.PromptResponse{}, Internal(err.Error())
+		}
+		return actionResponse(text), nil
+	case "exit", "quit", "rewind":
 		return actionResponse("/" + req.Command + " is not available over serve yet"), nil
 	}
 	if c.slash == nil {
@@ -317,4 +331,24 @@ func actionResponse(text string) gen.PromptResponse {
 
 func strPtr(s string) *string {
 	return &s
+}
+
+// goalOutput buffers goal-loop progress while publishing it to the session's
+// SSE event stream so ACP clients see the autonomous run live.
+type goalOutput struct {
+	broker    *EventBroker
+	sessionID string
+	b         strings.Builder
+}
+
+func (w *goalOutput) Write(p []byte) (int, error) {
+	n, err := w.b.Write(p)
+	if w.broker != nil && len(p) > 0 {
+		w.broker.Publish("message.part.delta", map[string]any{
+			"sessionId": w.sessionID,
+			"partId":    "goal",
+			"delta":     string(p),
+		})
+	}
+	return n, err
 }
