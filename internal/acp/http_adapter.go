@@ -439,6 +439,27 @@ func (a *HTTPAdapter) handlePermissionAsked(sessionID string, data map[string]an
 		return
 	}
 	toolCall, _ := data["toolCall"].(map[string]any)
+	if toolCall == nil {
+		toolCall = map[string]any{}
+	}
+	if _, ok := toolCall["toolCallId"]; !ok {
+		if id, ok := toolCall["id"].(string); ok {
+			toolCall["toolCallId"] = id
+		}
+	}
+	if _, ok := toolCall["title"]; !ok {
+		if name, ok := toolCall["name"].(string); ok {
+			toolCall["title"] = name
+		}
+	}
+	if _, ok := toolCall["status"]; !ok {
+		toolCall["status"] = "pending"
+	}
+	if _, ok := toolCall["rawInput"]; !ok {
+		if args, ok := toolCall["arguments"].(string); ok {
+			toolCall["rawInput"] = json.RawMessage(args)
+		}
+	}
 	reqCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	raw, err := a.transport.SendRequest(reqCtx, MethodRequestPermission, map[string]any{
@@ -458,9 +479,11 @@ func (a *HTTPAdapter) handlePermissionAsked(sessionID string, data map[string]an
 	if json.Unmarshal(raw, &resp) != nil || resp.Outcome.Outcome != "selected" || resp.Outcome.OptionID == "" {
 		return
 	}
-	_, _ = a.client.ReplyPermissionWithResponse(context.Background(), sessionID, permissionID, httpclient.ReplyPermissionJSONRequestBody{
-		OptionId: resp.Outcome.OptionID,
-	})
+	if a.client != nil {
+		_, _ = a.client.ReplyPermissionWithResponse(context.Background(), sessionID, permissionID, httpclient.ReplyPermissionJSONRequestBody{
+			OptionId: resp.Outcome.OptionID,
+		})
+	}
 }
 
 func anyOptions(raw any) []map[string]any {

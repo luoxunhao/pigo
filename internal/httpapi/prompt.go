@@ -209,12 +209,12 @@ func (m *PromptManager) beforeToolCall(sessionID, directory string) agentcore.Be
 			return blockedTool(call.Name, directory+" is not trusted (use /trust to allow)")
 		}
 		payload := map[string]any{
-			"id":      call.ID,
-			"name":    call.Name,
-			"summary": trust.ToolCallSummary(call),
-		}
-		if len(call.Arguments) > 0 {
-			payload["arguments"] = string(call.Arguments)
+			"toolCallId": call.ID,
+			"title":      call.Name,
+			"kind":       toolKind(call.Name),
+			"status":     "pending",
+			"rawInput":   call.Arguments,
+			"summary":    trust.ToolCallSummary(call),
 		}
 		options := []map[string]any{
 			{"optionId": "allow_once", "kind": "allow_once", "name": "Allow once"},
@@ -234,6 +234,25 @@ func (m *PromptManager) beforeToolCall(sessionID, directory string) agentcore.Be
 		default:
 			return blockedTool(call.Name, "rejected")
 		}
+	}
+}
+
+func toolKind(name string) string {
+	switch name {
+	case "read":
+		return "read"
+	case "write", "edit":
+		return "edit"
+	case "bash", "bash_output", "bash_kill":
+		return "execute"
+	case "grep", "find":
+		return "search"
+	case "webfetch", "websearch":
+		return "fetch"
+	case "todo":
+		return "think"
+	default:
+		return "other"
 	}
 }
 
