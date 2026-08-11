@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/smallnest/pigo/internal/httpapi/gen"
@@ -14,10 +16,8 @@ import (
 // are intentionally not advertised to clients so Zed never sees a command that
 // would only return a placeholder.
 var serveUnsupportedCommands = map[string]bool{
-	"exit": true, "quit": true, "compact": true,
-	"fork": true, "clone": true, "tree": true, "rewind": true,
-	"export": true, "import": true, "copy": true,
-	"goal": true, "btw": true, "dream": true, "remote-control": true,
+	"exit": true, "quit": true,
+	"goal": true, "rewind": true,
 }
 
 // CommandService exposes slash commands over HTTP.
@@ -25,13 +25,16 @@ type CommandService struct {
 	sessions *SessionService
 	prompts  *PromptManager
 	slash    *runtime.SlashRegistry
+	compact  func(ctx context.Context, sessionID, directory string) (string, error)
+	dream    func(ctx context.Context, args string) (string, error)
+	remote   *RemoteControlService
 }
 
 // NewCommandService builds a command service. slash carries the full pigo
 // command registry (skills, plugins, prompt templates and built-ins); when nil
 // the service falls back to a small static list.
-func NewCommandService(sessions *SessionService, prompts *PromptManager, slash *runtime.SlashRegistry) *CommandService {
-	return &CommandService{sessions: sessions, prompts: prompts, slash: slash}
+func NewCommandService(sessions *SessionService, prompts *PromptManager, slash *runtime.SlashRegistry, compact func(ctx context.Context, sessionID, directory string) (string, error), dream func(ctx context.Context, args string) (string, error), remote *RemoteControlService) *CommandService {
+	return &CommandService{sessions: sessions, prompts: prompts, slash: slash, compact: compact, dream: dream, remote: remote}
 }
 
 func (c *CommandService) List() gen.CommandListResult {
@@ -62,7 +65,7 @@ func (c *CommandService) List() gen.CommandListResult {
 	return gen.CommandListResult{Commands: commands}
 }
 
-func (c *CommandService) Execute(sessionID string, req gen.CommandRequest) (gen.PromptResponse, *APIError) {
+func (c *CommandService) Execute(ctx context.Context, sessionID string, req gen.CommandRequest) (gen.PromptResponse, *APIError) {
 	args := ""
 	if req.Arguments != nil {
 		args = strings.TrimSpace(*req.Arguments)
@@ -130,8 +133,117 @@ func (c *CommandService) Execute(sessionID string, req gen.CommandRequest) (gen.
 		}
 		return actionResponse("thinking set to " + args), nil
 	case "compact":
-		return actionResponse("compaction is not implemented in serve yet"), nil
-	case "exit", "quit", "fork", "clone", "tree", "rewind", "export", "import", "copy", "goal", "btw", "dream", "remote-control":
+		if c.compact == nil {
+			return gen.PromptResponse{}, Internal("compaction backend is not configured")
+		}
+		text, err := c.compact(ctx, sessionID, req.Directory)
+		if err != nil {
+			return gen.PromptResponse{}, Internal(err.Error())
+		}
+		return actionResponse(text), nil
+	case "dream":
+		if c.dream == nil {
+			return gen.PromptResponse{}, Internal("dream backend is not configured")
+		}
+		text, err := c.dream(ctx, args)
+		if err != nil {
+			return gen.PromptResponse{}, Internal(err.Error())
+		}
+		return actionResponse(text), nil
+	case "fork":
+		if args == "" {
+			list, err := c.sessions.ForkChoices(sessionID, req.Directory)
+			if err != nil {
+				return gen.PromptResponse{}, Internal(err.Error())
+			}
+			return actionResponse(list), nil
+		}
+		n, convErr := strconv.Atoi(args)
+		if convErr != nil || n < 1 {
+			return gen.PromptResponse{}, InvalidParams("usage: /fork <n> (run /fork to list choices)")
+		}
+		id, err := c.sessions.Fork(sessionID, req.Directory, n)
+		if err != nil {
+			return gen.PromptResponse{}, Internal(err.Error())
+		}
+		return actionResponse("forked session " + id), nil
+	case "clone":
+		id, err := c.sessions.Clone(sessionID, req.Directory)
+		if err != nil {
+			return gen.PromptResponse{}, Internal(err.Error())
+		}
+		return actionResponse("cloned session " + id), nil
+	case "tree":
+		n := 0
+		if args != "" {
+			parsed, convErr := strconv.Atoi(args)
+			if convErr != nil || parsed < 1 {
+				return gen.PromptResponse{}, InvalidParams("usage: /tree [n]")
+			}
+			n = parsed
+		}
+		text, err := c.sessions.Tree(sessionID, req.Directory, n)
+		if err != nil {
+			return gen.PromptResponse{}, Internal(err.Error())
+		}
+		return actionResponse(text), nil
+	case "export":
+		text, err := c.sessions.Export(sessionID, req.Directory, args)
+		if err != nil {
+			return gen.PromptResponse{}, Internal(err.Error())
+		}
+		return actionResponse(text), nil
+	case "import":
+		if args == "" {
+			return gen.PromptResponse{}, InvalidParams("usage: /import <path.jsonl>")
+		}
+		text, err := c.sessions.Import(req.Directory, args)
+		if err != nil {
+			return gen.PromptResponse{}, Internal(err.Error())
+		}
+		return actionResponse(text), nil
+	case "copy":
+		text, err := c.sessions.CopyLast(sessionID, req.Directory)
+		if err != nil {
+			return gen.PromptResponse{}, Internal(err.Error())
+		}
+		return actionResponse(text), nil
+	case "btw":
+		if args == "" {
+			return actionResponse("usage: /btw <question>"), nil
+		}
+		if c.prompts == nil {
+			return gen.PromptResponse{}, Internal("prompt runner is not configured")
+		}
+		created, apiErr := c.sessions.Create(gen.NewSessionRequest{Directory: req.Directory})
+		if apiErr != nil {
+			return gen.PromptResponse{}, apiErr
+		}
+		model, thinking := c.sessionOptions(created.SessionId, req.Directory)
+		resp, apiErr := c.prompts.SubmitSync(created.SessionId, gen.PromptRequest{
+			Directory:     req.Directory,
+			Prompt:        []map[string]interface{}{{"type": "text", "text": args}},
+			Model:         &model,
+			ThinkingLevel: &thinking,
+		})
+		if apiErr != nil {
+			return gen.PromptResponse{}, apiErr
+		}
+		text := "btw (side session " + created.SessionId + ")"
+		if resp.Text != nil && *resp.Text != "" {
+			text += ":\n" + *resp.Text
+		}
+		return actionResponse(text), nil
+	case "remote-control":
+		if c.remote == nil {
+			return gen.PromptResponse{}, Internal("remote control backend is not configured")
+		}
+		text, err := c.remote.Run(sessionID, args)
+		if err != nil {
+			return gen.PromptResponse{}, Internal(err.Error())
+		}
+		return actionResponse(text), nil
+	case "exit", "quit", "goal", "rewind":
 		return actionResponse("/" + req.Command + " is not available over serve yet"), nil
 	}
 	if c.slash == nil {

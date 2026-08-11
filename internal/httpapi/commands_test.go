@@ -40,8 +40,8 @@ func TestCommandServiceListAndExecute(t *testing.T) {
 		Expand:      func(args string) string { return "weather prompt" },
 	})
 	reg.AddBuiltin(runtime.SlashCommand{
-		Name:        "btw",
-		Description: "REPL-only side question",
+		Name:        "goal",
+		Description: "goal loop not wired over serve yet",
 		Action:      func(string) string { return "" },
 	})
 	broker := NewEventBroker()
@@ -49,7 +49,7 @@ func TestCommandServiceListAndExecute(t *testing.T) {
 		text := "reply: " + run.Text
 		return gen.PromptResponse{MessageId: run.MessageID, StopReason: "end_turn", Text: &text}, nil
 	}, broker)
-	svc := NewCommandService(sessions, prompts, reg)
+	svc := NewCommandService(sessions, prompts, reg, nil, nil, nil)
 	list := svc.List()
 	if len(list.Commands) == 0 {
 		t.Fatal("empty command list")
@@ -58,29 +58,29 @@ func TestCommandServiceListAndExecute(t *testing.T) {
 		t.Fatalf("command list too small: %d", len(list.Commands))
 	}
 	for _, cmd := range list.Commands {
-		if cmd.Name == "btw" {
-			t.Fatal("unsupported REPL-only command should not be advertised")
+		if cmd.Name == "goal" {
+			t.Fatal("unsupported command should not be advertised")
 		}
 	}
 	name := "My Session"
-	resp, apiErr := svc.Execute(created.SessionId, gen.CommandRequest{Directory: workspace, Command: "name", Arguments: &name})
+	resp, apiErr := svc.Execute(context.Background(), created.SessionId, gen.CommandRequest{Directory: workspace, Command: "name", Arguments: &name})
 	if apiErr != nil {
 		t.Fatal(apiErr)
 	}
 	if resp.Text == nil || !strings.Contains(*resp.Text, "My Session") {
 		t.Fatalf("resp = %+v", resp)
 	}
-	status, apiErr := svc.Execute(created.SessionId, gen.CommandRequest{Directory: workspace, Command: "status"})
+	status, apiErr := svc.Execute(context.Background(), created.SessionId, gen.CommandRequest{Directory: workspace, Command: "status"})
 	if apiErr != nil {
 		t.Fatal(apiErr)
 	}
 	if status.Text == nil || !strings.Contains(*status.Text, created.SessionId) {
 		t.Fatalf("status = %+v", status)
 	}
-	if _, apiErr := svc.Execute(created.SessionId, gen.CommandRequest{Directory: workspace, Command: "nope"}); apiErr == nil {
+	if _, apiErr := svc.Execute(context.Background(), created.SessionId, gen.CommandRequest{Directory: workspace, Command: "nope"}); apiErr == nil {
 		t.Fatal("expected unknown command error")
 	}
-	skillResp, apiErr := svc.Execute(created.SessionId, gen.CommandRequest{Directory: workspace, Command: "weather"})
+	skillResp, apiErr := svc.Execute(context.Background(), created.SessionId, gen.CommandRequest{Directory: workspace, Command: "weather"})
 	if apiErr != nil {
 		t.Fatal(apiErr)
 	}

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
@@ -12,6 +13,14 @@ import (
 	"github.com/smallnest/pigo/internal/sessionstore"
 	"github.com/smallnest/pigo/internal/trust"
 )
+
+// CompactFunc runs one manual session compaction and returns a human-readable
+// summary.
+type CompactFunc func(ctx context.Context, sessionID, directory string) (string, error)
+
+// DreamFunc runs one memory consolidation pass and returns a human-readable
+// report.
+type DreamFunc func(ctx context.Context, args string) (string, error)
 
 // Config controls the HTTP server behavior.
 type Config struct {
@@ -26,6 +35,8 @@ type Config struct {
 	AutoRejectUntrusted bool
 	ApproveDirectories  []string
 	SlashRegistry       *runtime.SlashRegistry
+	CompactFunc         CompactFunc
+	DreamFunc           DreamFunc
 }
 
 // Server implements the generated HTTP API surface.
@@ -41,6 +52,7 @@ type Server struct {
 	perms    *PermissionManager
 	config   *ConfigService
 	modes    *ModeService
+	remote   *RemoteControlService
 }
 
 // NewServer builds a Server from config.
@@ -89,7 +101,8 @@ func NewServer(cfg Config) (*Server, error) {
 	if configPath == "" {
 		configPath = config.FileConfigPath()
 	}
-	return &Server{version: cfg.Version, spec: spec, doc: doc, sessions: sessionService, events: broker, prompts: prompts, commands: NewCommandService(sessionService, prompts, cfg.SlashRegistry), trust: NewTrustService(trustManager), perms: perms, config: NewConfigService(configPath), modes: modeService}, nil
+	remote := NewRemoteControlService()
+	return &Server{version: cfg.Version, spec: spec, doc: doc, sessions: sessionService, events: broker, prompts: prompts, commands: NewCommandService(sessionService, prompts, cfg.SlashRegistry, cfg.CompactFunc, cfg.DreamFunc, remote), trust: NewTrustService(trustManager), perms: perms, config: NewConfigService(configPath), modes: modeService, remote: remote}, nil
 }
 
 // NewRouter assembles the chi router with middleware and API routes.
@@ -320,7 +333,7 @@ func (s *Server) ExecuteCommand(w http.ResponseWriter, r *http.Request, sessionI
 		WriteError(w, r, InvalidParams("invalid request body"))
 		return
 	}
-	resp, apiErr := s.commands.Execute(sessionId, body)
+	resp, apiErr := s.commands.Execute(r.Context(), sessionId, body)
 	if apiErr != nil {
 		WriteError(w, r, apiErr)
 		return

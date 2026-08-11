@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +15,10 @@ import (
 	"github.com/smallnest/pigo/internal/cli"
 	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/cli/prompts"
+	"github.com/smallnest/pigo/internal/cli/repl"
 	"github.com/smallnest/pigo/internal/cli/run"
+	"github.com/smallnest/pigo/internal/compaction"
+	"github.com/smallnest/pigo/internal/dream"
 	"github.com/smallnest/pigo/internal/httpapi"
 	"github.com/smallnest/pigo/internal/httpapi/gen"
 	"github.com/smallnest/pigo/internal/provider"
@@ -32,7 +37,7 @@ func httpServeConfig(opts cliOptions) (httpapi.Config, error) {
 }
 
 func httpServeConfigWithAutoReject(opts cliOptions, autoReject bool) (httpapi.Config, error) {
-	runner, slash, err := makePromptRunner(opts)
+	comps, err := makePromptRunner(opts)
 	if err != nil {
 		return httpapi.Config{}, err
 	}
@@ -51,14 +56,23 @@ func httpServeConfigWithAutoReject(opts cliOptions, autoReject bool) (httpapi.Co
 		PigoHome:            pigoHome,
 		ConfigPath:          config.FileConfigPath(),
 		TrustPath:           trust.DefaultPath(),
-		PromptRunner:        runner,
+		PromptRunner:        comps.runner,
 		AutoRejectUntrusted: autoReject,
 		ApproveDirectories:  approveDirs,
-		SlashRegistry:       slash,
+		SlashRegistry:       comps.slash,
+		CompactFunc:         comps.compact,
+		DreamFunc:           comps.dream,
 	}, nil
 }
 
-func makePromptRunner(opts cliOptions) (httpapi.PromptRunner, *runtime.SlashRegistry, error) {
+type serveComponents struct {
+	runner  httpapi.PromptRunner
+	slash   *runtime.SlashRegistry
+	compact httpapi.CompactFunc
+	dream   httpapi.DreamFunc
+}
+
+func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 	env, err := run.SetupEnv(
 		opts.model,
 		opts.baseURL,
@@ -73,7 +87,7 @@ func makePromptRunner(opts cliOptions) (httpapi.PromptRunner, *runtime.SlashRegi
 		run.NewToolPolicy(opts.allowedTools, opts.disallowedTools),
 	)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	models := acp.NewConfiguredModels(config.FileConfigPath())
 	_ = models.Load()
@@ -106,8 +120,9 @@ func makePromptRunner(opts cliOptions) (httpapi.PromptRunner, *runtime.SlashRegi
 		ProjectTrusted: projectTrusted,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
+	pigoHome, _ := sessionstore.PigoHome()
 	runner := &acp.RuntimeRunner{
 		Provider:         env.Provider,
 		ProviderName:     env.ProviderName,
@@ -118,8 +133,7 @@ func makePromptRunner(opts cliOptions) (httpapi.PromptRunner, *runtime.SlashRegi
 		ConfiguredModels: models,
 	}
 	mapper := &serveEventMapper{sessions: make(map[string]*serveEventState)}
-	pigoHome, _ := sessionstore.PigoHome()
-	return func(ctx context.Context, run httpapi.PromptRun) (gen.PromptResponse, error) {
+	promptRun := func(ctx context.Context, run httpapi.PromptRun) (gen.PromptResponse, error) {
 		model := run.Model
 		if model == "" {
 			model = env.Model
@@ -135,10 +149,25 @@ func makePromptRunner(opts cliOptions) (httpapi.PromptRunner, *runtime.SlashRegi
 		var history agentcore.MessageList
 		store, storeErr := sessionstore.OpenForWorkspace(pigoHome, run.Directory)
 		var header session.SessionHeader
+		curLeaf := ""
 		if storeErr == nil {
-			if _, h, msgs, loadErr := store.Load(run.SessionID); loadErr == nil {
-				history = msgs
+			if h, entries, loadErr := store.TranscriptStore().LoadEntries(run.SessionID); loadErr == nil {
 				header = h
+				history = make(agentcore.MessageList, len(entries))
+				for i, e := range entries {
+					history[i] = e.Message
+				}
+				if len(entries) > 0 {
+					curLeaf = entries[len(entries)-1].ID
+				}
+			}
+			if meta, metaErr := store.LoadMetadata(run.SessionID); metaErr == nil && len(meta.CustomMetadata) > 0 {
+				var custom map[string]any
+				if json.Unmarshal(meta.CustomMetadata, &custom) == nil {
+					if leaf, ok := custom["curLeaf"].(string); ok && leaf != "" {
+						curLeaf = leaf
+					}
+				}
 			}
 		}
 
@@ -160,16 +189,36 @@ func makePromptRunner(opts cliOptions) (httpapi.PromptRunner, *runtime.SlashRegi
 			header.SystemPrompt = env.SysPrompt
 			header.Cwd = run.Directory
 			header.UpdatedAt = time.Now().UTC()
+			var newLeaf string
 			if len(msgs) < len(history) {
 				_ = store.TranscriptStore().Save(header, msgs)
+				curLeaf = ""
 			} else {
-				_ = store.Append(run.SessionID, header.UpdatedAt, tail)
+				newLeaf, _ = store.AppendBranch(run.SessionID, header, curLeaf, tail)
 			}
 			if meta, metaErr := store.LoadMetadata(run.SessionID); metaErr == nil {
 				meta.ModelName = model
 				meta.LastActiveAt = header.UpdatedAt
 				if len(msgs) < len(history) {
 					meta.MessageCount = len(msgs)
+					var custom map[string]any
+					if len(meta.CustomMetadata) > 0 {
+						_ = json.Unmarshal(meta.CustomMetadata, &custom)
+					}
+					delete(custom, "curLeaf")
+					if b, marshalErr := json.Marshal(custom); marshalErr == nil {
+						meta.CustomMetadata = b
+					}
+				}
+				if newLeaf != "" {
+					custom := map[string]any{"curLeaf": newLeaf}
+					if len(meta.CustomMetadata) > 0 {
+						_ = json.Unmarshal(meta.CustomMetadata, &custom)
+					}
+					custom["curLeaf"] = newLeaf
+					if b, marshalErr := json.Marshal(custom); marshalErr == nil {
+						meta.CustomMetadata = b
+					}
 				}
 				_ = store.SaveMetadata(meta)
 			}
@@ -183,7 +232,76 @@ func makePromptRunner(opts cliOptions) (httpapi.PromptRunner, *runtime.SlashRegi
 			StopReason: "end_turn",
 			Text:       &reply,
 		}, nil
-	}, slash, nil
+	}
+	return &serveComponents{
+		runner: promptRun,
+		slash:  slash,
+		compact: func(ctx context.Context, sessionID, directory string) (string, error) {
+			store, storeErr := sessionstore.OpenForWorkspace(pigoHome, directory)
+			if storeErr != nil {
+				return "", storeErr
+			}
+			meta, header, msgs, loadErr := store.Load(sessionID)
+			if loadErr != nil {
+				return "", loadErr
+			}
+			if len(msgs) == 0 {
+				return "nothing to compact (0 tokens, 0 messages)", nil
+			}
+			before := compaction.EstimateContextTokens(msgs).Tokens
+			modelID := meta.ModelName
+			if modelID == "" {
+				modelID = env.Model
+			}
+			model := provider.Model{Provider: runner.ProviderName, ID: run.WireModel(modelID), ContextWindow: live.ContextWindow}
+			stream := provider.StreamFnFromProvider(runner.Provider)
+			scfg := provider.StreamConfig{APIKey: env.APIKey}
+			res, compactErr := compaction.Compact(ctx, stream, model, msgs, compaction.DefaultCompactionSettings, -1, nil, "", scfg)
+			if compactErr != nil {
+				return "", compactErr
+			}
+			if res == nil {
+				return fmt.Sprintf("nothing to compact (%d tokens, %d messages)", before, len(msgs)), nil
+			}
+			rebuilt := res.RebuildContext(msgs, time.Now().UnixMilli())
+			after := compaction.EstimateContextTokens(rebuilt).Tokens
+			header.UpdatedAt = time.Now().UTC()
+			header.Model = modelID
+			header.Provider = runner.ProviderName
+			if saveErr := store.TranscriptStore().Save(header, rebuilt); saveErr != nil {
+				return "", saveErr
+			}
+			meta.MessageCount = len(rebuilt)
+			meta.LastActiveAt = header.UpdatedAt
+			_ = store.SaveMetadata(meta)
+			return fmt.Sprintf("compacted: %d -> %d tokens, summarized %d messages, kept %d",
+				before, after, len(msgs)-(len(rebuilt)-1), len(rebuilt)-1), nil
+		},
+		dream: func(ctx context.Context, args string) (string, error) {
+			dryRun := strings.Contains(args, "--dry-run")
+			thinking, thinkErr := run.ResolveThinkingLevel(opts.thinkingLevel)
+			if thinkErr != nil {
+				return "", thinkErr
+			}
+			cons, consErr := dream.NewLLMConsolidator(opts.model, opts.baseURL, opts.protocol, opts.provider, opts.apiKey, thinking)
+			if consErr != nil {
+				return "", consErr
+			}
+			projectDir, _ := os.Getwd()
+			r := &dream.Runner{Consolidator: cons}
+			report, runErr := r.Run(ctx, dream.RunOptions{
+				DryRun:         dryRun,
+				ProjectDir:     projectDir,
+				RecentSessions: opts.dreamCfg.RecentSessions,
+			})
+			if runErr != nil {
+				return "", runErr
+			}
+			var b strings.Builder
+			repl.RenderReportTable(&b, report)
+			return strings.TrimRight(b.String(), "\n"), nil
+		},
+	}, nil
 }
 
 // serveEventState tracks the last observed cumulative text/thinking so domain
