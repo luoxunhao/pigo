@@ -35,7 +35,7 @@ func TestHTTPAdapterStandardFlow(t *testing.T) {
 		PigoHome:   pigoHome,
 		ConfigPath: cfgPath,
 		TrustPath:  filepath.Join(pigoHome, "trust.json"),
-		PromptRunner: func(_ context.Context, _, _ string) (gen.PromptResponse, error) {
+		PromptRunner: func(_ context.Context, _ httpapi.PromptRun) (gen.PromptResponse, error) {
 			return gen.PromptResponse{MessageId: "msg-1", StopReason: "end_turn"}, nil
 		},
 	})

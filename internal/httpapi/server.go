@@ -14,14 +14,16 @@ import (
 
 // Config controls the HTTP server behavior.
 type Config struct {
-	Version        string
-	Password       string
-	AllowedOrigins []string
-	PigoHome       string
-	ConfigPath     string
-	PromptRunner   PromptRunner
-	TrustPath      string
-	PluginManager  *plugin.Manager
+	Version             string
+	Password            string
+	AllowedOrigins      []string
+	PigoHome            string
+	ConfigPath          string
+	PromptRunner        PromptRunner
+	TrustPath           string
+	PluginManager       *plugin.Manager
+	AutoRejectUntrusted bool
+	ApproveDirectories  []string
 }
 
 // Server implements the generated HTTP API surface.
@@ -68,16 +70,24 @@ func NewServer(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	for _, dir := range cfg.ApproveDirectories {
+		if dir != "" {
+			trustManager.SetSessionTrust(dir)
+		}
+	}
 	runner := cfg.PromptRunner
 	if runner == nil {
 		runner = unavailableRunner
 	}
+	perms := NewPermissionManager(broker)
 	prompts := NewPromptManager(runner, broker)
+	prompts.SetPermissionSeam(perms, trustManager)
+	prompts.SetAutoRejectUntrusted(cfg.AutoRejectUntrusted)
 	configPath := cfg.ConfigPath
 	if configPath == "" {
 		configPath = config.FileConfigPath()
 	}
-	return &Server{version: cfg.Version, spec: spec, doc: doc, sessions: sessionService, events: broker, prompts: prompts, commands: NewCommandService(sessionService), trust: NewTrustService(trustManager), perms: NewPermissionManager(broker), config: NewConfigService(configPath), modes: modeService}, nil
+	return &Server{version: cfg.Version, spec: spec, doc: doc, sessions: sessionService, events: broker, prompts: prompts, commands: NewCommandService(sessionService), trust: NewTrustService(trustManager), perms: perms, config: NewConfigService(configPath), modes: modeService}, nil
 }
 
 // NewRouter assembles the chi router with middleware and API routes.

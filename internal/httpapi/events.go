@@ -123,6 +123,7 @@ func (s *Server) GetEvents(w http.ResponseWriter, r *http.Request, params gen.Ge
 		WriteError(w, r, Internal("streaming unsupported"))
 		return
 	}
+	w.WriteHeader(http.StatusOK)
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
 	for {

@@ -446,6 +446,36 @@ func dispatch(ctx context.Context, opts cliOptions, out, errOut io.Writer) int {
 			// can show an upgrade hint on this or the next launch without blocking
 			// startup (US-004). No-ops for dev builds or a fresh cache.
 			selfupdate.StartBackgroundCheck(version)
+			if httpDefaultEnabled() {
+				cfg, err := httpServeConfig(opts)
+				if err != nil {
+					fmt.Fprintf(errOut, "pigo: %v\n", err)
+					return 1
+				}
+				if err := tui.RunHTTP(ctx, tui.Options{
+					Model:             opts.model,
+					ProviderName:      env.ProviderName,
+					Provider:          env.Provider,
+					BaseURL:           opts.baseURL,
+					APIKey:            env.APIKey,
+					Protocol:          opts.protocol,
+					Version:           version,
+					ThinkingLevel:     thinking,
+					Tools:             env.Tools,
+					SysPrompt:         env.SysPrompt,
+					ResumeID:          resumeID,
+					Approve:           opts.approve,
+					Skills:            env.Skills,
+					Plugins:           env.Plugins,
+					ConfigPrompts:     opts.configPrompts,
+					CliPrompts:        opts.promptTemplates,
+					NoPromptTemplates: opts.noPromptTemplates,
+				}, cfg); err != nil {
+					fmt.Fprintf(errOut, "pigo: %v\n", err)
+					return 1
+				}
+				return 0
+			}
 			if err := tui.Run(tui.Options{
 				Model:             opts.model,
 				ProviderName:      env.ProviderName,
@@ -523,6 +553,14 @@ func dispatch(ctx context.Context, opts cliOptions, out, errOut io.Writer) int {
 			return 1
 		}
 		return 0
+	}
+	if mode == runtime.StreamJSONMode && httpDefaultEnabled() {
+		cfg, err := httpServeConfig(opts)
+		if err != nil {
+			fmt.Fprintf(errOut, "pigo: %v\n", err)
+			return 1
+		}
+		return headless.RunHTTPStream(ctx, cfg, opts.prompt, resumeID, out, errOut)
 	}
 
 	env, err := run.SetupEnv(opts.model, opts.baseURL, opts.protocol, opts.provider, opts.apiKey, opts.noTools, opts.noSkills, opts.systemPrompt, opts.appendSystemPrompt, opts.memory.Memory.Enabled, run.NewToolPolicy(opts.allowedTools, opts.disallowedTools))

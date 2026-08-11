@@ -11,7 +11,7 @@ import (
 
 func TestPromptManagerSync(t *testing.T) {
 	broker := NewEventBroker()
-	mgr := NewPromptManager(func(_ context.Context, _, _ string) (gen.PromptResponse, error) {
+	mgr := NewPromptManager(func(_ context.Context, _ PromptRun) (gen.PromptResponse, error) {
 		return gen.PromptResponse{MessageId: "msg-1", StopReason: "end_turn"}, nil
 	}, broker)
 	resp, apiErr := mgr.SubmitSync("s1", gen.PromptRequest{
@@ -29,7 +29,7 @@ func TestPromptManagerSync(t *testing.T) {
 func TestPromptManagerCancelClearsQueue(t *testing.T) {
 	broker := NewEventBroker()
 	started := make(chan struct{})
-	mgr := NewPromptManager(func(ctx context.Context, _, _ string) (gen.PromptResponse, error) {
+	mgr := NewPromptManager(func(ctx context.Context, _ PromptRun) (gen.PromptResponse, error) {
 		close(started)
 		<-ctx.Done()
 		return gen.PromptResponse{}, context.Canceled
@@ -68,7 +68,7 @@ func TestPromptManagerCancelClearsQueue(t *testing.T) {
 func TestPromptManagerQueueFull(t *testing.T) {
 	broker := NewEventBroker()
 	block := make(chan struct{})
-	mgr := NewPromptManager(func(ctx context.Context, _, _ string) (gen.PromptResponse, error) {
+	mgr := NewPromptManager(func(ctx context.Context, _ PromptRun) (gen.PromptResponse, error) {
 		<-block
 		return gen.PromptResponse{StopReason: "end_turn"}, nil
 	}, broker)

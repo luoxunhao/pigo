@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/smallnest/pigo/internal/httpclient"
 )
@@ -17,13 +18,14 @@ type HTTPAdapter struct {
 	transport Transport
 	version   string
 
-	mu   sync.Mutex
-	dirs map[string]string
+	mu      sync.Mutex
+	dirs    map[string]string
+	cursors map[string]int64
 }
 
 // NewHTTPAdapter builds an adapter over a serve HTTP client.
 func NewHTTPAdapter(client *httpclient.ClientWithResponses, transport Transport, version string) *HTTPAdapter {
-	return &HTTPAdapter{client: client, transport: transport, version: version, dirs: make(map[string]string)}
+	return &HTTPAdapter{client: client, transport: transport, version: version, dirs: make(map[string]string), cursors: make(map[string]int64)}
 }
 
 func (a *HTTPAdapter) directory(sessionID string) (string, bool) {
@@ -36,6 +38,18 @@ func (a *HTTPAdapter) directory(sessionID string) (string, bool) {
 func (a *HTTPAdapter) remember(sessionID, directory string) {
 	a.mu.Lock()
 	a.dirs[sessionID] = directory
+	a.mu.Unlock()
+}
+
+func (a *HTTPAdapter) cursor(sessionID string) int64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cursors[sessionID]
+}
+
+func (a *HTTPAdapter) setCursor(sessionID string, id int64) {
+	a.mu.Lock()
+	a.cursors[sessionID] = id
 	a.mu.Unlock()
 }
 
@@ -296,29 +310,40 @@ func (a *HTTPAdapter) runPrompt(ctx context.Context, id RequestID, params json.R
 	text := promptText(req.Prompt)
 	stopReason := "end_turn"
 	if strings.HasPrefix(strings.TrimSpace(text), "/") {
-		resp, err := a.client.ExecuteCommandWithResponse(ctx, req.SessionID, httpclient.ExecuteCommandJSONRequestBody{Directory: dir, Command: commandName(text)})
+		args := commandArgs(text)
+		resp, err := a.client.ExecuteCommandWithResponse(ctx, req.SessionID, httpclient.ExecuteCommandJSONRequestBody{Directory: dir, Command: commandName(text), Arguments: &args})
 		if err == nil && resp.JSON200 != nil {
 			stopReason = resp.JSON200.StopReason
 			if resp.JSON200.Text != nil {
 				_ = a.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(req.SessionID, textChunkUpdate(*resp.JSON200.Text)))
 			}
+		} else {
+			promptResp, promptErr := a.client.PromptSessionWithResponse(ctx, req.SessionID, httpclient.PromptSessionJSONRequestBody{Directory: dir, Prompt: req.Prompt})
+			if promptErr != nil || promptResp.JSON200 == nil {
+				_ = a.transport.SendResponse(ctx, id, nil, NewError(CodeInternalError, "session/prompt failed"))
+				return
+			}
+			stopReason = promptResp.JSON200.StopReason
 		}
 	} else {
 		resp, err := a.client.PromptSessionWithResponse(ctx, req.SessionID, httpclient.PromptSessionJSONRequestBody{Directory: dir, Prompt: req.Prompt})
-		if err == nil && resp.JSON200 != nil {
-			stopReason = resp.JSON200.StopReason
+		if err != nil || resp.JSON200 == nil {
+			_ = a.transport.SendResponse(ctx, id, nil, NewError(CodeInternalError, "session/prompt failed"))
+			return
 		}
+		stopReason = resp.JSON200.StopReason
 	}
 	_ = a.transport.SendResponse(ctx, id, map[string]any{"stopReason": stopReason}, nil)
 }
 
 func (a *HTTPAdapter) streamEvents(ctx context.Context, sessionID string) {
-	resp, err := a.client.GetEventsWithResponse(ctx, &httpclient.GetEventsParams{SessionId: &sessionID})
-	if err != nil || resp.HTTPResponse == nil {
+	after := int(a.cursor(sessionID))
+	resp, err := a.client.GetEvents(ctx, &httpclient.GetEventsParams{SessionId: &sessionID, After: &after})
+	if err != nil || resp == nil {
 		return
 	}
-	defer resp.HTTPResponse.Body.Close()
-	scanner := bufio.NewScanner(resp.HTTPResponse.Body)
+	defer resp.Body.Close()
+	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	eventType := ""
 	var dataBuf strings.Builder
@@ -327,9 +352,13 @@ func (a *HTTPAdapter) streamEvents(ctx context.Context, sessionID string) {
 			return
 		}
 		var payload struct {
+			ID   int64          `json:"id"`
 			Data map[string]any `json:"data"`
 		}
 		_ = json.Unmarshal([]byte(dataBuf.String()), &payload)
+		if payload.ID > 0 {
+			a.setCursor(sessionID, payload.ID)
+		}
 		a.mapEvent(sessionID, eventType, payload.Data)
 		eventType = ""
 		dataBuf.Reset()
@@ -399,7 +428,53 @@ func (a *HTTPAdapter) mapEvent(sessionID, eventType string, data map[string]any)
 			"sessionUpdate":     "available_commands_update",
 			"availableCommands": data["availableCommands"],
 		}))
+	case "permission.asked":
+		a.handlePermissionAsked(sessionID, data)
 	}
+}
+
+func (a *HTTPAdapter) handlePermissionAsked(sessionID string, data map[string]any) {
+	permissionID, _ := data["permissionId"].(string)
+	if permissionID == "" {
+		return
+	}
+	toolCall, _ := data["toolCall"].(map[string]any)
+	reqCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	raw, err := a.transport.SendRequest(reqCtx, MethodRequestPermission, map[string]any{
+		"sessionId": sessionID,
+		"toolCall":  toolCall,
+		"options":   anyOptions(data["options"]),
+	})
+	if err != nil {
+		return
+	}
+	var resp struct {
+		Outcome struct {
+			Outcome  string `json:"outcome"`
+			OptionID string `json:"optionId"`
+		} `json:"outcome"`
+	}
+	if json.Unmarshal(raw, &resp) != nil || resp.Outcome.Outcome != "selected" || resp.Outcome.OptionID == "" {
+		return
+	}
+	_, _ = a.client.ReplyPermissionWithResponse(context.Background(), sessionID, permissionID, httpclient.ReplyPermissionJSONRequestBody{
+		OptionId: resp.Outcome.OptionID,
+	})
+}
+
+func anyOptions(raw any) []map[string]any {
+	list, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(list))
+	for _, item := range list {
+		if m, ok := item.(map[string]any); ok {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 func (a *HTTPAdapter) modesState() map[string]any {
@@ -484,6 +559,14 @@ func commandName(line string) string {
 		return line[:i]
 	}
 	return line
+}
+
+func commandArgs(line string) string {
+	line = strings.TrimSpace(strings.TrimPrefix(line, "/"))
+	if i := strings.IndexAny(line, " \t"); i >= 0 {
+		return strings.TrimSpace(line[i+1:])
+	}
+	return ""
 }
 
 func optionPtr(ok bool, value string) *string {

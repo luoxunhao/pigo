@@ -28,6 +28,7 @@ import (
 	"github.com/smallnest/pigo/internal/cli/ui"
 	"github.com/smallnest/pigo/internal/compaction"
 	"github.com/smallnest/pigo/internal/hooks"
+	"github.com/smallnest/pigo/internal/httpclient"
 	"github.com/smallnest/pigo/internal/memory"
 	"github.com/smallnest/pigo/internal/plugin"
 	"github.com/smallnest/pigo/internal/provider"
@@ -114,6 +115,15 @@ type runSession struct {
 	// nil when /remote-control is off. buildConfig reads it to install the remote
 	// confirm seam so risky tool calls route to the paired browser while connected.
 	remote *remoteSession
+
+	// httpClient, when non-nil, routes agent runs through the serve HTTP API
+	// instead of the direct runtime bridge. httpDir is the workspace directory
+	// passed with every request, httpCursor is the next SSE event cursor, and
+	// httpCancel cancels the in-flight event stream.
+	httpClient *httpclient.ClientWithResponses
+	httpDir    string
+	httpCursor int64
+	httpCancel context.CancelFunc
 }
 
 // newRunSession assembles the run session from the resolved Options, opening the
@@ -210,19 +220,19 @@ func newRunSessionWithStore(store *session.Store, opts Options) (*runSession, []
 	}
 
 	s := &runSession{
-		store:     store,
-		header:    header,
-		agentCtx:  agentCtx,
-		live:      live,
-		reg:       run.ToolRegistry(opts.Tools),
-		reminders: run.TodoReminders(opts.Tools),
-		creds:     creds,
-		cwd:       cwd,
-		trust:     mgr,
-		slash:     newSlashRegistry(opts, live),
-		telemetry: cli.NewTelemetryHolder(),
-		curLeaf:   curLeaf,
-		persisted: len(history),
+		store:      store,
+		header:     header,
+		agentCtx:   agentCtx,
+		live:       live,
+		reg:        run.ToolRegistry(opts.Tools),
+		reminders:  run.TodoReminders(opts.Tools),
+		creds:      creds,
+		cwd:        cwd,
+		trust:      mgr,
+		slash:      newSlashRegistry(opts, live),
+		telemetry:  cli.NewTelemetryHolder(),
+		curLeaf:    curLeaf,
+		persisted:  len(history),
 		memoryRoot: run.MemoryRootFromTools(opts.Tools),
 		memstore:   run.MemoryStoreFromTools(opts.Tools),
 	}
@@ -308,8 +318,8 @@ func (s *runSession) buildConfig() runtime.RunConfig {
 				Registry: s.reg,
 			},
 		},
-		Reminders: s.reminders,
-		SessionID: s.header.ID,
+		Reminders:  s.reminders,
+		SessionID:  s.header.ID,
 		MemoryRoot: s.memoryRoot,
 	}
 	// Per-turn wiring of the tool-execution + Stop seams; nil dispatcher is a
@@ -354,6 +364,28 @@ func (s *runSession) rebuildCmd() tea.Cmd {
 // exists. It replaces agentCtx.Messages in place on success and flags compacted
 // so persist() re-saves the flattened context linearly (as after a /compact).
 func (s *runSession) rebuild() (string, error) {
+	if s.httpClient != nil {
+		args := ""
+		resp, err := s.httpClient.ExecuteCommandWithResponse(context.Background(), s.header.ID, httpclient.ExecuteCommandJSONRequestBody{
+			Directory: s.httpDir,
+			Command:   "compact",
+			Arguments: &args,
+		})
+		if err != nil {
+			return "", err
+		}
+		if resp.JSON200 == nil {
+			return "", fmt.Errorf("compact command failed")
+		}
+		text := ""
+		if resp.JSON200.Text != nil {
+			text = *resp.JSON200.Text
+		}
+		if text == "" {
+			text = resp.JSON200.StopReason
+		}
+		return text, nil
+	}
 	msgs := s.agentCtx.Messages
 	before := compaction.EstimateContextTokens(msgs).Tokens
 	// Checkpoints live under <memoryRoot>/sessions/<id>/; recover from the same
@@ -378,13 +410,15 @@ func (s *runSession) rebuild() (string, error) {
 		source, res.TokensBefore, res.TokensAfter, res.SummarizedCount, res.KeptCount), nil
 }
 
-
 // prompt to the growing context as a user message, then hands the context and a
 // freshly-built config to the event bridge (bridge.startRun → runtime.StartRun +
 // DrainStream on a goroutine), returning the bridge channel and the first
 // waitForEvent Cmd so Update can pump the run's events. The context grows in
 // place (agentCtx is a pointer), so the next turn continues the conversation.
 func (s *runSession) startRun(prompt string) (chan tea.Msg, tea.Cmd) {
+	if s.httpClient != nil {
+		return s.httpStartRun(prompt)
+	}
 	content, err := ui.BuildUserContent(prompt)
 	if err != nil {
 		// A malformed image reference must not swallow the turn: fall back to the
@@ -419,6 +453,13 @@ func (s *runSession) startRun(prompt string) (chan tea.Msg, tea.Cmd) {
 // by withSession so pressing Esc / Ctrl+C while running stops the current run
 // instead of quitting the program (FR-14). Safe to call when no run is active.
 func (s *runSession) interrupt() {
+	if s.httpClient != nil {
+		if s.httpCancel != nil {
+			s.httpCancel()
+		}
+		_, _ = s.httpClient.CancelSessionPromptWithResponse(context.Background(), s.header.ID)
+		return
+	}
 	if s.cancelRun != nil {
 		s.cancelRun()
 	}
@@ -430,6 +471,9 @@ func (s *runSession) interrupt() {
 // than a linear rewrite) keeps history intact. A no-op when nothing new was
 // produced, so an idle turn-end never regenerates entry ids.
 func (s *runSession) persist() error {
+	if s.httpClient != nil {
+		return nil
+	}
 	// A compaction during the run rewrote Messages into a summary + recent tail,
 	// so the append-a-tail branch model no longer holds: the prefix changed and
 	// the slice may be shorter than persisted. Re-save the flattened context

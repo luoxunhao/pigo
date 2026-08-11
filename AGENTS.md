@@ -7,7 +7,8 @@ pigo 是一个用 Go 编写的 coding agent。核心通过 ACP（Agent Client Pr
 ```powershell
 go build -o pigo.exe ./cmd/pigo   # 构建 CLI / ACP 二进制
 go test ./internal/acp/...        # ACP 层测试
-pigo.exe --acp                    # 以 ACP stdio server 模式启动
+pigo.exe acp                      # 以标准 ACP stdio server 模式启动（内部启动 serve）
+pigo.exe serve                    # 以 HTTP serve 模式启动（主 API）
 pigo.exe --no-tui                 # 行式 REPL
 pigo.exe -v                       # 打印版本信息
 ```
@@ -16,8 +17,8 @@ pigo.exe -v                       # 打印版本信息
 
 ## ACP 进程模型
 
-- `--acp` 进程本身不绑定项目上下文；每个 ACP 会话按 `session/new` / `session/load` 请求中的 `cwd` 独立构建 system prompt、工具根、eventMapper cwd、slash registry 与信任边界。
-- 一个 `pigo.exe --acp` 进程可以同时服务多个项目；外部客户端（如 ash-workbench desktop）默认启动一个共享进程，并在应用启动时拉起，进程 cwd 使用客户端选择的安全目录（如 `os.homedir()`）。
+- `pigo acp` 进程本身不绑定项目上下文；每个 ACP 会话按 `session/new` / `session/load` 请求中的 `cwd` 独立构建 system prompt、工具根、eventMapper cwd、slash registry 与信任边界。
+- 一个 `pigo.exe acp` 进程可以同时服务多个项目；外部客户端（如 ash-workbench desktop）默认启动一个共享进程，并在应用启动时拉起，进程 cwd 使用客户端选择的安全目录（如 `os.homedir()`）。
 - Zed 等客户端仍可按项目各启动一个进程；per-session 隔离对单项目进程幂等，行为不变。
 - 多目录项目由客户端把附加目录作为 `additionalDirectories` 传入 `session/new` 与 `session/load`；pigo 将其合并进 read/write/edit 工具边界。
 - 外部客户端负责进程生命周期：启动、复用、恢复与退出清理；pigo 负责会话级上下文重建。
@@ -78,7 +79,7 @@ Zed 通过 `agent_servers.pigo` 使用 pigo：
 "pigo": {
   "type": "custom",
   "command": "E:/project/pigo/pigo.exe",
-  "args": ["--acp"],
+  "args": ["acp"],
   "env": {}
 }
 ```

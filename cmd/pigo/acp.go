@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/smallnest/pigo/internal/acp"
+	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/cli/run"
 	"github.com/smallnest/pigo/internal/httpapi"
 	"github.com/smallnest/pigo/internal/httpclient"
@@ -39,11 +40,22 @@ func runACP(args []string, version string, in io.Reader, out io.Writer, errOut i
 	}
 	defer pluginMgr.Close()
 
-	handler, err := httpapi.NewRouter(httpapi.Config{
-		Version:       version,
-		Password:      opts.password,
-		PluginManager: pluginMgr,
-	})
+	acpOpts := cliOptions{model: "openrouter/free"}
+	if cfg, cfgErr := config.LoadFileConfig(config.FileConfigPath()); cfgErr == nil {
+		applyFileConfig(&acpOpts, cfg, func(string) bool { return false })
+	}
+	if level, levelErr := run.ResolveThinkingLevel(acpOpts.thinkingLevel); levelErr == nil {
+		acpOpts.thinkingLevel = string(level)
+	}
+	httpCfg, err := httpServeConfigWithAutoReject(acpOpts, false)
+	if err != nil {
+		fmt.Fprintf(errOut, "pigo acp: %v\n", err)
+		return 1
+	}
+	httpCfg.Version = version
+	httpCfg.Password = opts.password
+	httpCfg.PluginManager = pluginMgr
+	handler, err := httpapi.NewRouter(httpCfg)
 	if err != nil {
 		fmt.Fprintf(errOut, "pigo acp: %v\n", err)
 		return 1
@@ -56,7 +68,15 @@ func runACP(args []string, version string, in io.Reader, out io.Writer, errOut i
 	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = srv.Serve(ln) }()
 
-	client, err := httpclient.NewClientWithResponses("http://" + ln.Addr().String())
+	var clientOpts []httpclient.ClientOption
+	if opts.password != "" {
+		password := opts.password
+		clientOpts = append(clientOpts, httpclient.WithRequestEditorFn(func(_ context.Context, req *http.Request) error {
+			req.SetBasicAuth("pigo", password)
+			return nil
+		}))
+	}
+	client, err := httpclient.NewClientWithResponses("http://"+ln.Addr().String(), clientOpts...)
 	if err != nil {
 		fmt.Fprintf(errOut, "pigo acp: %v\n", err)
 		_ = srv.Close()

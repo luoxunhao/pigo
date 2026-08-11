@@ -7,6 +7,6 @@ import (
 	"github.com/smallnest/pigo/internal/httpapi/gen"
 )
 
-func unavailableRunner(context.Context, string, string) (gen.PromptResponse, error) {
+func unavailableRunner(context.Context, PromptRun) (gen.PromptResponse, error) {
 	return gen.PromptResponse{}, errors.New("prompt runner is not configured")
 }
