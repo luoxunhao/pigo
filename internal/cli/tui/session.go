@@ -295,7 +295,7 @@ func chainTUIEvent(prev, next func(agentcore.AgentEvent)) func(agentcore.AgentEv
 func (s *runSession) buildConfig() runtime.RunConfig {
 	cfg := runtime.RunConfig{
 		LoopConfig: runtime.LoopConfig{
-			Model:         s.live.Model,
+			Model:         run.WireModel(s.live.Model),
 			Provider:      s.live.ProviderName,
 			ThinkingLevel: s.live.ThinkingLevel,
 			Stream:        provider.StreamFnFromProvider(s.live.Provider),

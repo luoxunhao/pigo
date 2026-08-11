@@ -660,3 +660,16 @@ func NewConfig(model, providerName string, thinking agentcore.ThinkingLevel, pro
 		Reminders: reminders,
 	}
 }
+
+// WireModel returns the provider-less model id that must be sent to the
+// upstream API. Interactive drivers keep the full "provider/model_id" key in
+// LiveConfig for display and /model commands, but the endpoint was already
+// resolved by provider selection, so the wire request must use only the model
+// id (headless and ACP already do this via env.Model / ResolveForModel).
+func WireModel(model string) string {
+	_, modelID, ok := config.SplitModelID(model)
+	if !ok || modelID == "" {
+		return model
+	}
+	return modelID
+}

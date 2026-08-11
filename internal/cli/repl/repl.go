@@ -587,7 +587,7 @@ func streamRun(ctx context.Context, out io.Writer, deps replDeps, prompt string)
 	})
 	cfg := runtime.RunConfig{
 		LoopConfig: runtime.LoopConfig{
-			Model:         deps.live.Model,
+			Model:         run.WireModel(deps.live.Model),
 			Provider:      deps.live.ProviderName,
 			ThinkingLevel: deps.live.ThinkingLevel,
 			Stream:        provider.StreamFnFromProvider(deps.live.Provider),
@@ -1039,7 +1039,7 @@ func runManualCompact(out io.Writer, deps replDeps) {
 	before := compaction.EstimateContextTokens(msgs).Tokens
 
 	stream := provider.StreamFnFromProvider(deps.live.Provider)
-	model := provider.Model{Provider: deps.live.ProviderName, ID: deps.live.Model, ContextWindow: deps.live.ContextWindow}
+	model := provider.Model{Provider: deps.live.ProviderName, ID: run.WireModel(deps.live.Model), ContextWindow: deps.live.ContextWindow}
 
 	// Resolve the API key like a normal turn so summarization authenticates
 	// against auth-requiring providers (otherwise Compact fails with
@@ -1083,7 +1083,7 @@ func runManualRebuild(out io.Writer, deps replDeps) {
 	// loop's compaction path). The checkpoint path itself is pure/local.
 	cfg := runtime.RunConfig{
 		LoopConfig: runtime.LoopConfig{
-			Model:         deps.live.Model,
+			Model:         run.WireModel(deps.live.Model),
 			Provider:      deps.live.ProviderName,
 			ThinkingLevel: deps.live.ThinkingLevel,
 			Stream:        provider.StreamFnFromProvider(deps.live.Provider),

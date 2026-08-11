@@ -212,7 +212,7 @@ func AskSide(setCancel func(context.CancelFunc), out io.Writer, host cli.Host, s
 
 	cfg := runtime.RunConfig{
 		LoopConfig: runtime.LoopConfig{
-			Model:         settings.Model,
+			Model:         run.WireModel(settings.Model),
 			Provider:      settings.ProviderName,
 			ThinkingLevel: settings.ThinkingLevel,
 			Stream:        provider.StreamFnFromProvider(settings.Provider),

@@ -209,7 +209,7 @@ func runGoalLoop(setCancel func(context.CancelFunc), out io.Writer, host cli.Hos
 
 	cfg := runtime.RunConfig{
 		LoopConfig: runtime.LoopConfig{
-			Model:         host.Live().Model,
+			Model:         run.WireModel(host.Live().Model),
 			Provider:      host.Live().ProviderName,
 			ThinkingLevel: host.Live().ThinkingLevel,
 			Stream:        provider.StreamFnFromProvider(host.Live().Provider),
