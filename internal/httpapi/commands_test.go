@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/httpapi/gen"
+	"github.com/smallnest/pigo/internal/runtime"
 )
 
 func TestCommandServiceListAndExecute(t *testing.T) {
@@ -31,10 +33,24 @@ func TestCommandServiceListAndExecute(t *testing.T) {
 	if apiErr != nil {
 		t.Fatal(apiErr)
 	}
-	svc := NewCommandService(sessions)
+	reg := runtime.NewSlashRegistry()
+	reg.AddSkill(runtime.SlashCommand{
+		Name:        "weather",
+		Description: "get weather",
+		Expand:      func(args string) string { return "weather prompt" },
+	})
+	broker := NewEventBroker()
+	prompts := NewPromptManager(func(_ context.Context, run PromptRun) (gen.PromptResponse, error) {
+		text := "reply: " + run.Text
+		return gen.PromptResponse{MessageId: run.MessageID, StopReason: "end_turn", Text: &text}, nil
+	}, broker)
+	svc := NewCommandService(sessions, prompts, reg)
 	list := svc.List()
 	if len(list.Commands) == 0 {
 		t.Fatal("empty command list")
+	}
+	if len(list.Commands) < 2 {
+		t.Fatalf("command list too small: %d", len(list.Commands))
 	}
 	name := "My Session"
 	resp, apiErr := svc.Execute(created.SessionId, gen.CommandRequest{Directory: workspace, Command: "name", Arguments: &name})
@@ -53,5 +69,12 @@ func TestCommandServiceListAndExecute(t *testing.T) {
 	}
 	if _, apiErr := svc.Execute(created.SessionId, gen.CommandRequest{Directory: workspace, Command: "nope"}); apiErr == nil {
 		t.Fatal("expected unknown command error")
+	}
+	skillResp, apiErr := svc.Execute(created.SessionId, gen.CommandRequest{Directory: workspace, Command: "weather"})
+	if apiErr != nil {
+		t.Fatal(apiErr)
+	}
+	if skillResp.Text == nil || !strings.Contains(*skillResp.Text, "reply: weather prompt") {
+		t.Fatalf("skill resp = %+v", skillResp)
 	}
 }

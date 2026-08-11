@@ -3,17 +3,21 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/smallnest/pigo/internal/acp"
 	"github.com/smallnest/pigo/internal/agentcore"
+	"github.com/smallnest/pigo/internal/cli"
 	"github.com/smallnest/pigo/internal/cli/config"
+	"github.com/smallnest/pigo/internal/cli/prompts"
 	"github.com/smallnest/pigo/internal/cli/run"
 	"github.com/smallnest/pigo/internal/httpapi"
 	"github.com/smallnest/pigo/internal/httpapi/gen"
 	"github.com/smallnest/pigo/internal/provider"
+	"github.com/smallnest/pigo/internal/runtime"
 	"github.com/smallnest/pigo/internal/session"
 	"github.com/smallnest/pigo/internal/sessionstore"
 	"github.com/smallnest/pigo/internal/trust"
@@ -28,7 +32,7 @@ func httpServeConfig(opts cliOptions) (httpapi.Config, error) {
 }
 
 func httpServeConfigWithAutoReject(opts cliOptions, autoReject bool) (httpapi.Config, error) {
-	runner, err := makePromptRunner(opts)
+	runner, slash, err := makePromptRunner(opts)
 	if err != nil {
 		return httpapi.Config{}, err
 	}
@@ -50,10 +54,11 @@ func httpServeConfigWithAutoReject(opts cliOptions, autoReject bool) (httpapi.Co
 		PromptRunner:        runner,
 		AutoRejectUntrusted: autoReject,
 		ApproveDirectories:  approveDirs,
+		SlashRegistry:       slash,
 	}, nil
 }
 
-func makePromptRunner(opts cliOptions) (httpapi.PromptRunner, error) {
+func makePromptRunner(opts cliOptions) (httpapi.PromptRunner, *runtime.SlashRegistry, error) {
 	env, err := run.SetupEnv(
 		opts.model,
 		opts.baseURL,
@@ -68,13 +73,40 @@ func makePromptRunner(opts cliOptions) (httpapi.PromptRunner, error) {
 		run.NewToolPolicy(opts.allowedTools, opts.disallowedTools),
 	)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	models := acp.NewConfiguredModels(config.FileConfigPath())
 	_ = models.Load()
 	thinking := agentcore.ThinkingMedium
 	if opts.thinkingLevel != "" {
 		thinking = agentcore.ThinkingLevel(opts.thinkingLevel)
+	}
+	live := &cli.LiveConfig{
+		Model:         env.Model,
+		ProviderName:  env.ProviderName,
+		Provider:      env.Provider,
+		BaseURL:       opts.baseURL,
+		Protocol:      opts.protocol,
+		ThinkingLevel: thinking,
+		ContextWindow: cli.DefaultContextWindow,
+	}
+	projectDir := ""
+	if env.Cwd != "" {
+		projectDir = filepath.Join(env.Cwd, ".pigo", "prompts")
+	}
+	projectTrusted := opts.approve
+	if mgr, mgrErr := trust.NewManager(trust.DefaultPath()); mgrErr == nil && mgr.IsTrusted(env.Cwd) {
+		projectTrusted = true
+	}
+	slash, err := prompts.BuildSlashRegistry(live, env.Skills, env.Plugins, prompts.PromptTemplateSources{
+		Settings:       opts.configPrompts,
+		CLI:            opts.promptTemplates,
+		Disable:        opts.noPromptTemplates,
+		ProjectDir:     projectDir,
+		ProjectTrusted: projectTrusted,
+	})
+	if err != nil {
+		return nil, nil, err
 	}
 	runner := &acp.RuntimeRunner{
 		Provider:         env.Provider,
@@ -151,7 +183,7 @@ func makePromptRunner(opts cliOptions) (httpapi.PromptRunner, error) {
 			StopReason: "end_turn",
 			Text:       &reply,
 		}, nil
-	}, nil
+	}, slash, nil
 }
 
 // serveEventState tracks the last observed cumulative text/thinking so domain

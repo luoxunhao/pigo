@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/cli/run"
 	"github.com/smallnest/pigo/internal/httpapi"
 	"github.com/smallnest/pigo/internal/plugin"
@@ -47,12 +48,23 @@ func runServe(args []string, version string, out, errOut io.Writer) int {
 	}
 	defer pluginMgr.Close()
 
-	handler, err := httpapi.NewRouter(httpapi.Config{
-		Version:        version,
-		Password:       opts.password,
-		AllowedOrigins: opts.cors,
-		PluginManager:  pluginMgr,
-	})
+	serveOpts := cliOptions{model: "openrouter/free"}
+	if cfg, cfgErr := config.LoadFileConfig(config.FileConfigPath()); cfgErr == nil {
+		applyFileConfig(&serveOpts, cfg, func(string) bool { return false })
+	}
+	if level, levelErr := run.ResolveThinkingLevel(serveOpts.thinkingLevel); levelErr == nil {
+		serveOpts.thinkingLevel = string(level)
+	}
+	httpCfg, err := httpServeConfigWithAutoReject(serveOpts, false)
+	if err != nil {
+		fmt.Fprintf(errOut, "pigo serve: %v\n", err)
+		return 1
+	}
+	httpCfg.Version = version
+	httpCfg.Password = opts.password
+	httpCfg.AllowedOrigins = opts.cors
+	httpCfg.PluginManager = pluginMgr
+	handler, err := httpapi.NewRouter(httpCfg)
 	if err != nil {
 		fmt.Fprintf(errOut, "pigo serve: %v\n", err)
 		return 1

@@ -8,6 +8,7 @@ import (
 	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/httpapi/gen"
 	"github.com/smallnest/pigo/internal/plugin"
+	"github.com/smallnest/pigo/internal/runtime"
 	"github.com/smallnest/pigo/internal/sessionstore"
 	"github.com/smallnest/pigo/internal/trust"
 )
@@ -24,6 +25,7 @@ type Config struct {
 	PluginManager       *plugin.Manager
 	AutoRejectUntrusted bool
 	ApproveDirectories  []string
+	SlashRegistry       *runtime.SlashRegistry
 }
 
 // Server implements the generated HTTP API surface.
@@ -87,7 +89,7 @@ func NewServer(cfg Config) (*Server, error) {
 	if configPath == "" {
 		configPath = config.FileConfigPath()
 	}
-	return &Server{version: cfg.Version, spec: spec, doc: doc, sessions: sessionService, events: broker, prompts: prompts, commands: NewCommandService(sessionService), trust: NewTrustService(trustManager), perms: perms, config: NewConfigService(configPath), modes: modeService}, nil
+	return &Server{version: cfg.Version, spec: spec, doc: doc, sessions: sessionService, events: broker, prompts: prompts, commands: NewCommandService(sessionService, prompts, cfg.SlashRegistry), trust: NewTrustService(trustManager), perms: perms, config: NewConfigService(configPath), modes: modeService}, nil
 }
 
 // NewRouter assembles the chi router with middleware and API routes.
