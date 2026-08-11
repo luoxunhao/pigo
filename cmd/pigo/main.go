@@ -129,6 +129,8 @@ type cliOptions struct {
 	noTUI bool
 	// httpREPL runs the serve-backed REPL through the in-process HTTP client.
 	httpREPL bool
+	// httpHeadless runs a single prompt through the serve-backed headless driver.
+	httpHeadless bool
 	// cwd, when non-empty, is the working directory pigo switches to before doing
 	// anything else (matches the Claude Agent SDK's cwd option / git -C). Every
 	// cwd-derived resolution — built-in tool file roots, project trust, hooks
@@ -210,6 +212,7 @@ func main() {
 	flag.BoolVar(&opts.dreamDryRun, "dream-dry-run", false, "internal: with --dream, analyze and report without writing files or updating dream state (SPEC §5.5)")
 	flag.BoolVar(&opts.noTUI, "no-tui", false, "use the line-based REPL instead of the full-screen TUI")
 	flag.BoolVar(&opts.httpREPL, "http-repl", false, "use the serve-backed REPL")
+	flag.BoolVar(&opts.httpHeadless, "http-headless", false, "run one prompt through the serve-backed headless driver")
 	flag.StringVarP(&opts.cwd, "cwd", "C", "", "run as if pigo was started in this directory (matches the Claude Agent SDK's cwd; like git -C): tool file access, trust, hooks, and project config all resolve against it")
 	flag.BoolVarP(&opts.showVersion, "version", "v", false, "print version information and exit")
 	// Extend the default pflag usage with a "Supported providers" block so
@@ -391,6 +394,30 @@ func dispatch(ctx context.Context, opts cliOptions, out, errOut io.Writer) int {
 			PromptRunner: runner,
 		}
 		if err := repl.RunHTTP(ctx, cfg, os.Stdin, out); err != nil {
+			fmt.Fprintf(errOut, "pigo: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	if opts.httpHeadless {
+		runner, err := makePromptRunner(opts)
+		if err != nil {
+			fmt.Fprintf(errOut, "pigo: %v\n", err)
+			return 1
+		}
+		pigoHome, err := sessionstore.PigoHome()
+		if err != nil {
+			fmt.Fprintf(errOut, "pigo: %v\n", err)
+			return 1
+		}
+		cfg := httpapi.Config{
+			Version:      version,
+			PigoHome:     pigoHome,
+			ConfigPath:   config.FileConfigPath(),
+			TrustPath:    trust.DefaultPath(),
+			PromptRunner: runner,
+		}
+		if err := headless.RunHTTPOnce(ctx, cfg, opts.prompt, out); err != nil {
 			fmt.Fprintf(errOut, "pigo: %v\n", err)
 			return 1
 		}
