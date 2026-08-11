@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"os"
@@ -289,6 +290,9 @@ func (a *HTTPAdapter) runPrompt(ctx context.Context, id RequestID, params json.R
 		_ = a.transport.SendResponse(ctx, id, nil, NewError(CodeInvalidParams, "session not found: "+req.SessionID))
 		return
 	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go a.streamEvents(ctx, req.SessionID)
 	text := promptText(req.Prompt)
 	stopReason := "end_turn"
 	if strings.HasPrefix(strings.TrimSpace(text), "/") {
@@ -306,6 +310,96 @@ func (a *HTTPAdapter) runPrompt(ctx context.Context, id RequestID, params json.R
 		}
 	}
 	_ = a.transport.SendResponse(ctx, id, map[string]any{"stopReason": stopReason}, nil)
+}
+
+func (a *HTTPAdapter) streamEvents(ctx context.Context, sessionID string) {
+	resp, err := a.client.GetEventsWithResponse(ctx, &httpclient.GetEventsParams{SessionId: &sessionID})
+	if err != nil || resp.HTTPResponse == nil {
+		return
+	}
+	defer resp.HTTPResponse.Body.Close()
+	scanner := bufio.NewScanner(resp.HTTPResponse.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	eventType := ""
+	var dataBuf strings.Builder
+	flush := func() {
+		if eventType == "" {
+			return
+		}
+		var payload struct {
+			Data map[string]any `json:"data"`
+		}
+		_ = json.Unmarshal([]byte(dataBuf.String()), &payload)
+		a.mapEvent(sessionID, eventType, payload.Data)
+		eventType = ""
+		dataBuf.Reset()
+	}
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case strings.HasPrefix(line, "event: "):
+			eventType = strings.TrimPrefix(line, "event: ")
+		case strings.HasPrefix(line, "data: "):
+			dataBuf.WriteString(strings.TrimPrefix(line, "data: "))
+		case line == "":
+			flush()
+		}
+		if ctx.Err() != nil {
+			return
+		}
+	}
+}
+
+func (a *HTTPAdapter) mapEvent(sessionID, eventType string, data map[string]any) {
+	switch eventType {
+	case "message.part.delta":
+		if delta, ok := data["delta"].(string); ok && delta != "" {
+			_ = a.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(sessionID, map[string]any{
+				"sessionUpdate": "agent_message_chunk",
+				"content":       map[string]any{"type": "text", "text": delta},
+			}))
+		}
+		if thinking, ok := data["thinking"].(string); ok && thinking != "" {
+			_ = a.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(sessionID, map[string]any{
+				"sessionUpdate": "agent_thought_chunk",
+				"content":       map[string]any{"type": "text", "text": thinking},
+			}))
+		}
+	case "tool.updated":
+		status, _ := data["status"].(string)
+		update := "tool_call_update"
+		if status == "pending" || status == "in_progress" {
+			update = "tool_call"
+		}
+		_ = a.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(sessionID, map[string]any{
+			"sessionUpdate": update,
+			"toolCallId":    data["toolCallId"],
+			"title":         data["title"],
+			"status":        status,
+			"rawInput":      data["rawInput"],
+		}))
+	case "mode.updated":
+		_ = a.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(sessionID, map[string]any{
+			"sessionUpdate": "current_mode_update",
+			"currentModeId": data["currentModeId"],
+		}))
+	case "config.updated":
+		_ = a.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(sessionID, map[string]any{
+			"sessionUpdate": "config_option_update",
+			"configOptions": data["configOptions"],
+		}))
+	case "session.updated":
+		_ = a.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(sessionID, map[string]any{
+			"sessionUpdate": "session_info_update",
+			"title":         data["title"],
+			"updatedAt":     data["updatedAt"],
+		}))
+	case "commands.updated":
+		_ = a.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(sessionID, map[string]any{
+			"sessionUpdate":     "available_commands_update",
+			"availableCommands": data["availableCommands"],
+		}))
+	}
 }
 
 func (a *HTTPAdapter) modesState() map[string]any {
