@@ -39,6 +39,11 @@ func TestCommandServiceListAndExecute(t *testing.T) {
 		Description: "get weather",
 		Expand:      func(args string) string { return "weather prompt" },
 	})
+	reg.AddBuiltin(runtime.SlashCommand{
+		Name:        "btw",
+		Description: "REPL-only side question",
+		Action:      func(string) string { return "" },
+	})
 	broker := NewEventBroker()
 	prompts := NewPromptManager(func(_ context.Context, run PromptRun) (gen.PromptResponse, error) {
 		text := "reply: " + run.Text
@@ -51,6 +56,11 @@ func TestCommandServiceListAndExecute(t *testing.T) {
 	}
 	if len(list.Commands) < 2 {
 		t.Fatalf("command list too small: %d", len(list.Commands))
+	}
+	for _, cmd := range list.Commands {
+		if cmd.Name == "btw" {
+			t.Fatal("unsupported REPL-only command should not be advertised")
+		}
 	}
 	name := "My Session"
 	resp, apiErr := svc.Execute(created.SessionId, gen.CommandRequest{Directory: workspace, Command: "name", Arguments: &name})

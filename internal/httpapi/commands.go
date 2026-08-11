@@ -9,6 +9,17 @@ import (
 	"github.com/smallnest/pigo/internal/runtime"
 )
 
+// serveUnsupportedCommands are real pigo slash commands that still require
+// REPL/core-side state and are not executable through the serve API yet. They
+// are intentionally not advertised to clients so Zed never sees a command that
+// would only return a placeholder.
+var serveUnsupportedCommands = map[string]bool{
+	"exit": true, "quit": true, "compact": true,
+	"fork": true, "clone": true, "tree": true, "rewind": true,
+	"export": true, "import": true, "copy": true,
+	"goal": true, "btw": true, "dream": true, "remote-control": true,
+}
+
 // CommandService exposes slash commands over HTTP.
 type CommandService struct {
 	sessions *SessionService
@@ -29,6 +40,9 @@ func (c *CommandService) List() gen.CommandListResult {
 	}
 	if c.slash != nil {
 		for _, cmd := range c.slash.List() {
+			if serveUnsupportedCommands[cmd.Name] {
+				continue
+			}
 			item := gen.AvailableCommand{Name: cmd.Name, Description: cmd.Description}
 			if cmd.ArgumentHint != "" {
 				item.Input = hintInput(cmd.ArgumentHint)
@@ -39,7 +53,6 @@ func (c *CommandService) List() gen.CommandListResult {
 	}
 	// Static fallback keeps the API usable when no registry was assembled.
 	commands = append(commands,
-		gen.AvailableCommand{Name: "compact", Description: "Manually compact the session context", Input: hintInput("optional custom instructions")},
 		gen.AvailableCommand{Name: "help", Description: "List available slash commands"},
 		gen.AvailableCommand{Name: "model", Description: "Show or set the session model", Input: hintInput("provider/model-id")},
 		gen.AvailableCommand{Name: "session", Description: "Show session stats"},
@@ -100,7 +113,7 @@ func (c *CommandService) Execute(sessionID string, req gen.CommandRequest) (gen.
 			return gen.PromptResponse{}, apiErr
 		}
 		return actionResponse("model set to " + args), nil
-	case "think":
+	case "think", "effect":
 		if args == "" {
 			status, apiErr := c.sessions.Status(sessionID, req.Directory)
 			if apiErr != nil {
