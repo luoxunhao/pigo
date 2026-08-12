@@ -643,39 +643,7 @@ func (a *HTTPAdapter) sendAvailableCommands(directory, sessionID string) {
 
 func (a *HTTPAdapter) replayAll(ctx context.Context, sessionID, directory string, messages []httpclient.Message, nextCursor *string, hasMore bool) {
 	for {
-		for _, msg := range messages {
-			text := messageText(msg)
-			if text == "" {
-				continue
-			}
-			update := "user_message_chunk"
-			if msg.Role == "assistant" {
-				update = "agent_message_chunk"
-			}
-			payload := sessionUpdatePayload(sessionID, map[string]any{
-				"sessionUpdate": update,
-				"content":       map[string]any{"type": "text", "text": text},
-				"messageId":     msg.Id,
-			})
-			extra := map[string]any{}
-			if msg.EntryId != nil {
-				extra["entryId"] = *msg.EntryId
-			}
-			if msg.EntryType != nil {
-				extra["entryType"] = *msg.EntryType
-			}
-			if msg.ParentId != nil {
-				extra["parentId"] = *msg.ParentId
-			}
-			if msg.Seq != nil {
-				extra["seq"] = *msg.Seq
-			}
-			if msg.Lane != nil {
-				extra["lane"] = *msg.Lane
-			}
-			a.attachTreeMeta(sessionID, payload, extra)
-			_ = a.transport.SendNotification(NotificationSessionUpdate, payload)
-		}
+		a.replayMessages(sessionID, messages)
 		if !hasMore || nextCursor == nil {
 			return
 		}
@@ -692,6 +660,105 @@ func (a *HTTPAdapter) replayAll(ctx context.Context, sessionID, directory string
 		nextCursor = resp.JSON200.NextCursor
 		hasMore = resp.JSON200.HasMore
 	}
+}
+
+type pendingToolCall struct {
+	id           string
+	name         string
+	rawInput     any
+	assistantMsg httpclient.Message
+}
+
+func (a *HTTPAdapter) replayMessages(sessionID string, messages []httpclient.Message) {
+	var pending []pendingToolCall
+	for _, msg := range messages {
+		if msg.Role == "compaction" || msg.Role == "branch_summary" {
+			continue
+		}
+		if msg.Role == "toolResult" {
+			if len(pending) > 0 {
+				p := pending[0]
+				pending = pending[1:]
+				output := messageText(msg)
+				a.sendReplayUpdate(sessionID, p.assistantMsg, toolCallStart(p.id, p.name, p.rawInput))
+				a.sendReplayUpdate(sessionID, p.assistantMsg, toolCallEnd(p.id, p.name, false, output, p.rawInput))
+			}
+			continue
+		}
+		for _, block := range msg.Content {
+			switch block["type"] {
+			case "text":
+				text, _ := block["text"].(string)
+				if text == "" {
+					continue
+				}
+				update := "user_message_chunk"
+				if msg.Role == "assistant" {
+					update = "agent_message_chunk"
+				}
+				a.sendReplayUpdate(sessionID, msg, map[string]any{
+					"sessionUpdate": update,
+					"content":       map[string]any{"type": "text", "text": text},
+				})
+			case "thinking":
+				thinking, _ := block["thinking"].(string)
+				if thinking == "" {
+					continue
+				}
+				a.sendReplayUpdate(sessionID, msg, map[string]any{
+					"sessionUpdate": "agent_thought_chunk",
+					"content":       map[string]any{"type": "text", "text": thinking},
+				})
+			case "toolCall":
+				id, _ := block["id"].(string)
+				name, _ := block["name"].(string)
+				if id == "" || name == "" {
+					continue
+				}
+				pending = append(pending, pendingToolCall{
+					id:           id,
+					name:         name,
+					rawInput:     block["arguments"],
+					assistantMsg: msg,
+				})
+			}
+		}
+	}
+	for _, p := range pending {
+		a.sendReplayUpdate(sessionID, p.assistantMsg, toolCallStart(p.id, p.name, p.rawInput))
+		a.sendReplayUpdate(sessionID, p.assistantMsg, toolCallEnd(p.id, p.name, false, "", p.rawInput))
+	}
+}
+
+func (a *HTTPAdapter) sendReplayUpdate(sessionID string, msg httpclient.Message, update map[string]any) {
+	if msg.Id != "" {
+		if _, ok := update["messageId"]; !ok {
+			update["messageId"] = msg.Id
+		}
+	}
+	payload := sessionUpdatePayload(sessionID, update)
+	a.attachTreeMeta(sessionID, payload, replayTreeExtra(msg))
+	_ = a.transport.SendNotification(NotificationSessionUpdate, payload)
+}
+
+func replayTreeExtra(msg httpclient.Message) map[string]any {
+	extra := map[string]any{}
+	if msg.EntryId != nil {
+		extra["entryId"] = *msg.EntryId
+	}
+	if msg.EntryType != nil {
+		extra["entryType"] = *msg.EntryType
+	}
+	if msg.ParentId != nil {
+		extra["parentId"] = *msg.ParentId
+	}
+	if msg.Seq != nil {
+		extra["seq"] = *msg.Seq
+	}
+	if msg.Lane != nil {
+		extra["lane"] = *msg.Lane
+	}
+	return extra
 }
 
 func promptText(blocks []map[string]interface{}) string {
