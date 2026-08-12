@@ -24,6 +24,7 @@ import (
 	"github.com/smallnest/pigo/internal/provider"
 	"github.com/smallnest/pigo/internal/runtime"
 	"github.com/smallnest/pigo/internal/session"
+	"github.com/smallnest/pigo/internal/sessionstore"
 )
 
 // replProvider is a minimal Provider that streams one scripted text turn per
@@ -60,12 +61,13 @@ func (p *replProvider) StreamCompletion(ctx context.Context, req provider.Comple
 // store, with a registry carrying one action command and one prompt command so
 // slash dispatch can be exercised. actionRuns/promptResolved report whether each
 // command fired.
-func newTestDeps(t *testing.T, p provider.Provider) (replDeps, *session.Store) {
+func newTestDeps(t *testing.T, p provider.Provider) (replDeps, *sessionstore.Store) {
 	t.Helper()
-	store, err := session.NewStore(t.TempDir())
+	store, err := sessionstore.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
 	live := &cli.LiveConfig{Model: "faux", ProviderName: "faux", Provider: p}
 	reg := runtime.NewSlashRegistry()
 	reg.AddBuiltin(runtime.SlashCommand{
@@ -263,8 +265,8 @@ func TestREPLPersistsModelIntoHeader(t *testing.T) {
 	if len(headers) != 1 {
 		t.Fatalf("expected 1 saved session, got %d", len(headers))
 	}
-	if headers[0].Model != "faux" || headers[0].Provider != "faux" {
-		t.Errorf("header model/provider = %q/%q, want live faux/faux", headers[0].Model, headers[0].Provider)
+	if headers[0].Header == nil || headers[0].Header.Model != "faux" || headers[0].Header.Provider != "faux" {
+		t.Errorf("header model/provider = %v, want live faux/faux", headers[0].Header)
 	}
 }
 
@@ -327,12 +329,12 @@ func TestREPLTreePrintsAndSwitchesBranch(t *testing.T) {
 	var out bytes.Buffer
 	// Two turns build a linear history (4 messages), then /tree lists it, /tree 1
 	// switches to the first node, a new prompt branches, then /exit.
-	in := strings.NewReader("first\nsecond\n/tree\n/tree 1\nbranched\n/exit\n")
+	in := strings.NewReader("first\nsecond\n/tree\n/tree 1\nn\nbranched\n/exit\n")
 	if err := runREPL(in, &out, deps); err != nil {
 		t.Fatalf("runREPL: %v", err)
 	}
 	s := out.String()
-	if !strings.Contains(s, "← current") {
+	if !strings.Contains(s, "-> current") {
 		t.Errorf("/tree should mark the current leaf, out=%q", s)
 	}
 	if !strings.Contains(s, "1. user:") {
@@ -343,7 +345,7 @@ func TestREPLTreePrintsAndSwitchesBranch(t *testing.T) {
 	}
 	// The on-disk tree must retain both branches: the original 4-message line plus
 	// the new branch off node 1. Reload and confirm the root has 2 children.
-	_, entries, err := store.LoadEntries(deps.header.ID)
+	entries, err := store.Entries(deps.header.ID)
 	if err != nil {
 		t.Fatalf("LoadEntries: %v", err)
 	}
@@ -543,7 +545,7 @@ func TestREPLExportImportRoundTrip(t *testing.T) {
 	}
 	var foundNew bool
 	for _, h := range headers {
-		if h.ID != origID && h.ParentSession == origID {
+		if h.SessionID != origID && h.ParentSessionID == origID {
 			foundNew = true
 		}
 	}

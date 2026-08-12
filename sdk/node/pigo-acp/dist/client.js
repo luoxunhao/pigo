@@ -19,9 +19,10 @@ export class PigoAcpClient {
     nextId = 1;
     pending = new Map();
     closed = false;
+    serverSessionTree = null;
     constructor(options = {}) {
         this.commandPath = options.command ?? "pigo";
-        this.args = options.args ?? ["--acp"];
+        this.args = options.args ?? ["acp"];
         this.cwd = options.cwd;
         this.env = options.env;
         this.events = options.events ?? {};
@@ -64,11 +65,18 @@ export class PigoAcpClient {
         });
     }
     async initialize() {
-        return this.request("initialize", {
+        const result = await this.request("initialize", {
             protocolVersion: 1,
-            clientCapabilities: {},
+            clientCapabilities: {
+                _meta: { pigo: { sessionTree: { version: 1 } } },
+            },
             clientInfo: { name: "pigo-acp", version: "0.1.0" },
         });
+        this.serverSessionTree = result.agentCapabilities?._meta?.pigo?.sessionTree ?? null;
+        return result;
+    }
+    sessionTreeCapability() {
+        return this.serverSessionTree;
     }
     async newSession(cwd, additionalDirectories = []) {
         return this.request("session/new", {
@@ -209,7 +217,18 @@ export class PigoAcpClient {
     handleNotification(envelope) {
         if (envelope.method === "session/update") {
             const params = (envelope.params ?? {});
-            this.events.onUpdate?.(params.sessionId, params.update);
+            const update = params.update;
+            this.events.onUpdate?.(params.sessionId, update);
+            if (update.sessionUpdate === "session_info_update") {
+                const info = update;
+                const tree = update._meta?.pigo?.sessionTree;
+                if (tree !== undefined) {
+                    info.currentLeafId = tree.currentLeafId ?? info.currentLeafId;
+                    info.currentLane = tree.currentLane ?? info.currentLane;
+                    info.lanes = tree.lanes ?? info.lanes;
+                }
+                this.events.onSessionInfo?.(params.sessionId, info);
+            }
             return;
         }
         if (envelope.method === "pigo/event") {

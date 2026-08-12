@@ -20,4 +20,8 @@ export type {
   PigoMessagesResult,
   PigoModelEntry,
   PigoModelsResult,
+  PigoSessionTreeCapability,
+  SessionInfoUpdate,
+  SessionTreeLane,
+  SessionTreeMeta,
 } from "./types.js";

@@ -196,6 +196,12 @@ func RenderTreeLinesV4(entries []V4Entry, leafID string) []V4TreeLine {
 	var out []V4TreeLine
 	var walk func(e V4Entry, depth int)
 	walk = func(e V4Entry, depth int) {
+		if !treeLineVisible(e) {
+			for _, c := range children[e.ID] {
+				walk(c, depth)
+			}
+			return
+		}
 		marker := ""
 		if e.ID == leafID {
 			marker = " -> current"
@@ -210,6 +216,15 @@ func RenderTreeLinesV4(entries []V4Entry, leafID string) []V4TreeLine {
 		walk(r, 0)
 	}
 	return out
+}
+
+func treeLineVisible(e V4Entry) bool {
+	switch e.Type {
+	case EntryTypeLabel, EntryTypeCustom, EntryTypeModelChange, EntryTypeThinkingChange, EntryTypeSessionInfo:
+		return false
+	default:
+		return true
+	}
 }
 
 func v4TreeKind(e V4Entry) string {
@@ -499,19 +514,6 @@ func ToLegacyEntries(v4 []V4Entry) ([]Entry, error) {
 			le.Message = msg
 		}
 		out = append(out, le)
-	}
-	return out, nil
-}
-
-// FromLegacyEntries converts legacy entries to v4 typed entries.
-func FromLegacyEntries(entries []Entry) ([]V4Entry, error) {
-	out := make([]V4Entry, 0, len(entries))
-	for _, e := range entries {
-		v4, err := NewV4Entry(e.ID, e.ParentID, e.Timestamp, e.Message)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, v4)
 	}
 	return out, nil
 }

@@ -32,7 +32,7 @@ pigo 采用"前端 → ACP 通道 → AgentCore → 工具层"四层架构。`in
 ## 5. internal/session（会话模型）
 
 - **`session.go`**：JSONL 追加日志，第一行 `SessionHeader`（schema v3：id/parentId 树形结构、Cwd、ContextFrom/Watermark 用于 compaction 继承）。v1/v2 文件加载时自动迁移（合成 id/parentId 链）。`Store` 提供 List/Load/Append/Persist。
-- **`sessionstore/`**：按项目目录分层的持久化根（`~/.pigo/sessions/<project-id>/`），支持 fork/clone 树导航。
+- **`sessionstore/`**：SQLite canonical 存储（`$PIGO_HOME/sessions.db`），按 `sessions.cwd` 区分项目，支持 fork/clone 树导航。
 
 ## 6. internal/hooks（生命周期钩子）
 

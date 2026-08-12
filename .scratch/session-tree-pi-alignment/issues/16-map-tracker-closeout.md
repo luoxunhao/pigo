@@ -4,14 +4,14 @@
 
 **Blocked by:** 15 - 集成验收 + 回归 + 文档
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Acceptance Criteria
 
-- [ ] map 状态与交付物一致
-- [ ] spec / ADR / issues 路径可点击
-- [ ] Not yet specified 与 Out of scope 更新为最终版
-- [ ] 无陈旧“frontier 为空”等过期表述
+- [x] map 状态与交付物一致
+- [x] spec / ADR / issues 路径可点击
+- [x] Not yet specified 与 Out of scope 更新为最终版
+- [x] 无陈旧“frontier 为空”等过期表述
 
 **Type:** docs
 

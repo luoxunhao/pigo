@@ -3,7 +3,7 @@
 // replDeps + streamRun + cli.PersistTurn plumbing (internal/cli/repl): it
 // assembles an AgentContext + RunConfig from the model's Options, feeds them to
 // the event bridge (bridge.go's startRun → runtime.StartRun/DrainStream), and
-// persists the growing conversation to ~/.pigo/sessions after each turn.
+// persists the growing conversation to $PIGO_HOME/sessions.db after each turn.
 //
 // It deliberately imports the SHARED lower-level packages the REPL also uses
 // (session, runtime, provider, cli, cli/run, cli/headless, cli/ui) rather than
@@ -34,6 +34,7 @@ import (
 	"github.com/smallnest/pigo/internal/provider"
 	"github.com/smallnest/pigo/internal/runtime"
 	"github.com/smallnest/pigo/internal/session"
+	"github.com/smallnest/pigo/internal/sessionstore"
 	"github.com/smallnest/pigo/internal/trust"
 )
 
@@ -44,7 +45,7 @@ import (
 // (curLeaf / persisted) so each turn is persisted as a branch rather than a
 // flattening rewrite.
 type runSession struct {
-	store     *session.Store
+	store     *sessionstore.Store
 	header    session.SessionHeader
 	agentCtx  *agentcore.AgentContext
 	live      *cli.LiveConfig
@@ -127,13 +128,13 @@ type runSession struct {
 }
 
 // newRunSession assembles the run session from the resolved Options, opening the
-// shared ~/.pigo/sessions store. When Options carries a ResumeID it loads that
+// shared $PIGO_HOME/sessions.db store. When Options carries a ResumeID it loads that
 // session's entries and rebuilds the context (the returned history seeds the
 // replayed transcript); otherwise it starts a fresh session with a new header.
 // It is the production entry; newRunSessionWithStore holds the store-agnostic
 // core so tests can drive it against a temp-dir store.
 func newRunSession(opts Options) (*runSession, []agentcore.Message, error) {
-	store, err := headless.SessionStore()
+	store, err := headless.ProjectStore()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -144,7 +145,7 @@ func newRunSession(opts Options) (*runSession, []agentcore.Message, error) {
 // already-opened store it resolves resume-vs-fresh, builds the live config and
 // collaborators, and returns the session plus the resumed history (nil for a
 // fresh session).
-func newRunSessionWithStore(store *session.Store, opts Options) (*runSession, []agentcore.Message, error) {
+func newRunSessionWithStore(store *sessionstore.Store, opts Options) (*runSession, []agentcore.Message, error) {
 	creds := provider.NewCredentialStore(nil)
 	creds.SetOverride(opts.ProviderName, opts.APIKey)
 
@@ -160,16 +161,12 @@ func newRunSessionWithStore(store *session.Store, opts Options) (*runSession, []
 		curLeaf  string
 	)
 	if opts.ResumeID != "" {
-		h, entries, err := store.LoadEntries(opts.ResumeID)
+		_, h, msgs, err := store.Load(opts.ResumeID)
 		if err != nil {
 			return nil, nil, err
 		}
-		msgs := make(agentcore.MessageList, len(entries))
-		for i, e := range entries {
-			msgs[i] = e.Message
-		}
-		if len(entries) > 0 {
-			curLeaf = entries[len(entries)-1].ID
+		if proj, projErr := store.Projection(opts.ResumeID, ""); projErr == nil {
+			curLeaf = proj.LeafID
 		}
 		header = h
 		sysPrompt := h.SystemPrompt
@@ -320,7 +317,19 @@ func (s *runSession) buildConfig() runtime.RunConfig {
 		},
 		Reminders:  s.reminders,
 		SessionID:  s.header.ID,
-		MemoryRoot: s.memoryRoot,
+		OnCompaction: func(ctx context.Context, res *compaction.CompactionResult) error {
+			if res == nil || s.store == nil {
+				return nil
+			}
+			s.header.UpdatedAt = time.Now().UTC()
+			s.header.Model = s.live.Model
+			s.header.Provider = s.live.ProviderName
+			_, err := s.store.AppendCompaction(s.header.ID, s.header, res)
+			if err == nil {
+				s.compacted = true
+			}
+			return err
+		},
 	}
 	// Per-turn wiring of the tool-execution + Stop seams; nil dispatcher is a
 	// no-op so the hot path pays nothing when no hooks are configured (FR-18).
@@ -386,28 +395,19 @@ func (s *runSession) rebuild() (string, error) {
 		}
 		return text, nil
 	}
-	msgs := s.agentCtx.Messages
-	before := compaction.EstimateContextTokens(msgs).Tokens
-	// Checkpoints live under <memoryRoot>/sessions/<id>/; recover from the same
-	// root the loop writes to. Empty when memory is disabled — RebuildFromCheckpoint
-	// then falls back to lossy compaction.
-	memoryRoot := s.memoryRoot
-	cfg := s.buildConfig()
-	res, err := runtime.RebuildFromCheckpoint(context.Background(), msgs, s.header.ID, memoryRoot, &cfg, nil)
+	before := compaction.EstimateContextTokens(s.agentCtx.Messages).Tokens
+	proj, err := s.store.Projection(s.header.ID, "")
 	if err != nil {
 		return "", err
 	}
-	if res.NoOp {
-		return fmt.Sprintf("nothing to rebuild (%d tokens, %d messages)", before, len(msgs)), nil
+	if len(proj.Messages) == 0 {
+		return fmt.Sprintf("nothing to rebuild (%d tokens, %d messages)", before, len(s.agentCtx.Messages)), nil
 	}
-	s.agentCtx.Messages = res.Messages
-	s.compacted = true
-	source := "checkpoint"
-	if !res.FromCheckpoint {
-		source = "compaction (no checkpoint)"
-	}
-	return fmt.Sprintf("context rebuilt from %s: %d → %d tokens, collapsed %d messages, kept %d",
-		source, res.TokensBefore, res.TokensAfter, res.SummarizedCount, res.KeptCount), nil
+	s.agentCtx.Messages = proj.Messages
+	s.curLeaf = proj.LeafID
+	s.persisted = len(proj.Messages)
+	after := compaction.EstimateContextTokens(proj.Messages).Tokens
+	return fmt.Sprintf("context rebuilt from sqlite projection: %d -> %d tokens, %d messages", before, after, len(proj.Messages)), nil
 }
 
 // prompt to the growing context as a user message, then hands the context and a
@@ -474,12 +474,23 @@ func (s *runSession) persist() error {
 	if s.httpClient != nil {
 		return nil
 	}
+	// Auto-compaction was already persisted as a typed entry by OnCompaction;
+	// the leaf advanced and the retained tail is authoritative, so the flat
+	// Save path must not run and clobber the tree.
+	if s.compacted {
+		s.persisted = len(s.agentCtx.Messages)
+		if leaf, err := s.store.MainLeaf(s.header.ID); err == nil {
+			s.curLeaf = leaf
+		}
+		s.compacted = false
+		return nil
+	}
 	// A compaction during the run rewrote Messages into a summary + recent tail,
 	// so the append-a-tail branch model no longer holds: the prefix changed and
 	// the slice may be shorter than persisted. Re-save the flattened context
 	// linearly and reset the branch cursor to the new leaf, mirroring the REPL's
 	// /compact handling.
-	if s.compacted || s.persisted > len(s.agentCtx.Messages) {
+	if s.persisted > len(s.agentCtx.Messages) {
 		s.header.UpdatedAt = time.Now().UTC()
 		s.header.Model = s.live.Model
 		s.header.Provider = s.live.ProviderName
@@ -488,10 +499,9 @@ func (s *runSession) persist() error {
 		}
 		s.persisted = len(s.agentCtx.Messages)
 		s.curLeaf = ""
-		if _, entries, err := s.store.LoadEntries(s.header.ID); err == nil && len(entries) > 0 {
-			s.curLeaf = entries[len(entries)-1].ID
+		if proj, err := s.store.Projection(s.header.ID, ""); err == nil {
+			s.curLeaf = proj.LeafID
 		}
-		s.compacted = false
 		return nil
 	}
 	tail := s.agentCtx.Messages[s.persisted:]
@@ -501,7 +511,7 @@ func (s *runSession) persist() error {
 	s.header.UpdatedAt = time.Now().UTC()
 	s.header.Model = s.live.Model
 	s.header.Provider = s.live.ProviderName
-	leaf, err := s.store.AppendBranch(s.header, s.curLeaf, tail)
+	leaf, err := s.store.AppendBranch(s.header.ID, s.header, s.curLeaf, tail)
 	if err != nil {
 		return err
 	}

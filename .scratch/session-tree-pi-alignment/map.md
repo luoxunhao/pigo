@@ -1,11 +1,11 @@
 # Wayfinder Map: pigo 会话树对齐 pi
 
-> Local-markdown tracker。Effort：规划 pigo 会话树迁移设计；本图不写实现代码。
-> Status: spec complete（2026-08-12）：spec + ADR + implementation issues 已产出，等待实施 effort。
+> Local-markdown tracker。Effort：pigo 会话树迁移设计与实现。
+> Status: implementation complete（2026-08-12）：SQLite canonical、v4 codec、ProjectLeaf、compaction 落盘、ACP/HTTP tree surface、子 agent SQLite 图、TUI/REPL 树交互与 SDK tree v1 已实现；遗留 TUI compaction queue 与 Zed 手动验收待补。
 
 ## Destination
 
-已产出可交接的迁移设计：spec + ADR + implementation issues。pigo 的会话树从“持久化层树”对齐为 pi 的“运行时树模型”，并以逐字复刻的 pi SQLite schema 作为 canonical 存储；v4 typed JSONL 只做导出/导入。交付物是设计，不是代码。
+已产出可交接的迁移设计并完成实施：pigo 的会话树从“持久化层树”对齐为 pi 的“运行时树模型”，以逐字复刻的 pi SQLite schema 作为 canonical 存储；v4 typed JSONL 只做导出/导入。运行时不再读取旧 JSONL 目录，旧会话由隔离脚本归档。
 
 ## Deliverables
 

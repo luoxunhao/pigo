@@ -14,6 +14,9 @@ import type {
   PigoMessagesResult,
   PigoModelsResult,
   PermissionOptionId,
+  PigoSessionTreeCapability,
+  SessionInfoUpdate,
+  SessionTreeMeta,
 } from "./types.js";
 
 interface RpcEnvelope {
@@ -51,10 +54,11 @@ export class PigoAcpClient {
   private nextId = 1;
   private readonly pending = new Map<number, PendingRequest>();
   private closed = false;
+  private serverSessionTree: PigoSessionTreeCapability | null = null;
 
   constructor(options: AcpClientOptions = {}) {
     this.commandPath = options.command ?? "pigo";
-    this.args = options.args ?? ["--acp"];
+    this.args = options.args ?? ["acp"];
     this.cwd = options.cwd;
     this.env = options.env;
     this.events = options.events ?? {};
@@ -99,11 +103,19 @@ export class PigoAcpClient {
   }
 
   async initialize(): Promise<InitializeResult> {
-    return this.request<InitializeResult>("initialize", {
+    const result = await this.request<InitializeResult>("initialize", {
       protocolVersion: 1,
-      clientCapabilities: {},
+      clientCapabilities: {
+        _meta: { pigo: { sessionTree: { version: 1 } } },
+      },
       clientInfo: { name: "pigo-acp", version: "0.1.0" },
     });
+    this.serverSessionTree = result.agentCapabilities?._meta?.pigo?.sessionTree ?? null;
+    return result;
+  }
+
+  sessionTreeCapability(): PigoSessionTreeCapability | null {
+    return this.serverSessionTree;
   }
 
   async newSession(cwd: string, additionalDirectories: string[] = []): Promise<NewSessionResult> {
@@ -273,7 +285,18 @@ export class PigoAcpClient {
   private handleNotification(envelope: RpcEnvelope): void {
     if (envelope.method === "session/update") {
       const params = (envelope.params ?? {}) as { sessionId: string; update: Record<string, unknown> };
-      this.events.onUpdate?.(params.sessionId, params.update);
+      const update = params.update;
+      this.events.onUpdate?.(params.sessionId, update);
+      if (update.sessionUpdate === "session_info_update") {
+        const info = update as unknown as SessionInfoUpdate;
+        const tree = (update._meta as { pigo?: { sessionTree?: SessionTreeMeta } } | undefined)?.pigo?.sessionTree;
+        if (tree !== undefined) {
+          info.currentLeafId = tree.currentLeafId ?? info.currentLeafId;
+          info.currentLane = tree.currentLane ?? info.currentLane;
+          info.lanes = tree.lanes ?? info.lanes;
+        }
+        this.events.onSessionInfo?.(params.sessionId, info);
+      }
       return;
     }
     if (envelope.method === "pigo/event") {

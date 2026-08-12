@@ -176,7 +176,7 @@ description: 审查代码变更
 
 ## 会话与续跑
 
-会话按项目持久化在 `$PIGO_HOME/projects/<workspace-slug>/sessions/`（默认 `~/.pigo/...`），包含 metadata、index 与 JSONL 转录。
+会话按项目持久化在 SQLite canonical 存储 `$PIGO_HOME/sessions.db`；v4 typed JSONL 仅用于 `/export`、`/import`。
 
 ```bash
 pigo -l                 # 列出会话

@@ -100,7 +100,7 @@ func (s *SessionService) forkFrom(sourceID, directory, leafID string) (string, e
 	if err != nil {
 		return "", err
 	}
-	newHeader, path, err := store.Fork(sourceID, leafID, time.Now().UTC())
+	newHeader, path, err := store.ForkV4(sourceID, leafID, time.Now().UTC())
 	if err != nil {
 		return "", err
 	}
@@ -108,7 +108,7 @@ func (s *SessionService) forkFrom(sourceID, directory, leafID string) (string, e
 	meta.ParentSessionID = sourceID
 	meta.MessageCount = len(path)
 	meta.LastActiveAt = newHeader.UpdatedAt
-	if err := store.ImportEntries(meta, newHeader, path); err != nil {
+	if err := store.ImportV4Entries(meta, newHeader, path, nil); err != nil {
 		return "", err
 	}
 	return newHeader.ID, nil

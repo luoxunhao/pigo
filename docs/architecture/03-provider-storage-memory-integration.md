@@ -21,11 +21,11 @@
 **职责**：项目级会话持久化，替代 legacy flat JSONL store，支持分支树与跨项目列表。
 
 **结构**：
-- `Store`：目录级句柄，`$PIGO_HOME/projects/<workspace-slug>/sessions/`；`sessionsDir` 持有 metadata 与 transcript。
+- `Store`：SQLite canonical 存储句柄，`$PIGO_HOME/sessions.db`，`sessions.cwd` 区分项目。
 - `Metadata`（JSON，camelCase 兼容 ash）：`sessionId/sessionName/agentType/modelName/createdAt/lastActiveAt/turnCount/messageCount/toolCallCount/status/tags/parentSessionId/subagentType` 等。
 - `IndexFile`：项目级 session 索引，按 `lastActiveAt` 排序；`List` 优先读索引，不一致则重建。
 - 转录：委托 `session.Store`（JSONL），支持 `Append` / `AppendBranch`（带 `parentLeafID` 分支）/ `LoadEntries`。
-- `ListAll(pigoHome)`：跨项目扫描所有 `.metadata.json`，按 `LastActiveAt` 降序，供 `/dream` 与 `--list-sessions` 使用。
+- `ListAll(pigoHome)`：查询 SQLite `sessions` 表，按 `LastActiveAt` 降序，供 `/dream` 与 `--list-sessions` 使用。
 - SchemaVersion=1；读取时未知更高版本为硬错误；写操作使用 atomic temp+rename。
 
 ## 3. internal/dream — 记忆整合 / Distill

@@ -40,3 +40,12 @@
 ## 记录
 
 在此文件末尾追加：验证日期、Zed 版本、通过/失败项、问题复现步骤。
+
+## session-tree-pi-alignment 手动验收（待执行）
+
+- [ ] TUI/REPL /tree 切换后 session_info_update 与下一次 prompt 投影一致
+- [ ] serve/headless compaction 落盘后新进程 resume 恢复 retainedTail
+- [ ] /export -> /import v4 round-trip 无会话语义损失
+- [ ] v1/v2/v3 import 明确拒绝；旧 id 返回 not found
+- [ ] scripts/quarantine-legacy-sessions.* 隔离旧目录
+

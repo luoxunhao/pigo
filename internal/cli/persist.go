@@ -32,8 +32,8 @@ func PersistTurn(out io.Writer, h Host) {
 		}
 		h.SetPersisted(len(agentCtx.Messages))
 		h.SetCurLeaf("")
-		if _, entries, err := h.Store().LoadEntries(header.ID); err == nil && len(entries) > 0 {
-			h.SetCurLeaf(entries[len(entries)-1].ID)
+		if proj, err := h.Store().Projection(header.ID, ""); err == nil {
+			h.SetCurLeaf(proj.LeafID)
 		}
 		return
 	}
@@ -43,7 +43,7 @@ func PersistTurn(out io.Writer, h Host) {
 	}
 	header := h.Header()
 	header.UpdatedAt = time.Now().UTC()
-	leaf, err := h.Store().AppendBranch(header, h.CurLeaf(), tail)
+	leaf, err := h.Store().AppendBranch(header.ID, header, h.CurLeaf(), tail)
 	if err != nil {
 		fmt.Fprintf(out, "pigo: session save failed: %v\n", err)
 		return

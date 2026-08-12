@@ -174,7 +174,7 @@ func remoteControlStatus(out io.Writer, deps *replDeps) {
 // paired browser while one is connected. When deps.remote is nil the wrapper is
 // skipped entirely, so the returned func is exactly the local seam — the
 // non-remote path is byte-identical to before (#443).
-func beforeToolCall(deps replDeps, out io.Writer) agentcore.BeforeToolCallFunc {
+func beforeToolCall(deps *replDeps, out io.Writer) agentcore.BeforeToolCallFunc {
 	local := trust.BeforeToolCall(deps.trust, deps.cwd, deps.in, out, deps.confirmMu)
 	if deps.remote == nil {
 		return local

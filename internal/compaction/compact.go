@@ -9,9 +9,11 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/provider"
+	"github.com/smallnest/pigo/internal/session"
 )
 
 // CompactionDetails records the files touched in the compacted history, stored
@@ -141,6 +143,31 @@ func (r *CompactionResult) Message(now int64) agentcore.CompactionMessage {
 		TokensBefore: r.TokensBefore,
 		Details:      details,
 		Timestamp:    now,
+	}
+}
+
+// V4Entry converts the compaction result into a typed v4 compaction entry.
+// The retained tail is serialized as raw agentcore messages so the entry is
+// self-contained and can be replayed by ProjectLeaf without touching history.
+func (r *CompactionResult) V4Entry(id, parentID string, ts time.Time) session.V4Entry {
+	retained := make([]json.RawMessage, 0, len(r.RetainedTail))
+	for _, m := range r.RetainedTail {
+		if raw, err := json.Marshal(m); err == nil {
+			retained = append(retained, raw)
+		}
+	}
+	details, _ := json.Marshal(r.Details)
+	return session.V4Entry{
+		Type:         session.EntryTypeCompaction,
+		ID:           id,
+		ParentID:     parentID,
+		Timestamp:    ts,
+		Summary:      r.Summary,
+		RetainedTail: retained,
+		Details:      details,
+		TokensBefore: r.TokensBefore,
+		FromHook:     r.FromHook,
+		Usage:        r.Usage,
 	}
 }
 

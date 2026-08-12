@@ -235,7 +235,7 @@ func TestAppendBranchUpdatesMetadataAndPreservesTree(t *testing.T) {
 	if err := store.Create(meta, header, first); err != nil {
 		t.Fatal(err)
 	}
-	_, entries, err := store.TranscriptStore().LoadEntries("sess-branch")
+	entries, err := store.Entries("sess-branch")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +269,7 @@ func TestAppendBranchUpdatesMetadataAndPreservesTree(t *testing.T) {
 	}
 	// The tree survives: the second chain descends from the first leaf, so both
 	// branches are still present in the single transcript file.
-	_, all, err := store.TranscriptStore().LoadEntries("sess-branch")
+	all, err := store.Entries("sess-branch")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,20 +293,18 @@ func TestImportEntriesRoundTripsTree(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	src, err := session.NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
 	now := time.Now().UTC()
-	header := session.SessionHeader{ID: "legacy-sess", CreatedAt: now, UpdatedAt: now, Model: "m", Provider: "p", Cwd: ws}
+	header := session.SessionHeader{ID: "imported-sess", CreatedAt: now, UpdatedAt: now, Model: "m", Provider: "p", Cwd: ws}
+	srcMeta := NewMetadata("src-sess", "Source", "pigo", "m", ws)
+	srcHeader := session.SessionHeader{ID: "src-sess", CreatedAt: now, UpdatedAt: now, Model: "m", Provider: "p", Cwd: ws}
 	msgs := agentcore.MessageList{
 		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("q")}},
 		agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant, Content: agentcore.ContentList{agentcore.NewTextContent("a")}},
 	}
-	if err := src.Save(header, msgs); err != nil {
+	if err := store.Create(srcMeta, srcHeader, msgs); err != nil {
 		t.Fatal(err)
 	}
-	_, entries, err := src.LoadEntries(header.ID)
+	entries, err := store.Entries("src-sess")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +313,7 @@ func TestImportEntriesRoundTripsTree(t *testing.T) {
 	meta.CreatedAt = header.CreatedAt
 	meta.LastActiveAt = header.UpdatedAt
 	meta.MessageCount = len(entries)
-	if err := store.ImportEntries(meta, header, entries); err != nil {
+	if err := store.ImportV4Entries(meta, header, entries, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -326,7 +324,7 @@ func TestImportEntriesRoundTripsTree(t *testing.T) {
 	if h2.ID != header.ID || len(msgs2) != 2 {
 		t.Fatalf("imported session mismatch: id=%q msgs=%d", h2.ID, len(msgs2))
 	}
-	_, imported, err := store.TranscriptStore().LoadEntries(header.ID)
+	imported, err := store.Entries(header.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +334,7 @@ func TestImportEntriesRoundTripsTree(t *testing.T) {
 				i, e.ID, e.ParentID, entries[i].ID, entries[i].ParentID)
 		}
 	}
-	if err := store.ImportEntries(meta, header, entries); err == nil {
+	if err := store.ImportV4Entries(meta, header, entries, nil); err == nil {
 		t.Fatal("ImportEntries must reject an existing session id")
 	}
 }

@@ -29,7 +29,7 @@ import (
 // intact and only replaces the terminal/store seams via goal.Options.
 type serveGoalHost struct {
 	cli.Host
-	store      *session.Store
+	store      *sessionstore.Store
 	header     session.SessionHeader
 	agentCtx   *agentcore.AgentContext
 	live       *cli.LiveConfig
@@ -44,7 +44,7 @@ type serveGoalHost struct {
 	hookDeps   run.HookDeps
 }
 
-func (h *serveGoalHost) Store() *session.Store                { return h.store }
+func (h *serveGoalHost) Store() *sessionstore.Store           { return h.store }
 func (h *serveGoalHost) Header() session.SessionHeader        { return h.header }
 func (h *serveGoalHost) AgentCtx() *agentcore.AgentContext    { return h.agentCtx }
 func (h *serveGoalHost) Live() *cli.LiveConfig                { return h.live }
@@ -143,7 +143,7 @@ func makeGoalFunc(opts cliOptions, env run.Env, pigoHome string, thinking agentc
 		}
 
 		host := &serveGoalHost{
-			store:     store.TranscriptStore(),
+			store:     store,
 			header:    header,
 			agentCtx:  &agentcore.AgentContext{SystemPrompt: env.SysPrompt, Messages: msgs, Tools: env.Tools},
 			live:      live,
@@ -212,9 +212,8 @@ func persistGoalStore(store *sessionstore.Store, sessionID string, header sessio
 	}
 	header.UpdatedAt = time.Now().UTC()
 	if len(msgs) < prevCount {
-		if err := store.Save(header, msgs); err != nil {
-			return err
-		}
+		// Auto-compaction was persisted by OnCompaction as a typed compaction
+		// entry; flattening the tree with Save would destroy the retained tail.
 		curLeaf = ""
 	} else {
 		tail := msgs

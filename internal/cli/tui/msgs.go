@@ -64,8 +64,9 @@ type telemetryMsg struct{ ev agentcore.TelemetryEvent }
 
 // compactionStartMsg signals that the loop is about to compact the context
 // window. It pins the spinner to a "Compacting conversation…" label while the
-// summarization request is in flight; compactionMsg clears it.
-type compactionStartMsg struct{}
+// summarization request is in flight; compactionMsg clears it. reason is the
+// trigger (threshold/manual/overflow) when known.
+type compactionStartMsg struct{ reason string }
 
 // compactionMsg signals that the loop compacted the context window. The event's
 // details are not needed by the transcript, so it is a bare signal.
@@ -80,3 +81,10 @@ type runEndMsg struct{ err error }
 // bridge's RemoteInput channel and emits one per submission, re-issued after each
 // so successive remote prompts keep arriving.
 type remoteInputMsg struct{ text string }
+
+// branchSummaryDoneMsg reports the result of an async branch-summary
+// generation requested from the tree modal.
+type branchSummaryDoneMsg struct {
+	summary string
+	err     error
+}

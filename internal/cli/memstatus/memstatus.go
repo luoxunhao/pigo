@@ -17,7 +17,6 @@ import (
 	"github.com/smallnest/pigo/internal/cli/ui"
 	"github.com/smallnest/pigo/internal/compaction"
 	"github.com/smallnest/pigo/internal/memory"
-	"github.com/smallnest/pigo/internal/runtime"
 )
 
 // scopeOrder is the display order for memory scopes. Scopes not listed here are
@@ -40,8 +39,6 @@ func RunMemory(out io.Writer, store *memory.Store, memoryRoot, sessionID string,
 	printStoreSection(out, color, store, memoryRoot)
 	fmt.Fprintln(out)
 	printContextSection(out, color, msgs, contextWindow)
-	fmt.Fprintln(out)
-	printCheckpointSection(out, color, memoryRoot, sessionID)
 }
 
 // printStoreSection prints the persistent memory store section: whether memory
@@ -149,47 +146,5 @@ func printContextSection(out io.Writer, color bool, msgs agentcore.MessageList, 
 			ui.Colorize(color, ui.Dim, "compaction trigger:"),
 			ui.Colorize(color, ui.Yellow, "auto-compaction disabled (unknown window)"))
 	}
-}
-
-// printCheckpointSection prints the infinite-context checkpoint status for the
-// session: whether a checkpoint.md exists and, if so, its watermark, covered
-// message count, and creation time.
-func printCheckpointSection(out io.Writer, color bool, memoryRoot, sessionID string) {
-	fmt.Fprintf(out, "%s\n", ui.Colorize(color, ui.Bold, "checkpoint:"))
-	if memoryRoot == "" || sessionID == "" {
-		fmt.Fprintf(out, "  %s %s\n",
-			ui.Colorize(color, ui.Dim, "status:"),
-			ui.Colorize(color, ui.Yellow, "unavailable (no memory root or session id)"))
-		return
-	}
-	cp, ok, err := runtime.LoadCheckpoint(sessionID, memoryRoot)
-	if err != nil {
-		fmt.Fprintf(out, "  %s %s\n",
-			ui.Colorize(color, ui.Dim, "status:"),
-			ui.Colorize(color, ui.Red, fmt.Sprintf("load failed: %v", err)))
-		return
-	}
-	if !ok {
-		fmt.Fprintf(out, "  %s %s\n",
-			ui.Colorize(color, ui.Dim, "status:"),
-			ui.Colorize(color, ui.Dim, "none yet"))
-		fmt.Fprintf(out, "  %s %s\n",
-			ui.Colorize(color, ui.Dim, "path:"),
-			runtime.CheckpointPath(sessionID, memoryRoot))
-		return
-	}
-	fmt.Fprintf(out, "  %s %s\n",
-		ui.Colorize(color, ui.Dim, "status:"),
-		ui.Colorize(color, ui.Green, "present"))
-	fmt.Fprintf(out, "  %s %d\n", ui.Colorize(color, ui.Dim, "watermark:"), cp.Watermark)
-	fmt.Fprintf(out, "  %s %d\n", ui.Colorize(color, ui.Dim, "covered messages:"), cp.CoveredMessages)
-	if !cp.CreatedAt.IsZero() {
-		fmt.Fprintf(out, "  %s %s\n",
-			ui.Colorize(color, ui.Dim, "created:"),
-			cp.CreatedAt.Format("2006-01-02 15:04:05 MST"))
-	}
-	fmt.Fprintf(out, "  %s %s\n",
-		ui.Colorize(color, ui.Dim, "path:"),
-		runtime.CheckpointPath(sessionID, memoryRoot))
 }
 

@@ -1,4 +1,4 @@
-import type { AcpClientOptions, InitializeResult, ListSessionsResult, LoadSessionResult, NewSessionResult, PigoConfigResult, PigoConfigUpdate, PigoMessagesResult, PigoModelsResult, PermissionOptionId } from "./types.js";
+import type { AcpClientOptions, InitializeResult, ListSessionsResult, LoadSessionResult, NewSessionResult, PigoConfigResult, PigoConfigUpdate, PigoMessagesResult, PigoModelsResult, PermissionOptionId, PigoSessionTreeCapability } from "./types.js";
 export declare class AcpError extends Error {
     readonly code: number;
     constructor(code: number, message: string);
@@ -14,9 +14,11 @@ export declare class PigoAcpClient {
     private nextId;
     private readonly pending;
     private closed;
+    private serverSessionTree;
     constructor(options?: AcpClientOptions);
     start(): void;
     initialize(): Promise<InitializeResult>;
+    sessionTreeCapability(): PigoSessionTreeCapability | null;
     newSession(cwd: string, additionalDirectories?: string[]): Promise<NewSessionResult>;
     loadSession(sessionId: string, cwd: string): Promise<LoadSessionResult>;
     listSessions(cwd: string): Promise<ListSessionsResult>;

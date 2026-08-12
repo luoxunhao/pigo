@@ -67,7 +67,7 @@ func newStreamHandler(ch chan tea.Msg, extra func(agentcore.AgentEvent)) runtime
 			case agentcore.TelemetryEvent:
 				ch <- telemetryMsg{ev: e}
 			case agentcore.CompactionStartEvent:
-				ch <- compactionStartMsg{}
+				ch <- compactionStartMsg{reason: e.Reason}
 			case agentcore.CompactionEvent:
 				ch <- compactionMsg{}
 			}

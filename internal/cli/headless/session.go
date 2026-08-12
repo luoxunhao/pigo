@@ -47,17 +47,6 @@ func EnsureProjectSession(home, cwd, sessionID string) error {
 	return fmt.Errorf("pigo: session %q not found", sessionID)
 }
 
-// SessionStore returns the tree-oriented session.Store view over the canonical
-// SQLite store. It is the compatibility seam for local front-ends that still
-// call the old session.Store API directly.
-func SessionStore() (*session.Store, error) {
-	proj, err := ProjectStore()
-	if err != nil {
-		return nil, err
-	}
-	return proj.TranscriptStore(), nil
-}
-
 // AllSessionHeaders returns headers for every known session in the canonical
 // store, most recently updated first.
 func AllSessionHeaders() ([]session.SessionHeader, error) {
@@ -129,6 +118,8 @@ type headlessSession struct {
 	// persisted is the number of agentCtx.Messages already on disk before the
 	// run; persist appends only Messages[persisted:] as a new branch.
 	persisted int
+	// compacted is set when OnCompaction persisted a typed compaction entry.
+	compacted bool
 	// model/provider are the model and provider the run actually used, refreshed
 	// onto the header before persisting so a resumed run does not write back the
 	// original session's stale values.
@@ -202,6 +193,14 @@ func headlessCwd() string {
 // Errors are returned for the caller to surface; the run's output has already
 // been emitted regardless.
 func (hs *headlessSession) persist(agentCtx *agentcore.AgentContext) error {
+	if hs.compacted {
+		hs.persisted = len(agentCtx.Messages)
+		if leaf, err := hs.store.MainLeaf(hs.header.ID); err == nil {
+			hs.curLeaf = leaf
+		}
+		hs.compacted = false
+		return nil
+	}
 	// Compaction can rebuild agentCtx.Messages to fewer entries than were on disk
 	// before the run (loop.go maybeAutoCompact replaces the slice). Clamp the
 	// cursor so the tail slice stays in bounds; when the context shrank there is

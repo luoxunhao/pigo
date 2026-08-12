@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -170,28 +169,7 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 			if store == nil || res == nil {
 				return nil
 			}
-			retained := make([]json.RawMessage, 0, len(res.RetainedTail))
-			for _, m := range res.RetainedTail {
-				b, err := json.Marshal(m)
-				if err != nil {
-					return err
-				}
-				retained = append(retained, b)
-			}
-			details, _ := json.Marshal(res.Details)
-			now := time.Now().UTC()
-			header.UpdatedAt = now
-			entry := session.V4Entry{
-				Type:         session.EntryTypeCompaction,
-				ID:           session.NewEntryID(),
-				ParentID:     curLeaf,
-				Timestamp:    now,
-				Summary:      res.Summary,
-				RetainedTail: retained,
-				Details:      details,
-				TokensBefore: res.TokensBefore,
-			}
-			_, err := store.AppendV4Entry(run.SessionID, header, entry)
+			_, err := store.AppendCompaction(run.SessionID, header, res)
 			return err
 		}
 		msgs, last, err := runner.RunWithTools(ctx, run.Text, nil, history, env.SysPrompt, env.Tools, model, thinking, run.BeforeToolCall, onEvent, acp.TurnHooks{OnCompaction: onCompaction})
@@ -265,27 +243,7 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 			header.UpdatedAt = time.Now().UTC()
 			header.Model = modelID
 			header.Provider = runner.ProviderName
-			retained := make([]json.RawMessage, 0, len(res.RetainedTail))
-			for _, m := range res.RetainedTail {
-				b, err := json.Marshal(m)
-				if err != nil {
-					return "", err
-				}
-				retained = append(retained, b)
-			}
-			details, _ := json.Marshal(res.Details)
-			leaf, _ := store.MainLeaf(sessionID)
-			entry := session.V4Entry{
-				Type:         session.EntryTypeCompaction,
-				ID:           session.NewEntryID(),
-				ParentID:     leaf,
-				Timestamp:    header.UpdatedAt,
-				Summary:      res.Summary,
-				RetainedTail: retained,
-				Details:      details,
-				TokensBefore: res.TokensBefore,
-			}
-			if _, saveErr := store.AppendV4Entry(sessionID, header, entry); saveErr != nil {
+			if _, saveErr := store.AppendCompaction(sessionID, header, res); saveErr != nil {
 				return "", saveErr
 			}
 			meta.LastActiveAt = header.UpdatedAt

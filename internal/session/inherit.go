@@ -5,7 +5,7 @@ package session
 // session's collapsed context records two things on its header:
 //
 //   - ContextFrom: the source session id whose checkpoint holds the collapsed
-//     prefix (see runtime.LoadCheckpoint / CheckpointPath).
+//     prefix (see SQLite ProjectLeaf projection).
 //   - ContextWatermark: the message index up to which that prefix was collapsed;
 //     on resume/fork the runtime (#481) can load the source checkpoint and skip
 //     re-summarizing messages [0, ContextWatermark).

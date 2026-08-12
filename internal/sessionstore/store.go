@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/smallnest/pigo/internal/agentcore"
+	"github.com/smallnest/pigo/internal/compaction"
 	"github.com/smallnest/pigo/internal/session"
 	_ "modernc.org/sqlite"
 )
@@ -74,18 +75,6 @@ const SessionKindSubagent = "subagent"
 // DefaultWorkspaceHost is the hostname recorded for local workspaces.
 const DefaultWorkspaceHost = "localhost"
 
-// StoredMetadataFile is kept as a compatibility envelope; SQLite does not use it.
-type StoredMetadataFile struct {
-	SchemaVersion int `json:"schemaVersion"`
-	Metadata      `json:",inline"`
-}
-
-// IndexFile is kept as a compatibility type; SQLite queries replace it.
-type IndexFile struct {
-	SchemaVersion int        `json:"schemaVersion"`
-	UpdatedAt     time.Time  `json:"updatedAt"`
-	Sessions      []Metadata `json:"sessions"`
-}
 
 //go:embed migrations/001_initial.sql
 var migration001 string
@@ -107,11 +96,6 @@ func PigoHome() (string, error) {
 	return filepath.Join(home, ".pigo"), nil
 }
 
-// ProjectsRoot returns the legacy projects root. It is retained for migration
-// tooling and slug compatibility; canonical data lives in sessions.db.
-func ProjectsRoot(pigoHome string) string {
-	return filepath.Join(pigoHome, "projects")
-}
 
 // WorkspaceSlug derives a stable directory-safe slug from a workspace path.
 func WorkspaceSlug(workspacePath string) string {
@@ -149,11 +133,6 @@ func WorkspaceSlug(workspacePath string) string {
 	return prefix + "-" + suffix
 }
 
-// SessionsDirForWorkspace returns the legacy sessions directory for a
-// workspace. Quarantine scripts use it; runtime does not.
-func SessionsDirForWorkspace(pigoHome, workspacePath string) string {
-	return filepath.Join(ProjectsRoot(pigoHome), WorkspaceSlug(workspacePath), "sessions")
-}
 
 // DatabasePath returns the canonical SQLite database path.
 func DatabasePath(pigoHome string) string {
@@ -183,55 +162,6 @@ type Store struct {
 	pigoHome  string
 	cwd       string
 	mu        sync.Mutex
-	transcripts *session.Store
-}
-
-// backendAdapter adapts Store to session.Backend. The legacy session.Store
-// API carries the session id on the header for branch writes, while the
-// sessionstore API passes it explicitly.
-type backendAdapter struct {
-	s *Store
-}
-
-func (a *backendAdapter) Save(header session.SessionHeader, messages agentcore.MessageList) error {
-	return a.s.Save(header, messages)
-}
-
-func (a *backendAdapter) SaveEntries(header session.SessionHeader, entries []session.Entry) error {
-	return a.s.SaveEntries(header, entries)
-}
-
-func (a *backendAdapter) LoadEntries(id string) (session.SessionHeader, []session.Entry, error) {
-	return a.s.LoadEntries(id)
-}
-
-func (a *backendAdapter) Load(id string) (session.SessionHeader, agentcore.MessageList, error) {
-	_, header, msgs, err := a.s.Load(id)
-	return header, msgs, err
-}
-
-func (a *backendAdapter) List() ([]session.SessionHeader, error) {
-	return a.s.ListHeaders()
-}
-
-func (a *backendAdapter) Append(id string, updatedAt time.Time, messages agentcore.MessageList) error {
-	return a.s.Append(id, updatedAt, messages)
-}
-
-func (a *backendAdapter) AppendBranch(header session.SessionHeader, parentLeafID string, messages agentcore.MessageList) (string, error) {
-	return a.s.AppendBranch(header.ID, header, parentLeafID, messages)
-}
-
-func (a *backendAdapter) Fork(sourceID, leafID string, now time.Time) (session.SessionHeader, []session.Entry, error) {
-	return a.s.Fork(sourceID, leafID, now)
-}
-
-func (a *backendAdapter) Export(id, outPath string) (int, error) {
-	return a.s.Export(id, outPath)
-}
-
-func (a *backendAdapter) Import(inPath string, now time.Time) (session.SessionHeader, []session.Entry, error) {
-	return a.s.Import(inPath, now)
 }
 
 // Open opens the canonical store for a pigo home.
@@ -244,7 +174,6 @@ func Open(pigoHome string) (*Store, error) {
 		return nil, err
 	}
 	st := &Store{db: db, pigoHome: pigoHome}
-	st.transcripts = session.NewBackendStore(&backendAdapter{st})
 	return st, nil
 }
 
@@ -259,17 +188,6 @@ func OpenForWorkspace(pigoHome, workspacePath string) (*Store, error) {
 	}
 	return st, nil
 }
-
-// Dir returns the legacy directory; canonical storage is sessions.db.
-func (s *Store) Dir() string {
-	if s.pigoHome == "" {
-		return ""
-	}
-	return filepath.Join(s.pigoHome, "projects")
-}
-
-// TranscriptStore exposes the tree-oriented session API over SQLite.
-func (s *Store) TranscriptStore() *session.Store { return s.transcripts }
 
 func openDB(pigoHome string) (*sql.DB, error) {
 	dbMu.Lock()
@@ -572,34 +490,6 @@ func countMessages(msgs agentcore.MessageList) (turns, toolCalls int) {
 	return turns, toolCalls
 }
 
-// ImportEntries materializes v3 legacy entries into SQLite.
-func (s *Store) ImportEntries(meta Metadata, header session.SessionHeader, entries []session.Entry) error {
-	if header.ID == "" {
-		header.ID = meta.SessionID
-	}
-	if header.ID != meta.SessionID {
-		return fmt.Errorf("sessionstore: header id %q != metadata id %q", header.ID, meta.SessionID)
-	}
-	meta.Header = &header
-	v4, err := session.FromLegacyEntries(entries)
-	if err != nil {
-		return err
-	}
-	return s.withLease(header.ID, func(tx *sql.Tx) error {
-		var exists int
-		if err := tx.QueryRow(`SELECT COUNT(*) FROM sessions WHERE id=?`, header.ID).Scan(&exists); err != nil {
-			return err
-		}
-		if exists > 0 {
-			return fmt.Errorf("sessionstore: session %q already exists", header.ID)
-		}
-		if err := s.upsertSessionTx(tx, meta, header); err != nil {
-			return err
-		}
-		return s.insertV4EntriesTx(tx, header.ID, "", v4)
-	})
-}
-
 // ImportV4Entries materializes v4 typed entries and facts into SQLite.
 func (s *Store) ImportV4Entries(meta Metadata, header session.SessionHeader, entries []session.V4Entry, facts []session.V4Fact) error {
 	if header.ID == "" {
@@ -717,6 +607,22 @@ func (s *Store) AppendBranch(sessionID string, header session.SessionHeader, par
 // AppendV4Entry appends one typed entry to the main lane.
 func (s *Store) AppendV4Entry(sessionID string, header session.SessionHeader, e session.V4Entry) (string, error) {
 	return s.appendV4Entries(sessionID, header, []session.V4Entry{e})
+}
+
+// AppendCompaction persists a compaction result as a typed compaction entry
+// descending from the current main-lane leaf. Every front-end uses this single
+// path so compaction survives process restarts and replays via retainedTail.
+func (s *Store) AppendCompaction(sessionID string, header session.SessionHeader, res *compaction.CompactionResult) (string, error) {
+	if res == nil {
+		return s.MainLeaf(sessionID)
+	}
+	leaf, err := s.MainLeaf(sessionID)
+	if err != nil {
+		return "", err
+	}
+	header.ID = sessionID
+	header.UpdatedAt = time.Now().UTC()
+	return s.AppendV4Entry(sessionID, header, res.V4Entry(session.NewEntryID(), leaf, header.UpdatedAt))
 }
 
 func (s *Store) appendV4Entries(sessionID string, header session.SessionHeader, entries []session.V4Entry) (string, error) {
@@ -1235,8 +1141,6 @@ type SearchResult struct {
 	Snippet   string `json:"snippet"`
 }
 
-// Backend implementation for session.Store.
-
 func (s *Store) Save(header session.SessionHeader, messages agentcore.MessageList) error {
 	meta, err := s.LoadMetadata(header.ID)
 	if errors.Is(err, os.ErrNotExist) {
@@ -1293,64 +1197,10 @@ func (s *Store) Save(header session.SessionHeader, messages agentcore.MessageLis
 	})
 }
 
-func (s *Store) SaveEntries(header session.SessionHeader, entries []session.Entry) error {
-	v4, err := session.FromLegacyEntries(entries)
-	if err != nil {
-		return err
-	}
-	return s.withLease(header.ID, func(tx *sql.Tx) error {
-		if _, err := tx.Exec(`DELETE FROM entries WHERE session_id=?`, header.ID); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`DELETE FROM facts WHERE session_id=?`, header.ID); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`UPDATE lanes SET leaf_id=NULL WHERE session_id=?`, header.ID); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`UPDATE session_sequences SET next_seq=0 WHERE session_id=?`, header.ID); err != nil {
-			return err
-		}
-		if len(v4) > 0 {
-			if err := s.insertV4EntriesTx(tx, header.ID, "", v4); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
-func (s *Store) LoadEntries(id string) (session.SessionHeader, []session.Entry, error) {
-	header, err := s.Header(id)
-	if err != nil {
-		return session.SessionHeader{}, nil, err
-	}
-	entries, err := s.Entries(id)
-	if err != nil {
-		return session.SessionHeader{}, nil, err
-	}
-	legacy, err := session.ToLegacyEntries(entries)
-	if err != nil {
-		return session.SessionHeader{}, nil, err
-	}
-	return header, legacy, nil
-}
-
-func (s *Store) ListHeaders() ([]session.SessionHeader, error) {
-	metas, err := s.List()
-	if err != nil {
-		return nil, err
-	}
-	out := make([]session.SessionHeader, 0, len(metas))
-	for _, m := range metas {
-		if m.Header != nil {
-			out = append(out, *m.Header)
-		}
-	}
-	return out, nil
-}
-
-func (s *Store) Fork(sourceID, leafID string, now time.Time) (session.SessionHeader, []session.Entry, error) {
+// ForkV4 creates a new session whose contents are the root-to-leaf path in the
+// source session, copied verbatim as typed v4 entries. The new session gets a
+// fresh uuidv7 id and records sourceID as its parent.
+func (s *Store) ForkV4(sourceID, leafID string, now time.Time) (session.SessionHeader, []session.V4Entry, error) {
 	entries, err := s.Entries(sourceID)
 	if err != nil {
 		return session.SessionHeader{}, nil, err
@@ -1370,11 +1220,7 @@ func (s *Store) Fork(sourceID, leafID string, now time.Time) (session.SessionHea
 		ParentSession: sourceID,
 		Cwd:           src.Cwd,
 	}
-	legacy, err := session.ToLegacyEntries(path)
-	if err != nil {
-		return session.SessionHeader{}, nil, err
-	}
-	return newHeader, legacy, nil
+	return newHeader, path, nil
 }
 
 func (s *Store) Export(id, outPath string) (int, error) {
@@ -1429,34 +1275,6 @@ func (s *Store) Export(id, outPath string) (int, error) {
 		return 0, err
 	}
 	return len(entries), nil
-}
-
-func (s *Store) Import(inPath string, now time.Time) (session.SessionHeader, []session.Entry, error) {
-	f, err := os.Open(inPath)
-	if err != nil {
-		return session.SessionHeader{}, nil, err
-	}
-	defer f.Close()
-	src, entries, facts, err := session.ReadV4JSONL(f)
-	if err != nil {
-		return session.SessionHeader{}, nil, err
-	}
-	newHeader := session.SessionHeader{
-		ID:            session.NewID(now),
-		CreatedAt:     now,
-		UpdatedAt:     now,
-		Model:         src.Model,
-		Provider:      src.Provider,
-		SystemPrompt:  src.SystemPrompt,
-		ParentSession: src.ID,
-		Cwd:           src.Cwd,
-	}
-	_ = facts
-	legacy, err := session.ToLegacyEntries(entries)
-	if err != nil {
-		return session.SessionHeader{}, nil, err
-	}
-	return newHeader, legacy, nil
 }
 
 // ImportV4 reads a v4 JSONL export and returns a fresh header, typed entries,

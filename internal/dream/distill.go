@@ -49,19 +49,16 @@ var distillNewEntryTypes = map[string]struct{}{
 	"reference": {},
 }
 
-// SessionSource is the read-only view of the session store the distiller needs:
-// list session headers and load a session's messages. *session.Store satisfies
-// it; tests inject a stub so no real session files (or LLM) are required.
+// SessionSource is the read-only view of the SQLite session store the
+// distiller needs. Tests inject a stub so no real session files (or LLM) are
+// required.
 type SessionSource interface {
 	List() ([]session.SessionHeader, error)
 	Load(id string) (session.SessionHeader, agentcore.MessageList, error)
 }
 
 // projectSessionSource is a read-only SessionSource over every project-scoped
-// store plus any not-yet-migrated legacy flat sessions. New sessions live only
-// in the project-scoped store (the unified single-write path); the legacy flat
-// directory stays readable so old sessions can still be distilled until they
-// are migrated on resume.
+// SQLite store.
 type projectSessionSource struct {
 	pigoHome string
 	byID     map[string]session.SessionHeader
@@ -81,8 +78,7 @@ func (s *projectSessionSource) List() ([]session.SessionHeader, error) {
 	return out, nil
 }
 
-// Load implements SessionSource, reading from the session's project store and
-// falling back to the legacy flat store for not-yet-migrated sessions.
+// Load implements SessionSource, reading from the session's project store.
 func (s *projectSessionSource) Load(id string) (session.SessionHeader, agentcore.MessageList, error) {
 	h, ok := s.byID[id]
 	if !ok {
@@ -92,14 +88,8 @@ func (s *projectSessionSource) Load(id string) (session.SessionHeader, agentcore
 	if err != nil {
 		return session.SessionHeader{}, nil, err
 	}
-	if _, header, msgs, err := store.Load(id); err == nil {
-		return header, msgs, nil
-	}
-	legacy, err := session.NewStore(filepath.Join(s.pigoHome, "sessions"))
-	if err != nil {
-		return session.SessionHeader{}, nil, err
-	}
-	return legacy.Load(id)
+	_, header, msgs, err := store.Load(id)
+	return header, msgs, err
 }
 
 func (s *projectSessionSource) storeFor(workspace string) (*sessionstore.Store, error) {
@@ -114,11 +104,9 @@ func (s *projectSessionSource) storeFor(workspace string) (*sessionstore.Store, 
 	return st, nil
 }
 
-// resolveSessionStore returns a read-only view over all project-scoped stores
-// (the single source of truth for new sessions) plus legacy flat sessions that
-// have not been migrated yet. A resolution failure yields a nil source and no
-// error: distillation then degrades to a no-op rather than failing the whole
-// dream run.
+// resolveSessionStore returns a read-only view over all SQLite stores. A
+// resolution failure yields a nil source and no error: distillation then
+// degrades to a no-op rather than failing the whole dream run.
 func resolveSessionStore() (SessionSource, error) {
 	home, err := sessionstore.PigoHome()
 	if err != nil {
@@ -135,15 +123,6 @@ func resolveSessionStore() (SessionSource, error) {
 			UpdatedAt: m.LastActiveAt,
 			Model:     m.ModelName,
 			Cwd:       m.WorkspacePath,
-		}
-	}
-	if legacy, err := session.NewStore(filepath.Join(home, "sessions")); err == nil {
-		if headers, err := legacy.List(); err == nil {
-			for _, h := range headers {
-				if _, ok := src.byID[h.ID]; !ok {
-					src.byID[h.ID] = h
-				}
-			}
 		}
 	}
 	return src, nil

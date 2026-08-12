@@ -48,7 +48,7 @@ import (
 // replDeps bundles the collaborators a REPL run needs. They are assembled once
 // by Run and reused across every prompt in the session.
 type replDeps struct {
-	store    *session.Store
+	store    *sessionstore.Store
 	header   session.SessionHeader
 	agentCtx *agentcore.AgentContext
 	live     *cli.LiveConfig
@@ -95,6 +95,10 @@ type replDeps struct {
 	// from curLeaf, so switching leaves and continuing grows a real tree instead
 	// of rewriting the file as a single linear chain.
 	persisted int
+	// compacted is set when the run loop persisted a compaction entry via
+	// OnCompaction. It suppresses the post-run linear Save so the retainedTail
+	// compaction entry survives as the authoritative leaf.
+	compacted bool
 
 	// goal holds the session's autonomous-goal state (mirrors pi-goal), driven by
 	// the /goal command. It is always non-nil (Run seeds an idle
@@ -366,16 +370,7 @@ func runREPL(in io.Reader, out io.Writer, deps replDeps) error {
 			// replaces the whole message list with a summary + tail, so the session
 			// is rewritten linearly (Save) and the branch-tracking state is reset to
 			// the new flattened leaf.
-			runManualCompact(out, deps)
-			deps.header.UpdatedAt = time.Now().UTC()
-			if err := deps.store.Save(deps.header, deps.agentCtx.Messages); err != nil {
-				fmt.Fprintf(out, "pigo: session save failed: %v\n", err)
-			}
-			deps.persisted = len(deps.agentCtx.Messages)
-			deps.curLeaf = ""
-			if _, entries, err := deps.store.LoadEntries(deps.header.ID); err == nil && len(entries) > 0 {
-				deps.curLeaf = entries[len(entries)-1].ID
-			}
+			runManualCompact(out, &deps)
 			continue
 		}
 		if line == "/rebuild" {
@@ -385,16 +380,7 @@ func runREPL(in io.Reader, out io.Writer, deps replDeps) error {
 			// cannot do. It reloads a persisted checkpoint when present, else falls
 			// back to lossy compaction. Like /compact, the session is rewritten
 			// linearly (Save) and the branch cursor reset to the new flattened leaf.
-			runManualRebuild(out, deps)
-			deps.header.UpdatedAt = time.Now().UTC()
-			if err := deps.store.Save(deps.header, deps.agentCtx.Messages); err != nil {
-				fmt.Fprintf(out, "pigo: session save failed: %v\n", err)
-			}
-			deps.persisted = len(deps.agentCtx.Messages)
-			deps.curLeaf = ""
-			if _, entries, err := deps.store.LoadEntries(deps.header.ID); err == nil && len(entries) > 0 {
-				deps.curLeaf = entries[len(entries)-1].ID
-			}
+			runManualRebuild(out, &deps)
 			continue
 		}
 		if line == "/clone" || line == "/fork" || strings.HasPrefix(line, "/fork ") {
@@ -412,6 +398,10 @@ func runREPL(in io.Reader, out io.Writer, deps replDeps) error {
 			// per-run state a slash Action closure cannot reach. With no argument
 			// it just prints the tree.
 			runTree(out, &deps, line)
+			continue
+		}
+		if line == "/label" || strings.HasPrefix(line, "/label ") {
+			runLabel(out, &deps, line)
 			continue
 		}
 		if line == "/resume" || strings.HasPrefix(line, "/resume ") {
@@ -554,7 +544,7 @@ func runREPL(in io.Reader, out io.Writer, deps replDeps) error {
 		// Capture the leaf the turn descends from before it advances, so a rewind
 		// to this turn can move the conversation back to exactly here.
 		preTurnLeaf := deps.curLeaf
-		streamRun(runCtx, out, deps, prompt)
+		streamRun(runCtx, out, &deps, prompt)
 		cancel()
 		setCancel(nil)
 
@@ -563,7 +553,15 @@ func runREPL(in io.Reader, out io.Writer, deps replDeps) error {
 		// than a truncated linear rewrite.
 		deps.header.Model = deps.live.Model
 		deps.header.Provider = deps.live.ProviderName
-		cli.PersistTurn(out, &deps)
+		if deps.compacted {
+			deps.persisted = len(deps.agentCtx.Messages)
+			if leaf, leafErr := deps.store.MainLeaf(deps.header.ID); leafErr == nil {
+				deps.curLeaf = leaf
+			}
+			deps.compacted = false
+		} else {
+			cli.PersistTurn(out, &deps)
+		}
 		// Group this turn's file mutations (if any) into a rewind restore point.
 		deps.snap.Commit(preTurnLeaf, rewindLabel(prompt))
 	}
@@ -573,7 +571,7 @@ func runREPL(in io.Reader, out io.Writer, deps replDeps) error {
 // prints the streamed assistant text and tool activity to out. It blocks until
 // the run ends. The context grows in place so the next prompt continues the
 // conversation.
-func streamRun(ctx context.Context, out io.Writer, deps replDeps, prompt string) {
+func streamRun(ctx context.Context, out io.Writer, deps *replDeps, prompt string) {
 	content, err := ui.BuildUserContent(prompt)
 	if err != nil {
 		fmt.Fprintf(out, "pigo: %v\n", err)
@@ -612,7 +610,19 @@ func streamRun(ctx context.Context, out io.Writer, deps replDeps, prompt string)
 		},
 		Reminders:  deps.reminders,
 		SessionID:  deps.header.ID,
-		MemoryRoot: deps.memoryRoot,
+		OnCompaction: func(ctx context.Context, res *compaction.CompactionResult) error {
+			if res == nil || deps.store == nil {
+				return nil
+			}
+			deps.header.UpdatedAt = time.Now().UTC()
+			deps.header.Model = deps.live.Model
+			deps.header.Provider = deps.live.ProviderName
+			_, err := deps.store.AppendCompaction(deps.header.ID, deps.header, res)
+			if err == nil {
+				deps.compacted = true
+			}
+			return err
+		},
 	}
 	// Per-turn wiring of the tool-execution + Stop seams (PreToolUse/PostToolUse/
 	// Stop) onto this turn's freshly-built cfg; a nil dispatcher is a no-op so the
@@ -665,7 +675,11 @@ func streamRun(ctx context.Context, out io.Writer, deps replDeps, prompt string)
 			// the loop), so only threshold/overflow events reach here.
 			switch e := ev.(type) {
 			case agentcore.CompactionStartEvent:
-				fmt.Fprintln(out, ui.Colorize(ui.Enabled(), ui.Dim, "Compacting conversation…"))
+				label := "Compacting conversation"
+				if e.Reason != "" {
+					label += " (" + e.Reason + ")"
+				}
+				fmt.Fprintln(out, ui.Colorize(ui.Enabled(), ui.Dim, label))
 			case agentcore.CompactionEvent:
 				if e.ErrorMessage != "" {
 					fmt.Fprintf(out, "compaction failed: %s\n", e.ErrorMessage)
@@ -747,8 +761,8 @@ func runForkClone(out io.Writer, deps *replDeps, line string) {
 	// without flattening any existing branches (a plain Save would rewrite the
 	// file linearly and drop siblings).
 	cli.PersistTurn(out, deps)
-	_, entries, err := deps.store.LoadEntries(deps.header.ID)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	entries, err := deps.store.Entries(deps.header.ID)
+	if err != nil {
 		fmt.Fprintf(out, "pigo: cannot read session tree: %v\n", err)
 		return
 	}
@@ -775,7 +789,14 @@ func runForkClone(out io.Writer, deps *replDeps, line string) {
 		}
 		var users []userMsg
 		for i, e := range entries {
-			if u, ok := e.Message.(agentcore.UserMessage); ok {
+			if e.Type != session.EntryTypeMessage {
+				continue
+			}
+			msg, msgErr := e.MessageValue()
+			if msgErr != nil {
+				continue
+			}
+			if u, ok := msg.(agentcore.UserMessage); ok {
 				users = append(users, userMsg{idx: i, text: agentcore.ContentToText(u.Content)})
 			}
 		}
@@ -801,7 +822,20 @@ func runForkClone(out io.Writer, deps *replDeps, line string) {
 		leafID = entries[users[n-1].idx].ParentID
 	}
 
-	newHeader, path, err := deps.store.Fork(deps.header.ID, leafID, time.Now().UTC())
+	newHeader, path, err := deps.store.ForkV4(deps.header.ID, leafID, time.Now().UTC())
+	if err != nil {
+		fmt.Fprintf(out, "pigo: fork failed: %v\n", err)
+		return
+	}
+	meta := sessionstore.NewMetadata(newHeader.ID, "Session", "pigo", newHeader.Model, deps.cwd)
+	meta.ParentSessionID = deps.header.ID
+	meta.MessageCount = len(path)
+	meta.LastActiveAt = newHeader.UpdatedAt
+	if err := deps.store.ImportV4Entries(meta, newHeader, path, nil); err != nil {
+		fmt.Fprintf(out, "pigo: fork failed: %v\n", err)
+		return
+	}
+	proj, err := deps.store.Projection(newHeader.ID, "")
 	if err != nil {
 		fmt.Fprintf(out, "pigo: fork failed: %v\n", err)
 		return
@@ -810,19 +844,12 @@ func runForkClone(out io.Writer, deps *replDeps, line string) {
 	// Swap the live session to the new branch: rebuild the flat message list from
 	// the copied path and point the REPL at the new header. Subsequent prompts
 	// grow the branch, never the original.
-	msgs := make(agentcore.MessageList, len(path))
-	for i, e := range path {
-		msgs[i] = e.Message
-	}
 	deps.header = newHeader
-	deps.agentCtx.Messages = msgs
+	deps.agentCtx.Messages = proj.Messages
 	// The new file already holds the copied path verbatim, so mark it all
 	// persisted and set the active leaf to the copied tip.
-	deps.persisted = len(path)
-	deps.curLeaf = ""
-	if len(path) > 0 {
-		deps.curLeaf = path[len(path)-1].ID
-	}
+	deps.persisted = len(proj.Messages)
+	deps.curLeaf = proj.LeafID
 	// A side thread branched from the old conversation is meaningless against the
 	// new branch, so drop it (#281).
 	deps.lastBtw = nil
@@ -837,7 +864,7 @@ func runForkClone(out io.Writer, deps *replDeps, line string) {
 	if cmd == "/fork" {
 		action = "forked"
 	}
-	fmt.Fprintf(out, "%s session %s → %s (%d messages)\n", action, newHeader.ParentSession, newHeader.ID, len(msgs))
+	fmt.Fprintf(out, "%s session %s → %s (%d messages)\n", action, newHeader.ParentSession, newHeader.ID, len(proj.Messages))
 }
 
 // runTree handles the /tree command (US-007, #123): the branch-navigation view
@@ -854,8 +881,8 @@ func runForkClone(out io.Writer, deps *replDeps, line string) {
 func runTree(out io.Writer, deps *replDeps, line string) {
 	// Persist any un-saved turn first so the tree reflects the live conversation.
 	cli.PersistTurn(out, deps)
-	_, entries, err := deps.store.LoadEntries(deps.header.ID)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	entries, err := deps.store.Entries(deps.header.ID)
+	if err != nil {
 		fmt.Fprintf(out, "pigo: cannot read session tree: %v\n", err)
 		return
 	}
@@ -864,7 +891,12 @@ func runTree(out io.Writer, deps *replDeps, line string) {
 		return
 	}
 
-	lines := session.RenderTreeLines(entries, deps.curLeaf)
+	leaf, err := deps.store.MainLeaf(deps.header.ID)
+	if err != nil {
+		fmt.Fprintf(out, "pigo: cannot read session tree: %v\n", err)
+		return
+	}
+	lines := session.RenderTreeLinesV4(entries, leaf)
 	fields := strings.Fields(line)
 	if len(fields) < 2 {
 		// Print the numbered tree for selection.
@@ -885,15 +917,123 @@ func runTree(out io.Writer, deps *replDeps, line string) {
 	// root→leaf path. The chosen entry is already persisted, so persisted stays at
 	// the rebuilt length; the next turn branches from curLeaf.
 	target := lines[n-1].Entry
-	path := session.PathToLeaf(entries, target.ID)
-	msgs := make(agentcore.MessageList, len(path))
-	for i, e := range path {
-		msgs[i] = e.Message
+	if target.ID == leaf {
+		fmt.Fprintln(out, "Already at this point")
+		return
 	}
+	summary, summaryErr := askBranchSummary(out, deps, entries, target.ID)
+	if summaryErr != nil {
+		fmt.Fprintf(out, "branch summary failed: %v (navigation cancelled)\n", summaryErr)
+		return
+	}
+	if summary != "" {
+		entry := session.V4Entry{
+			Type:      session.EntryTypeBranchSummary,
+			ID:        session.NewEntryID(),
+			ParentID:  target.ID,
+			Timestamp: time.Now().UTC(),
+			Summary:   summary,
+		}
+		if _, err := deps.store.AppendV4Entry(deps.header.ID, deps.header, entry); err != nil {
+			fmt.Fprintf(out, "pigo: cannot persist branch summary: %v\n", err)
+			return
+		}
+	}
+	targetID := target.ID
+	if err := deps.store.MoveLane(deps.header.ID, "main", &targetID); err != nil {
+		fmt.Fprintf(out, "pigo: cannot switch branch: %v\n", err)
+		return
+	}
+	proj, err := deps.store.Projection(deps.header.ID, target.ID)
+	if err != nil {
+		fmt.Fprintf(out, "pigo: cannot rebuild branch context: %v\n", err)
+		return
+	}
+	msgs := proj.Messages
 	deps.agentCtx.Messages = msgs
-	deps.curLeaf = target.ID
+	deps.curLeaf = proj.LeafID
 	deps.persisted = len(msgs)
 	fmt.Fprintf(out, "switched to branch at node %d (%d messages) — next prompt continues from here\n", n, len(msgs))
+}
+
+// runLabel sets or clears a label fact on the n-th tree line, sharing the same
+// numbering as /tree. An empty label clears the fact.
+func runLabel(out io.Writer, deps *replDeps, line string) {
+	cli.PersistTurn(out, deps)
+	fields := strings.Fields(line)
+	if len(fields) < 2 {
+		fmt.Fprintln(out, "usage: /label <n> [text]")
+		return
+	}
+	n, convErr := strconv.Atoi(fields[1])
+	if convErr != nil || n < 1 {
+		fmt.Fprintln(out, "usage: /label <n> [text]")
+		return
+	}
+	entries, err := deps.store.Entries(deps.header.ID)
+	if err != nil {
+		fmt.Fprintf(out, "pigo: cannot read session tree: %v\n", err)
+		return
+	}
+	leaf, err := deps.store.MainLeaf(deps.header.ID)
+	if err != nil {
+		fmt.Fprintf(out, "pigo: cannot read session tree: %v\n", err)
+		return
+	}
+	lines := session.RenderTreeLinesV4(entries, leaf)
+	if n > len(lines) {
+		fmt.Fprintf(out, "invalid selection %d (1..%d)\n", n, len(lines))
+		return
+	}
+	label := ""
+	if len(fields) > 2 {
+		label = strings.TrimSpace(strings.TrimPrefix(line, "/label "+fields[1]))
+	}
+	target := lines[n-1].Entry
+	if err := deps.store.SetLabel(deps.header.ID, target.ID, label); err != nil {
+		fmt.Fprintf(out, "pigo: label failed: %v\n", err)
+		return
+	}
+	if label == "" {
+		fmt.Fprintf(out, "cleared label on node %d\n", n)
+		return
+	}
+	fmt.Fprintf(out, "set label on node %d: %s\n", n, label)
+}
+
+// askBranchSummary prompts for the branch-summary policy before navigating to a
+// non-current leaf. It returns "" for "No summary", a generated summary for
+// "Summarize", or the typed custom text for "Custom prompt".
+func askBranchSummary(out io.Writer, deps *replDeps, entries []session.V4Entry, targetID string) (string, error) {
+	fmt.Fprintln(out, "Branch summary: [N]o summary / [S]ummarize / [C]ustom prompt")
+	line, err := deps.in.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return "", err
+	}
+	choice := strings.ToLower(strings.TrimSpace(line))
+	if choice == "" || strings.HasPrefix(choice, "n") {
+		return "", nil
+	}
+	if strings.HasPrefix(choice, "s") {
+		path := session.PathToLeafV4(entries, targetID)
+		msgs := make(agentcore.MessageList, 0, len(path))
+		for _, e := range path {
+			if !e.IsMessageEntry() {
+				continue
+			}
+			if m, msgErr := e.MessageValue(); msgErr == nil {
+				msgs = append(msgs, m)
+			}
+		}
+		stream := provider.StreamFnFromProvider(deps.live.Provider)
+		model := provider.Model{Provider: deps.live.ProviderName, ID: run.WireModel(deps.live.Model), ContextWindow: deps.live.ContextWindow}
+		scfg := provider.StreamConfig{}
+		if deps.creds != nil {
+			scfg.APIKey = deps.creds.GetAPIKey(context.Background(), deps.live.ProviderName)
+		}
+		return compaction.GenerateSummary(context.Background(), stream, model, msgs, compaction.DefaultCompactionSettings.ReserveTokens, "", scfg)
+	}
+	return strings.TrimSpace(line), nil
 }
 
 // runResume handles /resume: with no argument it lists saved sessions for the
@@ -945,14 +1085,14 @@ func runResume(out io.Writer, deps *replDeps, line string) {
 		return
 	}
 	meta := metas[n-1]
-	header, entries, err := store.TranscriptStore().LoadEntries(meta.SessionID)
+	_, header, msgs, err := store.Load(meta.SessionID)
 	if err != nil {
 		fmt.Fprintf(out, "pigo: resume failed: %v\n", err)
 		return
 	}
-	msgs := make(agentcore.MessageList, len(entries))
-	for i, e := range entries {
-		msgs[i] = e.Message
+	curLeaf := ""
+	if proj, projErr := store.Projection(meta.SessionID, ""); projErr == nil {
+		curLeaf = proj.LeafID
 	}
 	deps.header = header
 	if deps.live != nil {
@@ -965,10 +1105,7 @@ func runResume(out io.Writer, deps *replDeps, line string) {
 	}
 	deps.agentCtx.Messages = msgs
 	deps.persisted = len(msgs)
-	deps.curLeaf = ""
-	if len(entries) > 0 {
-		deps.curLeaf = entries[len(entries)-1].ID
-	}
+	deps.curLeaf = curLeaf
 	deps.lastBtw = nil
 	deps.lastBtwBase = 0
 	if deps.telemetry != nil {
@@ -1024,7 +1161,19 @@ func runImport(out io.Writer, deps *replDeps, line string) {
 		fmt.Fprintln(out, "usage: /import <path.jsonl>")
 		return
 	}
-	newHeader, entries, err := deps.store.Import(path, time.Now().UTC())
+	newHeader, entries, facts, err := deps.store.ImportV4(path, time.Now().UTC())
+	if err != nil {
+		fmt.Fprintf(out, "pigo: import failed: %v\n", err)
+		return
+	}
+	meta := sessionstore.NewMetadata(newHeader.ID, "Session", "pigo", newHeader.Model, deps.cwd)
+	meta.ParentSessionID = newHeader.ParentSession
+	meta.LastActiveAt = newHeader.UpdatedAt
+	if err := deps.store.ImportV4Entries(meta, newHeader, entries, facts); err != nil {
+		fmt.Fprintf(out, "pigo: import failed: %v\n", err)
+		return
+	}
+	proj, err := deps.store.Projection(newHeader.ID, "")
 	if err != nil {
 		fmt.Fprintf(out, "pigo: import failed: %v\n", err)
 		return
@@ -1032,17 +1181,10 @@ func runImport(out io.Writer, deps *replDeps, line string) {
 	// Swap the live session to the imported one: rebuild the flat message list and
 	// point the REPL at the new header. The imported file already holds the entries
 	// verbatim, so mark them all persisted and set the active leaf to the tip.
-	msgs := make(agentcore.MessageList, len(entries))
-	for i, e := range entries {
-		msgs[i] = e.Message
-	}
 	deps.header = newHeader
-	deps.agentCtx.Messages = msgs
-	deps.persisted = len(entries)
-	deps.curLeaf = ""
-	if len(entries) > 0 {
-		deps.curLeaf = entries[len(entries)-1].ID
-	}
+	deps.agentCtx.Messages = proj.Messages
+	deps.persisted = len(proj.Messages)
+	deps.curLeaf = proj.LeafID
 	// A side thread branched from the previous conversation no longer applies to
 	// the imported one, so drop it (#281).
 	deps.lastBtw = nil
@@ -1124,7 +1266,7 @@ func runSession(out io.Writer, deps *replDeps) {
 // retained tail, and prints the before/after token counts and retained message
 // count. A failure is reported but non-fatal — the original context is kept
 // unchanged (US-004). It uses the same provider/model as the live run.
-func runManualCompact(out io.Writer, deps replDeps) {
+func runManualCompact(out io.Writer, deps *replDeps) {
 	msgs := deps.agentCtx.Messages
 	settings := compaction.DefaultCompactionSettings
 	before := compaction.EstimateContextTokens(msgs).Tokens
@@ -1151,7 +1293,17 @@ func runManualCompact(out io.Writer, deps replDeps) {
 	}
 	now := time.Now().UnixMilli()
 	rebuilt := res.RebuildContext(msgs, now)
+	deps.header.UpdatedAt = time.Now().UTC()
+	deps.header.Model = deps.live.Model
+	deps.header.Provider = deps.live.ProviderName
+	leaf, err := deps.store.AppendCompaction(deps.header.ID, deps.header, res)
+	if err != nil {
+		fmt.Fprintf(out, "compaction failed to persist: %v (context left unchanged)\n", err)
+		return
+	}
 	deps.agentCtx.Messages = rebuilt
+	deps.curLeaf = leaf
+	deps.persisted = len(rebuilt)
 	after := compaction.EstimateContextTokens(rebuilt).Tokens
 	summarized := len(msgs) - (len(rebuilt) - 1)
 	fmt.Fprintf(out, "compacted: %d → %d tokens, summarized %d messages, kept %d\n",
@@ -1165,51 +1317,25 @@ func runManualCompact(out io.Writer, deps replDeps) {
 // no checkpoint exists it falls back to the same lossy compaction /compact runs.
 // It prints the before/after token counts; a failure is reported but non-fatal
 // (the original context is kept unchanged).
-func runManualRebuild(out io.Writer, deps replDeps) {
-	msgs := deps.agentCtx.Messages
-	before := compaction.EstimateContextTokens(msgs).Tokens
-
-	// Build a RunConfig matching a normal turn so the no-checkpoint fallback can
-	// summarize against the live provider/model (RebuildFromCheckpoint reuses the
-	// loop's compaction path). The checkpoint path itself is pure/local.
-	cfg := runtime.RunConfig{
-		LoopConfig: runtime.LoopConfig{
-			Model:         run.WireModel(deps.live.Model),
-			Provider:      deps.live.ProviderName,
-			ThinkingLevel: deps.live.ThinkingLevel,
-			Stream:        provider.StreamFnFromProvider(deps.live.Provider),
-			ContextWindow: deps.live.ContextWindow,
-			Compaction:    compaction.DefaultCompactionSettings,
-		},
-	}
-	if deps.creds != nil {
-		cfg.GetAPIKey = deps.creds.GetAPIKey
-	}
-
-	// Checkpoints live at <memoryRoot>/sessions/<id>/checkpoint.md; recover from
-	// the same root streamRun writes to. Empty when memory is disabled — then
-	// RebuildFromCheckpoint falls back to lossy compaction.
-	memoryRoot := deps.memoryRoot
-
-	fmt.Fprintln(out, ui.Colorize(ui.Enabled(), ui.Dim, "Preparing conversation context…"))
-	res, err := runtime.RebuildFromCheckpoint(context.Background(), msgs, deps.header.ID, memoryRoot, &cfg, nil)
+func runManualRebuild(out io.Writer, deps *replDeps) {
+	before := compaction.EstimateContextTokens(deps.agentCtx.Messages).Tokens
+	fmt.Fprintln(out, ui.Colorize(ui.Enabled(), ui.Dim, "Preparing conversation context..."))
+	proj, err := deps.store.Projection(deps.header.ID, "")
 	if err != nil {
 		fmt.Fprintf(out, "rebuild failed: %v (context left unchanged)\n", err)
 		return
 	}
-	if res.NoOp {
-		fmt.Fprintf(out, "nothing to rebuild (%d tokens, %d messages)\n", before, len(msgs))
+	if len(proj.Messages) == 0 {
+		fmt.Fprintf(out, "nothing to rebuild (%d tokens, %d messages)\n", before, len(deps.agentCtx.Messages))
 		return
 	}
-	deps.agentCtx.Messages = res.Messages
-	source := "checkpoint"
-	if !res.FromCheckpoint {
-		source = "compaction (no checkpoint)"
-	}
-	fmt.Fprintf(out, "rebuilt from %s: %d → %d tokens, collapsed %d messages, kept %d\n",
-		source, res.TokensBefore, res.TokensAfter, res.SummarizedCount, res.KeptCount)
+	rebuilt := proj.Messages
+	after := compaction.EstimateContextTokens(rebuilt).Tokens
+	deps.agentCtx.Messages = rebuilt
+	deps.curLeaf = proj.LeafID
+	deps.persisted = len(rebuilt)
+	fmt.Fprintf(out, "rebuilt from sqlite projection: %d -> %d tokens, %d messages\n", before, after, len(rebuilt))
 }
-
 // replayTranscript prints a resumed session's prior messages to out so the user
 // sees the conversation so far before the first new prompt.
 func replayTranscript(out io.Writer, messages []agentcore.AgentMessage) {

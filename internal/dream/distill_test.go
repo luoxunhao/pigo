@@ -36,10 +36,9 @@ func userMsg(text string) agentcore.UserMessage {
 	return agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent(text)}}
 }
 
-// TestResolveSessionStoreSeesProjectAndLegacy verifies the distillation source
-// reads sessions from the project-scoped stores (the single write home) plus
-// any not-yet-migrated legacy flat sessions.
-func TestResolveSessionStoreSeesProjectAndLegacy(t *testing.T) {
+// TestResolveSessionStoreSeesAllSQLiteSessions verifies the distillation source
+// reads every session from the canonical SQLite store.
+func TestResolveSessionStoreSeesAllSQLiteSessions(t *testing.T) {
 	home := t.TempDir()
 	cleanupStores(t)
 	t.Setenv("PIGO_HOME", home)
@@ -62,12 +61,11 @@ func TestResolveSessionStoreSeesProjectAndLegacy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	legacy, err := session.NewStore(filepath.Join(home, "sessions"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	legacyMeta := sessionstore.NewMetadata("legacy-sess", "Project", "pigo", "m", ws)
+	legacyMeta.CreatedAt = now
+	legacyMeta.LastActiveAt = now.Add(time.Hour)
 	legacyHeader := session.SessionHeader{ID: "legacy-sess", CreatedAt: now, UpdatedAt: now.Add(time.Hour), Model: "m", Provider: "p", Cwd: ws}
-	if err := legacy.Save(legacyHeader, msgs); err != nil {
+	if err := proj.Create(legacyMeta, legacyHeader, msgs); err != nil {
 		t.Fatal(err)
 	}
 
@@ -86,7 +84,7 @@ func TestResolveSessionStoreSeesProjectAndLegacy(t *testing.T) {
 		t.Fatalf("load project session: err=%v msgs=%d", err, len(loaded))
 	}
 	if _, loaded, err := src.Load("legacy-sess"); err != nil || len(loaded) != 1 {
-		t.Fatalf("load legacy session: err=%v msgs=%d", err, len(loaded))
+		t.Fatalf("load second session: err=%v msgs=%d", err, len(loaded))
 	}
 }
 

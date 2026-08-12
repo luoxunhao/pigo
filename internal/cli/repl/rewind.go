@@ -18,7 +18,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/agenttool"
 	"github.com/smallnest/pigo/internal/cli"
 	"github.com/smallnest/pigo/internal/session"
@@ -104,23 +103,29 @@ func rewindConversation(out io.Writer, deps *replDeps, leafID string) bool {
 		deps.persisted = 0
 		return true
 	}
-	_, entries, err := deps.store.LoadEntries(deps.header.ID)
+	entries, err := deps.store.Entries(deps.header.ID)
 	if err != nil {
 		fmt.Fprintf(out, "pigo: cannot read session tree: %v\n", err)
 		return false
 	}
-	path := session.PathToLeaf(entries, leafID)
+	path := session.PathToLeafV4(entries, leafID)
 	if len(path) == 0 {
 		fmt.Fprintf(out, "pigo: restore point's conversation node is no longer in the tree; files were restored but the conversation was left unchanged\n")
 		return false
 	}
-	msgs := make(agentcore.MessageList, len(path))
-	for i, e := range path {
-		msgs[i] = e.Message
+	target := leafID
+	if err := deps.store.MoveLane(deps.header.ID, "main", &target); err != nil {
+		fmt.Fprintf(out, "pigo: cannot move lane: %v\n", err)
+		return false
 	}
-	deps.agentCtx.Messages = msgs
-	deps.curLeaf = leafID
-	deps.persisted = len(msgs)
+	proj, err := deps.store.Projection(deps.header.ID, leafID)
+	if err != nil {
+		fmt.Fprintf(out, "pigo: cannot rebuild branch context: %v\n", err)
+		return false
+	}
+	deps.agentCtx.Messages = proj.Messages
+	deps.curLeaf = proj.LeafID
+	deps.persisted = len(proj.Messages)
 	return true
 }
 

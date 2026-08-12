@@ -425,7 +425,7 @@ func TodoReminders(tools []agentcore.AgentTool) *runtime.ReminderRegistry {
 // tool is backed by (its Store.Root()), or "" when persistent memory is not wired
 // into this tool set (memory.enabled=false, --no-tools, or the store failed to
 // open). It is the canonical source of the memory root for checkpoint persistence
-// and context rebuild (<root>/sessions/<id>/checkpoint.md): callers resolve the
+// and context rebuild from SQLite compaction entries: callers resolve the
 // root through the opened store rather than re-deriving it from the session store.
 func MemoryRootFromTools(tools []agentcore.AgentTool) string {
 	for _, t := range tools {

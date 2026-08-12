@@ -125,7 +125,7 @@ func newHTTPSession(ctx context.Context, opts Options, client *httpclient.Client
 		mgr = nil
 	}
 	s := &runSession{
-		store:      store.TranscriptStore(),
+		store:      store,
 		header:     header,
 		agentCtx:   &agentcore.AgentContext{SystemPrompt: opts.SysPrompt, Messages: history, Tools: opts.Tools},
 		live:       live,
