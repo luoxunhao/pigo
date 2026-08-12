@@ -958,6 +958,7 @@ func runResume(out io.Writer, deps *replDeps, line string) {
 	if deps.telemetry != nil {
 		deps.telemetry.Reset()
 	}
+	fmt.Fprintf(os.Stderr, "pigo: /resume switched to %s\n", meta.SessionID)
 	fmt.Fprintf(out, "resumed session %s (%d messages)\n", meta.SessionID, len(msgs))
 }
 

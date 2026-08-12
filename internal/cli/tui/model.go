@@ -939,6 +939,7 @@ func (m Model) runSlash(line string) (tea.Model, tea.Cmd) {
 		m.statusBar.SetModel(m.live.Model)
 		m.statusBar.SetThinking(string(m.live.ThinkingLevel))
 		m.relayout()
+		fmt.Fprintf(os.Stderr, "pigo: /resume switched to %s\n", metas[n-1].SessionID)
 		m.transcript.addSystem(fmt.Sprintf("switched to session %s (%d messages)", metas[n-1].SessionID, len(history)))
 		return m, nil
 	}
