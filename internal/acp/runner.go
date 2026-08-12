@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/agenttool"
@@ -13,6 +12,18 @@ import (
 	"github.com/smallnest/pigo/internal/provider"
 	"github.com/smallnest/pigo/internal/runtime"
 )
+
+// TurnHooks are the runtime-loop seams a session manager installs for pending
+// queue delivery. They mirror runtime.RunConfig's GetSteeringMessages and
+// GetFollowUpMessages.
+type TurnHooks struct {
+	Steering func(ctx context.Context) []agentcore.AgentMessage
+	FollowUp func(ctx context.Context, agentCtx *agentcore.AgentContext) []agentcore.AgentMessage
+	// InstallSeams, when non-nil, installs the run's hook seams into a freshly
+	// built RunConfig. Dispatcher binds it per session so RuntimeRunner stays
+	// agnostic of session identity. An error fails the turn closed.
+	InstallSeams func(cfg *runtime.RunConfig) error
+}
 
 // RuntimeRunner drives pigo's real agent loop through runtime.RunHeadless. It
 // is the production SessionRunner used by the ACP server.
@@ -176,20 +187,6 @@ func (r *RuntimeRunner) effectiveContextWindow(model string, prov provider.Provi
 	return 0
 }
 
-// providerForModel exposes the runtime resolution to slash commands and title
-// generation through the dispatcher.
-func (d *Dispatcher) providerForModel(sess *AcpSession) (provider.Provider, string, string, string, error) {
-	rr, ok := d.runner.(*RuntimeRunner)
-	if !ok || rr == nil {
-		return nil, "", "", "", fmt.Errorf("runtime runner is not available")
-	}
-	model := sess.Model
-	if strings.TrimSpace(model) == "" {
-		model = rr.Model
-	}
-	return rr.ResolveForModel(model)
-}
-
 // snapshotRecorder returns the rewind journal shared by the tool set, using
 // the explicit Snap when set.
 func (r *RuntimeRunner) snapshotRecorder() *agenttool.FileSnapshotRecorder {
@@ -210,3 +207,4 @@ func (r *RuntimeRunner) snapshotRecorder() *agenttool.FileSnapshotRecorder {
 	}
 	return nil
 }
+

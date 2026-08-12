@@ -120,16 +120,6 @@ func buildInitializeResponse(version string) map[string]any {
 				"delete": map[string]any{},
 			},
 			"mcpCapabilities": map[string]any{"http": false, "sse": false},
-			"_meta": map[string]any{
-				"pigo.extensions":      true,
-				"pigo.event":           true,
-				"pigo.command":         true,
-				"pigo.status":          true,
-				"pigo.models":          true,
-				"pigo.models.discover": true,
-				"pigo.config":          true,
-				"pigo.messages":        true,
-			},
 		},
 		"authMethods": []any{},
 		"agentInfo": map[string]any{

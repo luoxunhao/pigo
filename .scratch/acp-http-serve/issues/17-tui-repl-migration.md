@@ -1,4 +1,4 @@
-# 17 - TUI/REPL 迁移
+﻿# 17 - TUI/REPL 迁移
 
 **What to build:** TUI 和 REPL 通过进程内 HTTP client 消费 serve，不再直连 core。
 
@@ -6,8 +6,8 @@
 
 **Status:** ready-for-agent
 
-- [ ] TUI/REPL 启动时内部启动 serve
-- [ ] 对话、事件、命令、权限、配置和 mode 都通过 HTTP client
-- [ ] TUI/REPL 不再直连 core
-- [ ] 现有交互行为保持兼容
-- [ ] 集成测试覆盖 TUI/REPL 的 serve client 路径
+- [x] TUI/REPL 启动时内部启动 serve
+- [x] 对话、事件、命令、权限、配置和 mode 都通过 HTTP client
+- [x] TUI/REPL 不再直连 core
+- [x] 现有交互行为保持兼容
+- [x] 集成测试覆盖 TUI/REPL 的 serve client 路径

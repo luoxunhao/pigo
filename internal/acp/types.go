@@ -37,28 +37,9 @@ const (
 	MethodSessionCancel     = "session/cancel"
 	MethodSessionMode       = "session/set_mode"
 	MethodSessionConfigOpt  = "session/set_config_option"
-	MethodModelSet          = "model/set"
 	MethodRequestPermission = "session/request_permission"
 
 	NotificationSessionUpdate = "session/update"
-
-	MethodPigoEvent          = "pigo/event"
-	MethodPigoCommand        = "pigo/command"
-	MethodPigoStatus         = "pigo/status"
-	MethodPigoModels         = "pigo/models"
-	MethodPigoModelsDiscover = "pigo/models/discover"
-	MethodPigoConfig         = "pigo/config"
-	MethodPigoConfigTest     = "pigo/config/test"
-	MethodPigoMessages       = "pigo/messages"
-	MethodPigoTrustList      = "pigo/trust/list"
-	MethodPigoTrustSet       = "pigo/trust/set"
-	MethodPigoRewind         = "pigo/rewind"
-	MethodPigoFork           = "pigo/fork"
-	MethodPigoTree           = "pigo/tree"
-	MethodPigoGoal           = "pigo/goal"
-	MethodPigoBtw            = "pigo/btw"
-	MethodPigoDream          = "pigo/dream"
-	MethodPigoRemoteControl  = "pigo/remotecontrol"
 )
 
 // RequestID is a JSON-RPC request identifier: a number or a string.

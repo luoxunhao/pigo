@@ -115,3 +115,22 @@ func TestHTTPAdapterToolUpdatedCarriesResultShape(t *testing.T) {
 		t.Fatalf("terminal output = %v", terminal["data"])
 	}
 }
+
+func TestHTTPAdapterRejectsNonStandardMethods(t *testing.T) {
+	adapter := NewHTTPAdapter(nil, nil, "test")
+	for _, method := range []string{"model/set", "pigo/command", "pigo/event", "pigo/goal"} {
+		_, rpcErr := adapter.HandleRequest(context.Background(), RequestID{}, method, nil)
+		if rpcErr == nil || rpcErr.Code != CodeMethodNotFound {
+			t.Fatalf("%s rpcErr = %v, want method not found", method, rpcErr)
+		}
+	}
+}
+
+func TestHTTPAdapterInitializeHasNoPigoMeta(t *testing.T) {
+	adapter := NewHTTPAdapter(nil, nil, "test")
+	resp := adapter.initialize()
+	capabilities, _ := resp["agentCapabilities"].(map[string]any)
+	if _, ok := capabilities["_meta"]; ok {
+		t.Fatalf("initialize still advertises _meta: %+v", capabilities)
+	}
+}

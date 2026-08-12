@@ -33,7 +33,6 @@ func TestServerInitialize(t *testing.T) {
 			LoadSession bool `json:"loadSession"`
 			Prompt      any  `json:"promptCapabilities"`
 			Session     any  `json:"sessionCapabilities"`
-			Meta        any  `json:"_meta"`
 		} `json:"agentCapabilities"`
 		AgentInfo map[string]string `json:"agentInfo"`
 	}
@@ -48,9 +47,6 @@ func TestServerInitialize(t *testing.T) {
 	}
 	if resp.AgentInfo["name"] != "pigo" {
 		t.Fatalf("agentInfo = %+v", resp.AgentInfo)
-	}
-	if _, ok := resp.AgentCapabilities.Meta.(map[string]any); !ok {
-		t.Fatalf("_meta missing: %+v", resp.AgentCapabilities.Meta)
 	}
 }
 

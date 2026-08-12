@@ -28,7 +28,7 @@ pigo.exe -v                       # 打印版本信息
 | 路径 | 职责 |
 |---|---|
 | `cmd/pigo` | 入口：CLI 参数解析、TUI/REPL/headless 分发、`pigo acp` stdio server |
-| `internal/acp` | ACP 协议层：`dispatch.go` 核心分发、`pigo_rpc.go` 已实现的 `pigo/*` RPC、`extensions.go` 斜杠命令层、`sessioninfo.go` / `events.go` 负载与事件助手、`server_*.go` transport |
+| `internal/acp` | ACP 标准适配层：`http_adapter.go` 标准方法映射、`events.go` 事件助手、`transport.go` / `server.go` stdio server、`runner.go` runtime runner |
 | `internal/cli` | TUI、REPL、headless 等前端 |
 | `internal/agenttool` | 工具实现：bash、search、websearch、文件工具等 |
 | `internal/provider` | 模型 provider 与流式协议适配 |
@@ -41,11 +41,8 @@ pigo.exe -v                       # 打印版本信息
 
 ## 关键约定
 
-- ACP 方法按层放置，不按客户端命名：
-  - 核心 `session/*` 与 `model/*` 的分发在 `internal/acp/dispatch.go` 的 `HandleRequest`。
-- 已实现的 `pigo/*` RPC（`pigo/command`、`pigo/status`、`pigo/models`、`pigo/models/discover`、`pigo/config`、`pigo/config/test`、`pigo/messages`）集中在 `internal/acp/pigo_rpc.go` / `internal/acp/discover.go`；trust 管理通过新增的 `pigo/trust/list` 与 `pigo/trust/set` 暴露。
-  - 斜杠命令实现集中在 `internal/acp/extensions.go`。
-  - 新增 ACP 客户端只做客户端侧映射，不要新建 `xx_extensions.go`；协议方法只加一次，所有客户端共享。
+- ACP 只暴露标准方法：`initialize`、`session/*`、`session/set_mode`、`session/set_config_option`、`session/prompt`、`session/cancel`、`session/request_permission`；分发在 `internal/acp/http_adapter.go` 的 `HandleRequest`。
+- 斜杠命令通过 serve 的 `POST /api/v1/commands` 与 `POST /api/v1/session/{id}/command` 暴露，再经 `available_commands_update` 通知 ACP 客户端。
 - 会话删除必须走 `internal/sessionstore` 的 store API，保持磁盘持久化一致。
 - 新增能力默认在核心层实现；外部客户端通过 ACP 暴露，TUI/REPL 通过共享 runtime 直连，避免旁路实现。
 - 不为旧协议/旧接口保留兼容 shim；移除即移除。`--acp`、`model/set`、`pigo/*` 已从对外入口移除，不再提供向后兼容 alias。
@@ -54,10 +51,10 @@ pigo.exe -v                       # 打印版本信息
 ## 责任边界
 
 - pigo 负责模型供应商配置、模型目录与模型测试：
-  - `pigo/config`：读写模型供应商配置（`~/.config/pigo/config.toml`）；API key 永不出 pigo，任何客户端都只拿到 `apiKeyConfigured`。
-  - `pigo/models`：返回已配置模型列表。
-  - `pigo/models/discover`：向供应商拉取可用的模型列表。
-  - `pigo/config/test`：按 `modelId` 测试已配置模型，pigo 自己解析连接信息与 API key，不接收也不返回 key。
+  - `GET/PATCH /api/v1/config`：读写模型供应商配置（`~/.config/pigo/config.toml`）；API key 永不出 pigo，任何客户端都只拿到 `apiKeyConfigured`。
+  - `GET /api/v1/config/providers`：返回已配置模型列表。
+  - `POST /api/v1/config/providers/discover`：向供应商拉取可用的模型列表。
+  - `POST /api/v1/config/providers/test`：按 `modelId` 测试已配置模型，pigo 自己解析连接信息与 API key，不接收也不返回 key。
 - pigo 不负责第三方 ACP agent 的模型目录；第三方 agent 模型列表由客户端（ash-workbench desktop）通过 ACP `session/new` 读取。
 - 新增后端逻辑前，先确认该能力属于 pigo（配置/模型目录/模型测试）还是客户端（第三方 agent 模型目录、UI 编排），不要把客户端职责下沉到 pigo。
 

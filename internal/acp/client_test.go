@@ -2,82 +2,9 @@ package acp
 
 import (
 	"context"
-	"encoding/json"
-	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/smallnest/pigo/internal/agentcore"
-	"github.com/smallnest/pigo/internal/provider"
 )
-
-func TestClientChatRoundTrip(t *testing.T) {
-	runner := &fakeRunner{
-		events: []agentcore.AgentEvent{
-			agentcore.MessageUpdateEvent{
-				Message:               textPartial("hello from acp"),
-				AssistantMessageEvent: provider.StreamTextEvent{Partial: textPartial("hello from acp")},
-			},
-		},
-	}
-	home := t.TempDir()
-	ws := filepath.Join(t.TempDir(), "ws")
-	cl, stop := StartInProcess(runner, home, "openrouter/free", "sys", ws, nil, nil)
-	defer stop()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := cl.Initialize(ctx); err != nil {
-		t.Fatal(err)
-	}
-	sessionID, err := cl.NewSession(ctx, ws)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sessionID == "" {
-		t.Fatal("empty session id")
-	}
-
-	done := make(chan string, 1)
-	go func() {
-		stopReason, err := cl.Prompt(ctx, sessionID, "hi")
-		if err != nil {
-			t.Errorf("prompt: %v", err)
-			done <- ""
-			return
-		}
-		done <- stopReason
-	}()
-
-	var sawText bool
-	for {
-		select {
-		case msg := <-cl.Notifications():
-			if msg.Notification == nil || msg.Notification.Method != NotificationSessionUpdate {
-				continue
-			}
-			var payload struct {
-				Update map[string]any `json:"update"`
-			}
-			if err := json.Unmarshal(msg.Notification.Params, &payload); err != nil {
-				t.Fatal(err)
-			}
-			if payload.Update["sessionUpdate"] == "agent_message_chunk" {
-				sawText = true
-			}
-		case stopReason := <-done:
-			if stopReason != "end_turn" {
-				t.Fatalf("stopReason = %q", stopReason)
-			}
-			if !sawText {
-				t.Fatal("no text notification received")
-			}
-			return
-		case <-ctx.Done():
-			t.Fatal("timed out")
-		}
-	}
-}
 
 func TestClientRoutesPermissionRequests(t *testing.T) {
 	clientT, serverT := NewChannelPair()

@@ -132,22 +132,6 @@ func (c *Client) ListSessions(ctx context.Context, cwd string) ([]map[string]any
 	return resp.Sessions, nil
 }
 
-// ListAllSessions returns every stored session across all projects. It is the
-// explicit all-projects entry point on top of the pi-acp default scoping.
-func (c *Client) ListAllSessions(ctx context.Context) ([]map[string]any, error) {
-	raw, err := c.transport.SendRequest(ctx, MethodSessionList, map[string]any{"all": true})
-	if err != nil {
-		return nil, err
-	}
-	var resp struct {
-		Sessions []map[string]any `json:"sessions"`
-	}
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return nil, err
-	}
-	return resp.Sessions, nil
-}
-
 // DeleteSession removes a stored session idempotently.
 func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
 	_, err := c.transport.SendRequest(ctx, MethodSessionDelete, map[string]any{"sessionId": sessionID})
@@ -195,33 +179,6 @@ func (c *Client) Prompt(ctx context.Context, sessionID, text string) (string, er
 // Cancel cancels the running turn on a session.
 func (c *Client) Cancel(sessionID string) error {
 	return c.transport.SendNotification(MethodSessionCancel, map[string]any{"sessionId": sessionID})
-}
-
-// SetModel switches the session model for the next turn.
-func (c *Client) SetModel(ctx context.Context, sessionID, modelID string) error {
-	_, err := c.transport.SendRequest(ctx, MethodModelSet, map[string]any{
-		"sessionId": sessionID,
-		"modelId":   modelID,
-	})
-	return err
-}
-
-// Command executes a pigo slash command and returns its text result.
-func (c *Client) Command(ctx context.Context, sessionID, command string) (string, error) {
-	raw, err := c.transport.SendRequest(ctx, MethodPigoCommand, map[string]any{
-		"sessionId": sessionID,
-		"command":   command,
-	})
-	if err != nil {
-		return "", err
-	}
-	var resp struct {
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return "", err
-	}
-	return resp.Text, nil
 }
 
 // Close shuts the client pump down.

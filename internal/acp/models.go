@@ -106,11 +106,3 @@ func (m *ConfiguredModels) Delete(key string) error {
 	return config.SaveFileConfig(m.path, m.cfg)
 }
 
-// configuredModelList returns the current configured models, or nil when no
-// store is wired.
-func (d *Dispatcher) configuredModelList() []config.ModelConfig {
-	if d.models == nil {
-		return nil
-	}
-	return d.models.List()
-}

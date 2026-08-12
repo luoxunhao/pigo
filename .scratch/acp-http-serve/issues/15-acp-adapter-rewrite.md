@@ -1,4 +1,4 @@
-# 15 - ACP 适配层重写
+﻿# 15 - ACP 适配层重写
 
 **What to build:** `pigo acp` 作为标准 ACP 适配层，内部启动 serve 并通过 loopback HTTP client 调用；移除所有非标准 ACP 方法、通知和响应字段。
 
@@ -6,10 +6,10 @@
 
 **Status:** ready-for-agent
 
-- [ ] `pigo acp` 内部启动 serve 并使用 loopback HTTP client
-- [ ] 标准 ACP 方法面完整可用
-- [ ] `authenticate` 实现但 `authMethods` 为空，未知方法返回错误
-- [ ] `model/set`、`pigo/*`、`pigo/event` 全部移除
-- [ ] ACP 请求/响应不再包含非标准字段
-- [ ] `initialize` 能力声明与实现一致
-- [ ] ACP wire 测试覆盖完整标准流程
+- [x] `pigo acp` 内部启动 serve 并使用 loopback HTTP client
+- [x] 标准 ACP 方法面完整可用
+- [x] `authenticate` 实现但 `authMethods` 为空，未知方法返回错误
+- [x] `model/set`、`pigo/*`、`pigo/event` 全部移除
+- [x] ACP 请求/响应不再包含非标准字段
+- [x] `initialize` 能力声明与实现一致
+- [x] ACP wire 测试覆盖完整标准流程
