@@ -10,4 +10,4 @@
 - [ ] 手动验证对话、工具调用、权限确认、取消和历史恢复
 - [x] 确认 ACP 方法面只包含标准方法（自动化测试：非标准方法返回 `METHOD_NOT_FOUND`）
 - [x] 确认 ACP 通知只包含标准 `session/update` 和 `session/request_permission`（自动化测试：通知面录制）
-- [ ] 记录 Zed 验收结果
+- [ ] 记录 Zed 验收结果（步骤见 `docs/zed-acceptance.md`）
