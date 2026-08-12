@@ -287,6 +287,30 @@ func (m *PromptManager) Cancel(sessionID string) *APIError {
 	return nil
 }
 
+// DrainSteering pops every queued prompt for a session and returns their text
+// so a long-running goal loop can inject them as human corrections at its next
+// settle point. The submitter is unblocked immediately with a "steered" result.
+func (m *PromptManager) DrainSteering(sessionID string) []string {
+	st := m.stateFor(sessionID)
+	st.mu.Lock()
+	items := st.queue
+	st.queue = nil
+	directory := ""
+	var texts []string
+	for _, p := range items {
+		if directory == "" {
+			directory = p.req.Directory
+		}
+		if text := promptText(p.req.Prompt); text != "" {
+			texts = append(texts, text)
+		}
+		p.done <- gen.PromptResponse{MessageId: p.messageID, StopReason: "end_turn"}
+	}
+	st.mu.Unlock()
+	m.publishQueue(sessionID, directory, 0)
+	return texts
+}
+
 func (m *PromptManager) publishQueue(sessionID, directory string, queued int) {
 	m.broker.Publish("queue.updated", map[string]any{
 		"sessionId": sessionID, "directory": directory, "queuedCount": queued,

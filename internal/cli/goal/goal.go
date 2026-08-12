@@ -60,6 +60,10 @@ type Options struct {
 	// Persist replaces cli.PersistTurn so a serve host can persist the goal
 	// loop's messages with its own branch-aware store.
 	Persist func() error
+	// Steering, when non-nil, is called at each settle point. It returns
+	// human corrections queued while the goal loop was running; they are
+	// injected as user messages before the autonomous continuation prompt.
+	Steering func() []string
 }
 
 // runGoal parses and dispatches a /goal invocation. setCancel publishes the
@@ -274,10 +278,24 @@ func runGoalLoop(setCancel func(context.CancelFunc), out io.Writer, host cli.Hos
 				}
 				return nil
 			}
-			return []agentcore.AgentMessage{agentcore.UserMessage{
+			var msgs []agentcore.AgentMessage
+			if opts.Steering != nil {
+				for _, text := range opts.Steering() {
+					trimmed := strings.TrimSpace(text)
+					if trimmed == "" {
+						continue
+					}
+					msgs = append(msgs, agentcore.UserMessage{
+						RoleField: agentcore.RoleUser,
+						Content:   agentcore.ContentList{agentcore.NewTextContent(trimmed)},
+					})
+				}
+			}
+			msgs = append(msgs, agentcore.UserMessage{
 				RoleField: agentcore.RoleUser,
 				Content:   agentcore.ContentList{agentcore.NewTextContent(goalContinuationPrompt)},
-			}}
+			})
+			return msgs
 		},
 	}
 

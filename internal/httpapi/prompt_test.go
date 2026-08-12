@@ -88,3 +88,33 @@ func TestPromptManagerQueueFull(t *testing.T) {
 	}
 	close(block)
 }
+
+func TestPromptManagerDrainSteering(t *testing.T) {
+	broker := NewEventBroker()
+	block := make(chan struct{})
+	mgr := NewPromptManager(func(ctx context.Context, _ PromptRun) (gen.PromptResponse, error) {
+		<-block
+		return gen.PromptResponse{StopReason: "end_turn"}, nil
+	}, broker)
+	_, apiErr := mgr.SubmitAsync("s1", gen.PromptRequest{Directory: "E:/project/foo", Prompt: []map[string]interface{}{{"type": "text", "text": "first"}}})
+	if apiErr != nil {
+		t.Fatal(apiErr)
+	}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var syncResp gen.PromptResponse
+	go func() {
+		defer wg.Done()
+		syncResp, _ = mgr.SubmitSync("s1", gen.PromptRequest{Directory: "E:/project/foo", Prompt: []map[string]interface{}{{"type": "text", "text": "steer me"}}})
+	}()
+	time.Sleep(20 * time.Millisecond)
+	texts := mgr.DrainSteering("s1")
+	if len(texts) != 1 || texts[0] != "steer me" {
+		t.Fatalf("steering texts = %v, want [steer me]", texts)
+	}
+	wg.Wait()
+	if syncResp.StopReason != "end_turn" {
+		t.Fatalf("steered submit stopReason = %q, want end_turn", syncResp.StopReason)
+	}
+	close(block)
+}

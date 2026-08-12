@@ -133,6 +133,26 @@ func TestGoalBlockedRequiresEvidence(t *testing.T) {
 	}
 }
 
+func TestGoalStateUpdateObjectiveReactivates(t *testing.T) {
+	st := NewGoalState()
+	st.Start("goal-1", "original", 100)
+	st.MarkComplete("done")
+	if snap := st.Snapshot(); snap.Status != GoalComplete {
+		t.Fatalf("status = %q, want complete", snap.Status)
+	}
+	st.UpdateObjective("redirected")
+	snap := st.Snapshot()
+	if snap.Objective != "redirected" {
+		t.Fatalf("objective = %q, want redirected", snap.Objective)
+	}
+	if snap.Status != GoalActive {
+		t.Fatalf("status = %q, want active after correction", snap.Status)
+	}
+	if snap.TokenBudget != 100 {
+		t.Fatalf("token budget = %d, want preserved", snap.TokenBudget)
+	}
+}
+
 func TestGoalStateRecordIteration(t *testing.T) {
 	st := NewGoalState()
 	st.Start("g1", "obj", 1000)

@@ -80,7 +80,8 @@ func (h *serveGoalHost) SetLastBtwBase(int)                 {}
 func makeGoalFunc(opts cliOptions, env run.Env, pigoHome string, thinking agentcore.ThinkingLevel) httpapi.GoalFunc {
 	var mu sync.Mutex
 	goals := make(map[string]*agenttool.GoalState)
-	return func(ctx context.Context, sessionID, directory, args string, out io.Writer, beforeToolCall agentcore.BeforeToolCallFunc) (string, error) {
+	running := make(map[string]bool)
+	return func(ctx context.Context, sessionID, directory, args string, out io.Writer, beforeToolCall agentcore.BeforeToolCallFunc, steering func() []string) (string, error) {
 		store, err := sessionstore.OpenForWorkspace(pigoHome, directory)
 		if err != nil {
 			return "", err
@@ -123,6 +124,25 @@ func makeGoalFunc(opts cliOptions, env run.Env, pigoHome string, thinking agentc
 		}
 		mu.Unlock()
 
+		mu.Lock()
+		isRunning := running[sessionID]
+		mu.Unlock()
+		arg := strings.TrimSpace(args)
+		if isRunning {
+			switch arg {
+			case "", "status":
+				return goalSummary(state), nil
+			case "clear":
+				state.Clear()
+				return "goal cleared", nil
+			case "pause", "resume":
+				return "goal is already running; use /goal <new objective> to redirect it", nil
+			default:
+				state.UpdateObjective(arg)
+				return "goal updated: " + arg, nil
+			}
+		}
+
 		host := &serveGoalHost{
 			store:     store.TranscriptStore(),
 			header:    header,
@@ -140,9 +160,17 @@ func makeGoalFunc(opts cliOptions, env run.Env, pigoHome string, thinking agentc
 		persist := func() error {
 			return persistGoalStore(store, sessionID, header, host.agentCtx.Messages, prevCount)
 		}
+		mu.Lock()
+		running[sessionID] = true
+		mu.Unlock()
+		defer func() {
+			mu.Lock()
+			delete(running, sessionID)
+			mu.Unlock()
+		}()
 		line := "/goal"
-		if strings.TrimSpace(args) != "" {
-			line += " " + strings.TrimSpace(args)
+		if arg != "" {
+			line += " " + arg
 		}
 		goalpkg.RunGoalWithOptions(
 			func(context.CancelFunc) {},
@@ -153,6 +181,7 @@ func makeGoalFunc(opts cliOptions, env run.Env, pigoHome string, thinking agentc
 				Context:        ctx,
 				BeforeToolCall: beforeToolCall,
 				Persist:        persist,
+				Steering:       steering,
 			},
 		)
 		return goalSummary(state), nil
@@ -170,6 +199,8 @@ func goalSummary(state *agenttool.GoalState) string {
 		return fmt.Sprintf("goal paused - token budget reached (%d / %d). Run /goal resume to continue.", snap.TokensUsed, snap.TokenBudget)
 	case agenttool.GoalPaused:
 		return fmt.Sprintf("goal paused after %d turns. Run /goal resume to continue.", snap.Iterations)
+	case agenttool.GoalActive:
+		return fmt.Sprintf("goal: %s\nstatus: active\niterations: %d\nelapsed: %s", snap.Objective, snap.Iterations, time.Since(snap.StartedAt).Round(time.Second))
 	default:
 		return "goal finished"
 	}

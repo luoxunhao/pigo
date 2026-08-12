@@ -157,6 +157,19 @@ func (s *GoalState) Resume() {
 	s.tokensUsed = 0
 }
 
+// UpdateObjective replaces the active objective without resetting the run's
+// token budget or iteration history. It reactivates an idle/completed/blocked
+// goal so a human correction can redirect a running or paused goal.
+func (s *GoalState) UpdateObjective(objective string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.objective = objective
+	s.noProgress = 0
+	if s.status == GoalIdle || s.status == GoalComplete || s.status == GoalBlocked {
+		s.status = GoalActive
+	}
+}
+
 // ID returns the current goal id (empty when idle).
 func (s *GoalState) ID() string {
 	s.mu.RLock()

@@ -26,7 +26,7 @@ type DreamFunc func(ctx context.Context, args string) (string, error)
 
 // GoalFunc runs one /goal invocation over serve and streams progress to out.
 // beforeToolCall is the serve permission seam installed by the prompt manager.
-type GoalFunc func(ctx context.Context, sessionID, directory, args string, out io.Writer, beforeToolCall agentcore.BeforeToolCallFunc) (string, error)
+type GoalFunc func(ctx context.Context, sessionID, directory, args string, out io.Writer, beforeToolCall agentcore.BeforeToolCallFunc, steering func() []string) (string, error)
 
 // Config controls the HTTP server behavior.
 type Config struct {

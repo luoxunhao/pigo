@@ -252,7 +252,13 @@ func (c *CommandService) Execute(ctx context.Context, sessionID string, req gen.
 		var out goalOutput
 		out.broker = c.broker
 		out.sessionID = sessionID
-		text, err := c.goal(ctx, sessionID, req.Directory, args, &out, c.prompts.beforeToolCall(sessionID, req.Directory))
+		steering := func() []string {
+			if c.prompts == nil {
+				return nil
+			}
+			return c.prompts.DrainSteering(sessionID)
+		}
+		text, err := c.goal(ctx, sessionID, req.Directory, args, &out, c.prompts.beforeToolCall(sessionID, req.Directory), steering)
 		if err != nil {
 			return gen.PromptResponse{}, Internal(err.Error())
 		}

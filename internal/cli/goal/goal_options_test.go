@@ -77,6 +77,67 @@ func TestRunGoalWithOptionsInjectsSeams(t *testing.T) {
 	}
 }
 
+func TestRunGoalWithOptionsInjectsSteering(t *testing.T) {
+	prov := &goalFakeProvider{
+		turns: [][]provider.AssistantMessageEvent{
+			goalTextTurn("first"),
+			goalToolCallTurn("call-2", "goal_complete", `{"summary":"done"}`),
+		},
+	}
+	reg := agenttool.NewToolRegistry()
+	_ = reg.Register(goalFakeTool{})
+	state := agenttool.NewGoalState()
+	state.Start("goal-2", "do y", 0)
+	host := &goalFakeHost{
+		agentCtx: &agentcore.AgentContext{
+			SystemPrompt: "sys",
+			Messages: agentcore.MessageList{
+				agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("start")}},
+			},
+			Tools: []agentcore.AgentTool{goalFakeTool{}},
+		},
+		live: &cli.LiveConfig{
+			Model:         "m",
+			ProviderName:  "goal-fake",
+			Provider:      prov,
+			ThinkingLevel: agentcore.ThinkingMedium,
+			ContextWindow: 10000,
+		},
+		reg:   reg,
+		goal:  state,
+		creds: provider.NewCredentialStore(nil),
+		trust: newTestTrust(t),
+		cwd:   ".",
+	}
+	var out bytes.Buffer
+	RunGoalWithOptions(
+		func(context.CancelFunc) {},
+		&out,
+		host,
+		"/goal do y",
+		Options{
+			BeforeToolCall: func(ctx context.Context, call agentcore.AgentToolCall) *agentcore.BeforeToolCallDecision {
+				return nil
+			},
+			Persist: func() error { return nil },
+			Steering: func() []string {
+				return []string{"steer me"}
+			},
+		},
+	)
+	found := false
+	for _, req := range prov.requests() {
+		for _, m := range req.Context.Messages {
+			if u, ok := m.(agentcore.UserMessage); ok && agentcore.ContentToText(u.Content) == "steer me" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("steering message was not injected into a later goal turn")
+	}
+}
+
 func newTestTrust(t *testing.T) *trust.Manager {
 	t.Helper()
 	mgr, err := trust.NewManager(filepath.Join(t.TempDir(), "trust.json"))
@@ -90,16 +151,18 @@ type goalFakeProvider struct {
 	mu    sync.Mutex
 	turns [][]provider.AssistantMessageEvent
 	calls int
+	reqs  []provider.CompletionRequest
 }
 
 func (p *goalFakeProvider) Name() string { return "goal-fake" }
 func (p *goalFakeProvider) Models() []provider.Model {
 	return []provider.Model{{Provider: "goal-fake", ID: "m", SupportsTools: true}}
 }
-func (p *goalFakeProvider) StreamCompletion(ctx context.Context, _ provider.CompletionRequest) (*provider.AssistantMessageEventStream, error) {
+func (p *goalFakeProvider) StreamCompletion(ctx context.Context, req provider.CompletionRequest) (*provider.AssistantMessageEventStream, error) {
 	p.mu.Lock()
 	idx := p.calls
 	p.calls++
+	p.reqs = append(p.reqs, req)
 	var turn []provider.AssistantMessageEvent
 	if idx >= len(p.turns) {
 		turn = goalTextTurn("")
@@ -118,6 +181,12 @@ func (p *goalFakeProvider) StreamCompletion(ctx context.Context, _ provider.Comp
 		s.Close()
 	}()
 	return s, nil
+}
+
+func (p *goalFakeProvider) requests() []provider.CompletionRequest {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]provider.CompletionRequest(nil), p.reqs...)
 }
 
 func goalTextTurn(text string) []provider.AssistantMessageEvent {
