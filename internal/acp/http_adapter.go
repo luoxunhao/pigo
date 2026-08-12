@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/httpclient"
 )
 
@@ -395,18 +396,46 @@ func (a *HTTPAdapter) mapEvent(sessionID, eventType string, data map[string]any)
 			}))
 		}
 	case "tool.updated":
+		id, _ := data["toolCallId"].(string)
+		title, _ := data["title"].(string)
 		status, _ := data["status"].(string)
-		update := "tool_call_update"
-		if status == "pending" || status == "in_progress" {
-			update = "tool_call"
+		rawInput := data["rawInput"]
+		output, _ := data["output"].(string)
+		dir, _ := a.directory(sessionID)
+		var update map[string]any
+		failed := status == "failed"
+		if isBashTool(title) {
+			command := bashCommandFromArgs(rawInput)
+			switch status {
+			case "pending":
+				update = bashToolCallPending(id, title, rawInput, dir, command)
+			case "in_progress":
+				if output != "" {
+					update = toolCallUpdateText(id, title, output)
+					update["_meta"] = map[string]any{"terminal_output": map[string]any{"terminal_id": id, "data": output}}
+				} else {
+					update = bashToolCallStart(id, title, rawInput, dir, command)
+				}
+			default:
+				update = bashToolCallEnd(id, title, failed, agentcore.AgentToolResult{
+					Content: agentcore.ContentList{agentcore.NewTextContent(output)},
+				}, dir, command, rawInput)
+			}
+		} else {
+			switch status {
+			case "pending":
+				update = toolCallPending(id, title, rawInput)
+			case "in_progress":
+				if output != "" {
+					update = toolCallUpdateText(id, title, output)
+				} else {
+					update = toolCallStart(id, title, rawInput)
+				}
+			default:
+				update = toolCallEnd(id, title, failed, output, rawInput)
+			}
 		}
-		_ = a.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(sessionID, map[string]any{
-			"sessionUpdate": update,
-			"toolCallId":    data["toolCallId"],
-			"title":         data["title"],
-			"status":        status,
-			"rawInput":      data["rawInput"],
-		}))
+		_ = a.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(sessionID, update))
 	case "mode.updated":
 		_ = a.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(sessionID, map[string]any{
 			"sessionUpdate": "current_mode_update",

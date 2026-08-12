@@ -75,3 +75,43 @@ func TestHTTPAdapterPermissionAskedUsesStandardToolCall(t *testing.T) {
 		t.Fatal("permission request was never sent to the ACP client")
 	}
 }
+
+func TestHTTPAdapterToolUpdatedCarriesResultShape(t *testing.T) {
+	clientTransport, serverTransport := NewChannelPair()
+	adapter := NewHTTPAdapter(nil, serverTransport, "test")
+	adapter.mapEvent("s1", "tool.updated", map[string]any{
+		"toolCallId": "call-1",
+		"title":      "bash",
+		"status":     "completed",
+		"rawInput":   map[string]any{"command": "ls"},
+		"output":     "AGENTS.md\nREADME.md\n",
+	})
+	msg, err := clientTransport.Recv(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.Notification == nil || msg.Notification.Method != NotificationSessionUpdate {
+		t.Fatalf("notification = %+v", msg)
+	}
+	var payload struct {
+		Update map[string]any `json:"update"`
+	}
+	if err := json.Unmarshal(msg.Notification.Params, &payload); err != nil {
+		t.Fatal(err)
+	}
+	u := payload.Update
+	if u["sessionUpdate"] != "tool_call_update" || u["kind"] != "execute" {
+		t.Fatalf("update = %+v", u)
+	}
+	if u["rawInput"] == nil {
+		t.Fatalf("rawInput missing: %+v", u)
+	}
+	if u["content"] == nil || u["_meta"] == nil {
+		t.Fatalf("content/_meta missing: %+v", u)
+	}
+	meta, _ := u["_meta"].(map[string]any)
+	terminal, _ := meta["terminal_output"].(map[string]any)
+	if terminal["data"] != "AGENTS.md\nREADME.md\n" {
+		t.Fatalf("terminal output = %v", terminal["data"])
+	}
+}

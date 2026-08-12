@@ -134,7 +134,10 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 		Tools:            env.Tools,
 		ConfiguredModels: models,
 	}
-	mapper := &serveEventMapper{sessions: make(map[string]*serveEventState)}
+	mapper := &serveEventMapper{
+		sessions: make(map[string]*serveEventState),
+		toolArgs: make(map[string]any),
+	}
 	promptRun := func(ctx context.Context, run httpapi.PromptRun) (gen.PromptResponse, error) {
 		model := run.Model
 		if model == "" {
@@ -339,6 +342,7 @@ func (s *serveEventState) thoughtDelta(full string) string {
 type serveEventMapper struct {
 	mu       sync.Mutex
 	sessions map[string]*serveEventState
+	toolArgs map[string]any
 }
 
 func (m *serveEventMapper) state(sessionID string) *serveEventState {
@@ -375,8 +379,10 @@ func (m *serveEventMapper) publish(sessionID, messageID string, publish func(str
 			}
 		}
 	case agentcore.ToolExecutionPendingEvent:
+		m.rememberToolArgs(e.ToolCallID, e.Args)
 		publish("tool.updated", toolUpdateData(e.ToolCallID, e.ToolName, "pending", e.Args, ""))
 	case agentcore.ToolExecutionStartEvent:
+		m.rememberToolArgs(e.ToolCallID, e.Args)
 		publish("tool.updated", toolUpdateData(e.ToolCallID, e.ToolName, "in_progress", e.Args, ""))
 	case agentcore.ToolExecutionUpdateEvent:
 		publish("tool.updated", toolUpdateData(e.ToolCallID, e.ToolName, "in_progress", nil, agentcore.ContentToText(e.PartialResult.Content)))
@@ -387,7 +393,8 @@ func (m *serveEventMapper) publish(sessionID, messageID string, publish func(str
 		if e.IsError {
 			status = "failed"
 		}
-		publish("tool.updated", toolUpdateData(e.ToolCallID, e.ToolName, status, nil, agentcore.ContentToText(e.Result.Content)))
+		args := m.forgetToolArgs(e.ToolCallID)
+		publish("tool.updated", toolUpdateData(e.ToolCallID, e.ToolName, status, args, agentcore.ContentToText(e.Result.Content)))
 	case agentcore.CompactionStartEvent:
 		publish("session.status", map[string]any{"status": "compacting"})
 	case agentcore.CompactionEvent:
@@ -409,6 +416,23 @@ func (m *serveEventMapper) publish(sessionID, messageID string, publish func(str
 			},
 		})
 	}
+}
+
+func (m *serveEventMapper) rememberToolArgs(id string, args any) {
+	if id == "" {
+		return
+	}
+	m.mu.Lock()
+	m.toolArgs[id] = args
+	m.mu.Unlock()
+}
+
+func (m *serveEventMapper) forgetToolArgs(id string) any {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	args := m.toolArgs[id]
+	delete(m.toolArgs, id)
+	return args
 }
 
 func toolUpdateData(id, name, status string, args any, output string) map[string]any {
