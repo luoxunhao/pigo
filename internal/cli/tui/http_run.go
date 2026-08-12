@@ -339,6 +339,58 @@ func (s *runSession) refreshHTTPMessages(ctx context.Context) {
 	s.agentCtx.Messages = domainMessagesToAgent(resp.JSON200.Messages)
 }
 
+// resumeCandidates lists the saved sessions for the current workspace.
+func (s *runSession) resumeCandidates() ([]sessionstore.Metadata, error) {
+	home, err := sessionstore.PigoHome()
+	if err != nil {
+		return nil, err
+	}
+	store, err := sessionstore.OpenForWorkspace(home, s.httpDir)
+	if err != nil {
+		return nil, err
+	}
+	return store.List()
+}
+
+// switchHTTPSession loads another persisted session through serve and replaces
+// the live TUI session state with it.
+func (s *runSession) switchHTTPSession(ctx context.Context, sessionID string) ([]agentcore.Message, error) {
+	if s.httpClient == nil {
+		return nil, fmt.Errorf("serve session is not available")
+	}
+	limit := 200
+	resp, err := s.httpClient.LoadSessionWithResponse(ctx, sessionID, httpclient.LoadSessionJSONRequestBody{
+		Directory: s.httpDir,
+		Limit:     &limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp.JSON200 == nil {
+		return nil, fmt.Errorf("load session failed")
+	}
+	history := domainMessagesToAgent(resp.JSON200.Messages)
+	s.header = session.SessionHeader{
+		ID:        resp.JSON200.SessionId,
+		Model:     currentConfigOption(resp.JSON200.ConfigOptions, "model"),
+		Provider:  s.live.ProviderName,
+		CreatedAt: time.Now().UTC(),
+		Cwd:       s.httpDir,
+	}
+	if s.header.Model == "" {
+		s.header.Model = s.live.Model
+	}
+	s.agentCtx.Messages = history
+	s.live.Model = s.header.Model
+	s.persisted = len(history)
+	s.curLeaf = ""
+	s.compacted = false
+	if s.telemetry != nil {
+		s.telemetry.Reset()
+	}
+	return history, nil
+}
+
 func contentToDomainBlocks(content agentcore.ContentList) []map[string]interface{} {
 	blocks := make([]map[string]interface{}, 0, len(content))
 	for _, c := range content {

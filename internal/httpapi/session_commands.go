@@ -199,17 +199,3 @@ func (s *SessionService) CopyLast(sessionID, directory string) (string, error) {
 	}
 	return "", fmt.Errorf("nothing to copy - no assistant reply yet")
 }
-
-// Resume confirms the session exists and restores its runtime metadata.
-func (s *SessionService) Resume(sessionID, directory string) (string, error) {
-	store, err := s.storeFor(directory)
-	if err != nil {
-		return "", err
-	}
-	meta, header, msgs, err := store.Load(sessionID)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("session resumed: %s (workspace: %s, model: %s, messages: %d)",
-		header.ID, meta.WorkspacePath, meta.ModelName, len(msgs)), nil
-}

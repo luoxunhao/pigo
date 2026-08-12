@@ -42,7 +42,6 @@ func NewCommandService(sessions *SessionService, prompts *PromptManager, slash *
 func (c *CommandService) List() gen.CommandListResult {
 	commands := []gen.AvailableCommand{
 		{Name: "name", Description: "Set the session display name", Input: hintInput("<name>")},
-		{Name: "resume", Description: "Resume the current session runtime state"},
 	}
 	if c.slash != nil {
 		for _, cmd := range c.slash.List() {
@@ -111,12 +110,6 @@ func (c *CommandService) Execute(ctx context.Context, sessionID string, req gen.
 			return gen.PromptResponse{}, apiErr
 		}
 		return actionResponse("Session name set: " + args), nil
-	case "resume":
-		text, err := c.sessions.Resume(sessionID, req.Directory)
-		if err != nil {
-			return gen.PromptResponse{}, Internal(err.Error())
-		}
-		return actionResponse(text), nil
 	case "model":
 		if args == "" {
 			status, apiErr := c.sessions.Status(sessionID, req.Directory)

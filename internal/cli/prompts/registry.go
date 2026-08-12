@@ -314,6 +314,7 @@ func RegisterLiveCommands(reg *runtime.SlashRegistry, live *cli.LiveConfig) {
 		{"export", "export the session to a file: /export [path.jsonl|path.html]"},
 		{"import", "import a JSONL export as a new session: /import <path.jsonl>"},
 		{"copy", "copy the most recent assistant reply to the clipboard"},
+		{"resume", "list saved sessions to resume: /resume [n]"},
 		{"session", "show session stats: messages, tokens, model, compactions"},
 		{"status", "show session status: runtime config, context, telemetry, credentials, environment"},
 		{"goal", "run autonomously toward a goal: /goal [--tokens N] <objective> | pause | resume | clear"},

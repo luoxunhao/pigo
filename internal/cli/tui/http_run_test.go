@@ -7,10 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/httpapi"
 	"github.com/smallnest/pigo/internal/httpapi/gen"
 	"github.com/smallnest/pigo/internal/httpclient"
+	"github.com/smallnest/pigo/internal/session"
+	"github.com/smallnest/pigo/internal/sessionstore"
 )
 
 func TestHTTPSessionStreamsDomainEvents(t *testing.T) {
@@ -78,4 +81,89 @@ func TestHTTPSessionStreamsDomainEvents(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for run end")
 	}
+}
+
+func TestHTTPSessionResumeListsAndSwitches(t *testing.T) {
+	pigoHome := t.TempDir()
+	t.Setenv("PIGO_HOME", pigoHome)
+	workspace := t.TempDir()
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.SaveFileConfig(cfgPath, config.FileConfig{
+		Model: "test/provider",
+		Models: []config.ModelConfig{{
+			Provider: "test", ModelID: "provider", Name: "Provider",
+			BaseURL: "http://localhost", Protocol: "openai",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := httpapi.Config{
+		Version:             "test",
+		PigoHome:            pigoHome,
+		ConfigPath:          cfgPath,
+		TrustPath:           filepath.Join(pigoHome, "trust.json"),
+		AutoRejectUntrusted: true,
+		PromptRunner: func(_ context.Context, run httpapi.PromptRun) (gen.PromptResponse, error) {
+			text := "ok"
+			return gen.PromptResponse{MessageId: run.MessageID, StopReason: "end_turn", Text: &text}, nil
+		},
+	}
+	handler, err := httpapi.NewRouter(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := httpclient.InProcessClient(handler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := client.CreateSessionWithResponse(context.Background(), httpclient.CreateSessionJSONRequestBody{Directory: workspace})
+	if err != nil || created.JSON200 == nil {
+		t.Fatalf("create session: %v", err)
+	}
+	target, err := client.CreateSessionWithResponse(context.Background(), httpclient.CreateSessionJSONRequestBody{Directory: workspace})
+	if err != nil || target.JSON200 == nil {
+		t.Fatalf("create target: %v", err)
+	}
+	store, err := sessionstore.OpenForWorkspace(pigoHome, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := session.SessionHeader{
+		ID:        target.JSON200.SessionId,
+		Model:     "test/provider",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	if _, err := store.AppendBranch(target.JSON200.SessionId, header, "", agentcore.MessageList{
+		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("hello")}},
+		agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant, Content: agentcore.ContentList{agentcore.NewTextContent("hi")}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s, _, err := newHTTPSession(context.Background(), Options{Model: "test/provider", ProviderName: "test"}, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.httpDir = workspace
+	metas, err := s.resumeCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, meta := range metas {
+		if meta.SessionID == target.JSON200.SessionId {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("target session not listed: %+v", metas)
+	}
+	history, err := s.switchHTTPSession(context.Background(), target.JSON200.SessionId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 || s.header.ID != target.JSON200.SessionId {
+		t.Fatalf("switch failed: history=%d header=%s", len(history), s.header.ID)
+	}
+	_ = created
 }

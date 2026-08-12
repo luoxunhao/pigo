@@ -2,6 +2,7 @@ package tui
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"regexp"
@@ -861,6 +862,84 @@ func (m Model) runSlash(line string) (tea.Model, tea.Cmd) {
 		m.session.renderSession(&buf)
 		m.transcript.addSystem(strings.TrimRight(buf.String(), "\n"))
 		m.relayout()
+		return m, nil
+	}
+	// /resume is intercepted before registry resolution: it lists saved
+	// sessions and switches the live session to a selected one.
+	if line == "/resume" || strings.HasPrefix(line, "/resume ") {
+		m.transcript.addUser(line)
+		m.input.Clear()
+		m.menu.close()
+		if m.session == nil {
+			m.transcript.addSystem("(resume unavailable: no active session)")
+			m.relayout()
+			return m, nil
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 1 {
+			metas, err := m.session.resumeCandidates()
+			if err != nil {
+				m.transcript.addSystem("resume failed: " + err.Error())
+				m.relayout()
+				return m, nil
+			}
+			if len(metas) == 0 {
+				m.transcript.addSystem("no saved sessions to resume")
+				m.relayout()
+				return m, nil
+			}
+			var b strings.Builder
+			b.WriteString("saved sessions (run /resume <n> to switch):\n")
+			for i, meta := range metas {
+				title := meta.SessionName
+				if title == "" {
+					title = meta.SessionID
+				}
+				fmt.Fprintf(&b, "  %d. %s (%s, messages: %d)\n", i+1, title, meta.LastActiveAt.Format("2006-01-02 15:04"), meta.MessageCount)
+			}
+			m.transcript.addSystem(strings.TrimRight(b.String(), "\n"))
+			m.relayout()
+			return m, nil
+		}
+		n, convErr := strconv.Atoi(fields[1])
+		if convErr != nil || n < 1 {
+			m.transcript.addSystem("usage: /resume <n> (run /resume to list sessions)")
+			m.relayout()
+			return m, nil
+		}
+		metas, err := m.session.resumeCandidates()
+		if err != nil {
+			m.transcript.addSystem("resume failed: " + err.Error())
+			m.relayout()
+			return m, nil
+		}
+		if n > len(metas) {
+			m.transcript.addSystem(fmt.Sprintf("invalid selection %d (1..%d)", n, len(metas)))
+			m.relayout()
+			return m, nil
+		}
+		if !m.running {
+			_ = m.session.persist()
+		}
+		history, err := m.session.switchHTTPSession(context.Background(), metas[n-1].SessionID)
+		if err != nil {
+			m.transcript.addSystem("resume failed: " + err.Error())
+			m.relayout()
+			return m, nil
+		}
+		m.transcript = newTranscript(m.theme)
+		m.transcript.addBanner(renderBanner(m.theme, m.opts, m.cwd))
+		seedTranscript(&m.transcript, history)
+		m.toolCards = make(map[string]*toolCard)
+		m.lastToolCard = nil
+		m.subagents = subagentPanel{}
+		m.history = nil
+		m.histIdx = 0
+		m.histDraft = ""
+		m.statusBar.SetModel(m.live.Model)
+		m.statusBar.SetThinking(string(m.live.ThinkingLevel))
+		m.relayout()
+		m.transcript.addSystem(fmt.Sprintf("switched to session %s (%d messages)", metas[n-1].SessionID, len(history)))
 		return m, nil
 	}
 	// /rebuild is intercepted before registry resolution (like /exit): it
