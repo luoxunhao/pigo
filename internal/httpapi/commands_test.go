@@ -52,6 +52,11 @@ func TestCommandServiceListAndExecute(t *testing.T) {
 		Description: "rewind not wired over serve yet",
 		Action:      func(string) string { return "" },
 	})
+	reg.AddBuiltin(runtime.SlashCommand{
+		Name:        "resume",
+		Description: "List saved sessions to resume",
+		Action:      func(string) string { return "" },
+	})
 	broker := NewEventBroker()
 	prompts := NewPromptManager(func(_ context.Context, run PromptRun) (gen.PromptResponse, error) {
 		text := "reply: " + run.Text
@@ -96,6 +101,15 @@ func TestCommandServiceListAndExecute(t *testing.T) {
 	}
 	if !sawSkill || !sawSkillFallback || !sawDirect || !sawResume {
 		t.Fatalf("skills not advertised with skill: prefix: %+v", list.Commands)
+	}
+	resumeCount := 0
+	for _, cmd := range list.Commands {
+		if cmd.Name == "resume" {
+			resumeCount++
+		}
+	}
+	if resumeCount != 1 {
+		t.Fatalf("resume advertised %d times, want 1: %+v", resumeCount, list.Commands)
 	}
 	name := "My Session"
 	resp, apiErr := svc.Execute(context.Background(), created.SessionId, gen.CommandRequest{Directory: workspace, Command: "name", Arguments: &name})

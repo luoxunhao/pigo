@@ -42,8 +42,8 @@ func NewCommandService(sessions *SessionService, prompts *PromptManager, slash *
 func (c *CommandService) List() gen.CommandListResult {
 	commands := []gen.AvailableCommand{
 		{Name: "name", Description: "Set the session display name", Input: hintInput("<name>")},
-		{Name: "resume", Description: "List saved sessions to resume: /resume [n]"},
 	}
+	seen := map[string]bool{"name": true}
 	if c.slash != nil {
 		for _, cmd := range c.slash.List() {
 			if serveUnsupportedCommands[cmd.Name] {
@@ -57,6 +57,10 @@ func (c *CommandService) List() gen.CommandListResult {
 					desc = "(skill)"
 				}
 			}
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
 			item := gen.AvailableCommand{Name: name, Description: desc}
 			if cmd.ArgumentHint != "" {
 				item.Input = hintInput(cmd.ArgumentHint)
