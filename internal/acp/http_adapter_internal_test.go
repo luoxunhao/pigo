@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 )
@@ -134,3 +135,71 @@ func TestHTTPAdapterInitializeHasNoPigoMeta(t *testing.T) {
 		t.Fatalf("initialize still advertises _meta: %+v", capabilities)
 	}
 }
+
+func TestHTTPAdapterNotificationSurfaceIsStandard(t *testing.T) {
+	tr := &recordingTransport{}
+	adapter := NewHTTPAdapter(nil, tr, "test")
+	adapter.mapEvent("s1", "message.part.delta", map[string]any{"delta": "hi"})
+	adapter.mapEvent("s1", "tool.updated", map[string]any{
+		"toolCallId": "c1",
+		"title":      "read",
+		"status":     "completed",
+		"rawInput":   map[string]any{},
+		"output":     "file contents",
+	})
+	adapter.handlePermissionAsked("s1", map[string]any{
+		"permissionId": "p1",
+		"toolCall": map[string]any{
+			"toolCallId": "c1",
+			"title":      "bash",
+			"status":     "pending",
+			"rawInput":   map[string]any{},
+		},
+		"options": []map[string]any{{"optionId": "allow_once"}},
+	})
+	for _, method := range tr.notifications {
+		if method != NotificationSessionUpdate {
+			t.Fatalf("notification method = %q, want %q", method, NotificationSessionUpdate)
+		}
+	}
+	for _, method := range tr.requests {
+		if method != MethodRequestPermission {
+			t.Fatalf("request method = %q, want %q", method, MethodRequestPermission)
+		}
+	}
+}
+
+type recordingTransport struct {
+	mu            sync.Mutex
+	notifications []string
+	requests      []string
+	responses     []string
+}
+
+func (t *recordingTransport) SendNotification(method string, _ any) error {
+	t.mu.Lock()
+	t.notifications = append(t.notifications, method)
+	t.mu.Unlock()
+	return nil
+}
+
+func (t *recordingTransport) SendRequest(_ context.Context, method string, _ any) (json.RawMessage, error) {
+	t.mu.Lock()
+	t.requests = append(t.requests, method)
+	t.mu.Unlock()
+	return json.RawMessage(`{"outcome":{"outcome":"selected","optionId":"allow_once"}}`), nil
+}
+
+func (t *recordingTransport) SendResponse(_ context.Context, _ RequestID, _ any, _ *Error) error {
+	t.mu.Lock()
+	t.responses = append(t.responses, "response")
+	t.mu.Unlock()
+	return nil
+}
+
+func (t *recordingTransport) Recv(ctx context.Context) (IncomingMessage, error) {
+	<-ctx.Done()
+	return IncomingMessage{}, ctx.Err()
+}
+
+func (t *recordingTransport) Close() error { return nil }
