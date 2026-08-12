@@ -267,15 +267,15 @@ func (s *Skill) SkillTool(tools []agentcore.AgentTool, newRunConfig func(tools [
 	return NewSubAgentTool(s.SubAgentSpec(tools, newRunConfig))
 }
 
-// SlashCommand exposes the skill as a "/name" slash command (mirrors Claude Code's
-// /skill-name invocation). Invoking it expands to the skill's instructions (its
+// SlashCommand exposes the skill as a "/skill:<name>" slash command (mirrors
+// pi's skill: prefix). Invoking it expands to the skill's instructions (its
 // markdown body) as the prompt, with any arguments appended, so the skill runs
 // in the current conversation. It is a prompt command (not an action): the
 // expanded text is fed to the agent loop as the next user turn.
 func (s *Skill) SlashCommand() SlashCommand {
 	body := s.Body
 	return SlashCommand{
-		Name:        s.Frontmatter.Name,
+		Name:        "skill:" + s.Frontmatter.Name,
 		Description: s.Frontmatter.Description,
 		Source:      SourceUser,
 		Expand: func(args string) string {

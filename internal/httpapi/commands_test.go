@@ -43,6 +43,10 @@ func TestCommandServiceListAndExecute(t *testing.T) {
 		Name:   "empty-desc",
 		Expand: func(args string) string { return "empty" },
 	})
+	reg.AddSkill(runtime.SlashCommand{
+		Name:   "skill:direct",
+		Expand: func(args string) string { return "direct" },
+	})
 	reg.AddBuiltin(runtime.SlashCommand{
 		Name:        "rewind",
 		Description: "rewind not wired over serve yet",
@@ -68,6 +72,7 @@ func TestCommandServiceListAndExecute(t *testing.T) {
 	}
 	sawSkill := false
 	sawSkillFallback := false
+	sawDirect := false
 	for _, cmd := range list.Commands {
 		if cmd.Name == "skill:weather" {
 			sawSkill = true
@@ -81,8 +86,11 @@ func TestCommandServiceListAndExecute(t *testing.T) {
 				t.Fatalf("skill fallback description = %q", cmd.Description)
 			}
 		}
+		if cmd.Name == "skill:direct" {
+			sawDirect = true
+		}
 	}
-	if !sawSkill || !sawSkillFallback {
+	if !sawSkill || !sawSkillFallback || !sawDirect {
 		t.Fatalf("skills not advertised with skill: prefix: %+v", list.Commands)
 	}
 	name := "My Session"
@@ -109,5 +117,12 @@ func TestCommandServiceListAndExecute(t *testing.T) {
 	}
 	if skillResp.Text == nil || !strings.Contains(*skillResp.Text, "reply: weather prompt") {
 		t.Fatalf("skill resp = %+v", skillResp)
+	}
+	directResp, apiErr := svc.Execute(context.Background(), created.SessionId, gen.CommandRequest{Directory: workspace, Command: "skill:direct"})
+	if apiErr != nil {
+		t.Fatal(apiErr)
+	}
+	if directResp.Text == nil || !strings.Contains(*directResp.Text, "reply: direct") {
+		t.Fatalf("direct skill resp = %+v", directResp)
 	}
 }

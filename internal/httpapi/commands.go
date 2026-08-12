@@ -42,6 +42,7 @@ func NewCommandService(sessions *SessionService, prompts *PromptManager, slash *
 func (c *CommandService) List() gen.CommandListResult {
 	commands := []gen.AvailableCommand{
 		{Name: "name", Description: "Set the session display name", Input: hintInput("<name>")},
+		{Name: "resume", Description: "Resume the current session runtime state"},
 	}
 	if c.slash != nil {
 		for _, cmd := range c.slash.List() {
@@ -50,7 +51,7 @@ func (c *CommandService) List() gen.CommandListResult {
 			}
 			name := cmd.Name
 			desc := cmd.Description
-			if cmd.Source == runtime.SourceSkill {
+			if cmd.Source == runtime.SourceSkill && !strings.HasPrefix(name, "skill:") {
 				name = "skill:" + cmd.Name
 				if desc == "" {
 					desc = "(skill)"
@@ -76,9 +77,6 @@ func (c *CommandService) List() gen.CommandListResult {
 }
 
 func (c *CommandService) Execute(ctx context.Context, sessionID string, req gen.CommandRequest) (gen.PromptResponse, *APIError) {
-	// ACP clients invoke skills as /skill:<name>; strip the prefix before the
-	// registry lookup so the underlying slash command still resolves.
-	req.Command = strings.TrimPrefix(req.Command, "skill:")
 	args := ""
 	if req.Arguments != nil {
 		args = strings.TrimSpace(*req.Arguments)
@@ -113,6 +111,12 @@ func (c *CommandService) Execute(ctx context.Context, sessionID string, req gen.
 			return gen.PromptResponse{}, apiErr
 		}
 		return actionResponse("Session name set: " + args), nil
+	case "resume":
+		text, err := c.sessions.Resume(sessionID, req.Directory)
+		if err != nil {
+			return gen.PromptResponse{}, Internal(err.Error())
+		}
+		return actionResponse(text), nil
 	case "model":
 		if args == "" {
 			status, apiErr := c.sessions.Status(sessionID, req.Directory)
@@ -285,6 +289,11 @@ func (c *CommandService) Execute(ctx context.Context, sessionID string, req gen.
 		line += " " + args
 	}
 	outcome, err := c.slash.ResolveOutcome(line)
+	if err != nil && strings.HasPrefix(req.Command, "skill:") {
+		// Backward-compatible fallback for registries that still use the bare
+		// skill name: resolve /skill:<name> as /<name>.
+		outcome, err = c.slash.ResolveOutcome("/" + strings.TrimPrefix(req.Command, "skill:"))
+	}
 	if err != nil {
 		return gen.PromptResponse{}, &APIError{Status: http.StatusBadRequest, Code: CodeInvalidParams, Message: err.Error()}
 	}

@@ -303,8 +303,8 @@ func TestDisableModelInvocationCoexistence(t *testing.T) {
 	// 2. The disabled skill must still be invocable via its /skill-name command,
 	//    with $ARGUMENTS substitution intact (behavior identical to an enabled one).
 	cmd := disabled.SlashCommand()
-	if cmd.Name != "secret" {
-		t.Errorf("disabled skill slash name = %q, want secret", cmd.Name)
+	if cmd.Name != "skill:secret" {
+		t.Errorf("disabled skill slash name = %q, want skill:secret", cmd.Name)
 	}
 	if cmd.Expand == nil {
 		t.Fatal("disabled skill must expose a prompt command (Expand != nil)")

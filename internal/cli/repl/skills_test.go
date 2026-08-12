@@ -50,8 +50,8 @@ func TestLoadSkillsFromDir(t *testing.T) {
 		t.Fatal("greet skill not loaded")
 	}
 	c := s.SlashCommand()
-	if c.Name != "greet" {
-		t.Errorf("Name = %q, want greet", c.Name)
+	if c.Name != "skill:greet" {
+		t.Errorf("Name = %q, want skill:greet", c.Name)
 	}
 	if c.Description != "say hello" {
 		t.Errorf("Description = %q, want 'say hello'", c.Description)
@@ -104,12 +104,12 @@ func TestBuildSlashRegistryIncludesSkills(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildSlashRegistry: %v", err)
 	}
-	out, err := reg.ResolveOutcome("/summarize hello world")
+	out, err := reg.ResolveOutcome("/skill:summarize hello world")
 	if err != nil {
 		t.Fatalf("ResolveOutcome: %v", err)
 	}
 	if !out.Handled {
-		t.Fatal("/summarize should be handled by the registry")
+		t.Fatal("/skill:summarize should be handled by the registry")
 	}
 	if out.Kind != runtime.SlashPrompt {
 		t.Errorf("Kind = %v, want SlashPrompt", out.Kind)
@@ -152,7 +152,7 @@ func TestLoadSkillsBootstrapsBuiltinSkills(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildSlashRegistry: %v", err)
 	}
-	for _, name := range []string{"/prd", "/refactor", "/architecture-diagram", "/weather"} {
+	for _, name := range []string{"/skill:prd", "/skill:refactor", "/skill:architecture-diagram", "/skill:weather"} {
 		out, err := reg.ResolveOutcome(name)
 		if err != nil {
 			t.Errorf("%s should be registered after bootstrap: %v", name, err)

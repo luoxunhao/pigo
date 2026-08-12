@@ -67,6 +67,10 @@ func TestCommandServiceCoreSessionCommands(t *testing.T) {
 	if apiErr != nil || cloneResp.Text == nil || !strings.Contains(*cloneResp.Text, "cloned session") {
 		t.Fatalf("clone = %+v, err = %v", cloneResp, apiErr)
 	}
+	resumeResp, apiErr := svc.Execute(ctx, created.SessionId, gen.CommandRequest{Directory: workspace, Command: "resume"})
+	if apiErr != nil || resumeResp.Text == nil || !strings.Contains(*resumeResp.Text, "session resumed") {
+		t.Fatalf("resume = %+v, err = %v", resumeResp, apiErr)
+	}
 	exportPath := filepath.Join(t.TempDir(), "session.jsonl")
 	exportResp, apiErr := svc.Execute(ctx, created.SessionId, gen.CommandRequest{Directory: workspace, Command: "export", Arguments: &exportPath})
 	if apiErr != nil || exportResp.Text == nil || !strings.Contains(*exportResp.Text, "exported 2 entries") {
