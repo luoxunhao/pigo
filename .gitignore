@@ -66,3 +66,7 @@ book/images/*.pdf
 
 # Scratch working notes and repro artifacts
 .scratch/
+
+# ACP diagnostic proxy artifacts
+acp-wire.log
+cmd/acp-proxy/
