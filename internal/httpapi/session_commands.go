@@ -210,6 +210,7 @@ func (s *SessionService) ResumeList(directory string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	metas = nonSubagentSessions(metas)
 	if len(metas) == 0 {
 		return "no saved sessions to resume", nil
 	}
@@ -235,10 +236,22 @@ func (s *SessionService) ResumeSelect(directory string, n int) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	metas = nonSubagentSessions(metas)
 	if n < 1 || n > len(metas) {
 		return "", fmt.Errorf("invalid selection %d (1..%d)", n, len(metas))
 	}
 	meta := metas[n-1]
 	return fmt.Sprintf("selected session: %s (workspace: %s, model: %s, messages: %d)",
 		meta.SessionID, meta.WorkspacePath, meta.ModelName, meta.MessageCount), nil
+}
+
+func nonSubagentSessions(metas []sessionstore.Metadata) []sessionstore.Metadata {
+	filtered := make([]sessionstore.Metadata, 0, len(metas))
+	for _, meta := range metas {
+		if meta.SessionKind == sessionstore.SessionKindSubagent || strings.HasPrefix(meta.SessionID, "subagent-") {
+			continue
+		}
+		filtered = append(filtered, meta)
+	}
+	return filtered
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/httpapi/gen"
 	"github.com/smallnest/pigo/internal/session"
+	"github.com/smallnest/pigo/internal/sessionstore"
 )
 
 func TestCommandServiceCoreSessionCommands(t *testing.T) {
@@ -55,6 +56,14 @@ func TestCommandServiceCoreSessionCommands(t *testing.T) {
 	svc := NewCommandService(sessions, nil, nil, nil, nil, nil, nil, nil)
 	ctx := context.Background()
 
+	subID := "subagent-diagnostic"
+	subMeta := sessionstore.NewMetadata(subID, "Subagent", "subagent", "test/provider", workspace)
+	subMeta.SessionKind = sessionstore.SessionKindSubagent
+	subHeader := session.SessionHeader{ID: subID, Model: "test/provider"}
+	if err := store.Create(subMeta, subHeader, nil); err != nil {
+		t.Fatal(err)
+	}
+
 	tree, apiErr := svc.Execute(ctx, created.SessionId, gen.CommandRequest{Directory: workspace, Command: "tree"})
 	if apiErr != nil || tree.Text == nil || !strings.Contains(*tree.Text, "session tree") {
 		t.Fatalf("tree = %+v, err = %v", tree, apiErr)
@@ -66,6 +75,15 @@ func TestCommandServiceCoreSessionCommands(t *testing.T) {
 	cloneResp, apiErr := svc.Execute(ctx, created.SessionId, gen.CommandRequest{Directory: workspace, Command: "clone"})
 	if apiErr != nil || cloneResp.Text == nil || !strings.Contains(*cloneResp.Text, "cloned session") {
 		t.Fatalf("clone = %+v, err = %v", cloneResp, apiErr)
+	}
+	resumeList, apiErr := svc.Execute(ctx, created.SessionId, gen.CommandRequest{Directory: workspace, Command: "resume"})
+	if apiErr != nil || resumeList.Text == nil || strings.Contains(*resumeList.Text, subID) {
+		t.Fatalf("resume list = %+v, err = %v", resumeList, apiErr)
+	}
+	pick := "1"
+	resumePick, apiErr := svc.Execute(ctx, created.SessionId, gen.CommandRequest{Directory: workspace, Command: "resume", Arguments: &pick})
+	if apiErr != nil || resumePick.Text == nil || !strings.Contains(*resumePick.Text, "selected session") {
+		t.Fatalf("resume pick = %+v, err = %v", resumePick, apiErr)
 	}
 	exportPath := filepath.Join(t.TempDir(), "session.jsonl")
 	exportResp, apiErr := svc.Execute(ctx, created.SessionId, gen.CommandRequest{Directory: workspace, Command: "export", Arguments: &exportPath})

@@ -349,7 +349,18 @@ func (s *runSession) resumeCandidates() ([]sessionstore.Metadata, error) {
 	if err != nil {
 		return nil, err
 	}
-	return store.List()
+	metas, err := store.List()
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]sessionstore.Metadata, 0, len(metas))
+	for _, meta := range metas {
+		if meta.SessionKind == sessionstore.SessionKindSubagent || strings.HasPrefix(meta.SessionID, "subagent-") {
+			continue
+		}
+		filtered = append(filtered, meta)
+	}
+	return filtered, nil
 }
 
 // switchHTTPSession loads another persisted session through serve and replaces

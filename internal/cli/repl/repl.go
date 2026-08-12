@@ -915,6 +915,14 @@ func runResume(out io.Writer, deps *replDeps, line string) {
 		fmt.Fprintf(out, "pigo: resume failed: %v\n", err)
 		return
 	}
+	var filtered []sessionstore.Metadata
+	for _, meta := range metas {
+		if meta.SessionKind == sessionstore.SessionKindSubagent || strings.HasPrefix(meta.SessionID, "subagent-") {
+			continue
+		}
+		filtered = append(filtered, meta)
+	}
+	metas = filtered
 	fields := strings.Fields(line)
 	if len(fields) < 2 {
 		if len(metas) == 0 {
