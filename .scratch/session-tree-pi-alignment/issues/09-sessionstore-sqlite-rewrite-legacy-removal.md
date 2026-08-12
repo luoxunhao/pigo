@@ -4,16 +4,16 @@
 
 **Blocked by:** 01-08
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Acceptance Criteria
 
-- [ ] `sessionstore` 不再读写 `.metadata.json` / `index.json` / `*.jsonl`
-- [ ] `internal/session` 保留 codec/projection/rendering，删除运行时 store API
-- [ ] `cmd/pigo`、`httpapi`、`runtime`、`cli` 不再有 `LoadEntries`/metadata curLeaf 路径
-- [ ] `--resume/--continue/--list-sessions` 数据源为 SQLite
-- [ ] `go build ./...` 通过；相关包测试通过
-- [ ] grep 无旧运行时路径引用
+- [x] `sessionstore` 不再读写 `.metadata.json` / `index.json` / `*.jsonl`
+- [x] `internal/session` 保留 codec/projection/rendering，删除运行时 store API
+- [x] `cmd/pigo`、`httpapi`、`runtime`、`cli` 不再有 `LoadEntries`/metadata curLeaf 路径
+- [x] `--resume/--continue/--list-sessions` 数据源为 SQLite
+- [x] `go build ./...` 通过；相关包测试通过
+- [x] grep 无旧运行时路径引用
 
 **Type:** backend
 

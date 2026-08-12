@@ -4,7 +4,7 @@
 
 **Blocked by:** 04 - ProjectLeaf 统一投影, 05 - Compaction retainedTail + split-turn + 迭代 + overflow, 06 - Compaction 落盘统一
 
-**Status:** ready-for-agent
+**Status:** partial
 
 ## Acceptance Criteria
 

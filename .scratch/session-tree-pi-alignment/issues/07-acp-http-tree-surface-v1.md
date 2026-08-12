@@ -4,19 +4,19 @@
 
 **Blocked by:** 04 - ProjectLeaf 统一投影
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Acceptance Criteria
 
-- [ ] 客户端声明 v1 才发送树元数据；未知/缺失声明回退标准字段
-- [ ] 每个消息 chunk 与 tool_call/tool_call_update 带完整 sessionTree meta
-- [ ] `session/load` 只回放 root→leaf 路径；compaction 等非消息 entry 不流式
-- [ ] 历史工具只回放最终态并带 `rawInput/rawOutput/entryId`
-- [ ] `/tree` 的 `PromptResponse.structured` 与 ACP `_meta.pigo.structured` 映射正确
-- [ ] `session_info_update` 在 append 推进 leaf 与 lane move 后发送
-- [ ] `GET /session/{id}/status` 返回 currentLeafId/currentLane/lanes
-- [ ] 不新增 `session/tree`/`session/status`/`pigo/tree`
-- [ ] 自动化测试覆盖方法面与通知面仍是标准面
+- [x] 客户端声明 v1 才发送树元数据；未知/缺失声明回退标准字段
+- [x] 每个消息 chunk 与 tool_call/tool_call_update 带完整 sessionTree meta
+- [x] `session/load` 只回放 root→leaf 路径；compaction 等非消息 entry 不流式
+- [x] 历史工具只回放最终态并带 `rawInput/rawOutput/entryId`
+- [x] `/tree` 的 `PromptResponse.structured` 与 ACP `_meta.pigo.structured` 映射正确
+- [x] `session_info_update` 在 append 推进 leaf 与 lane move 后发送
+- [x] `GET /session/{id}/status` 返回 currentLeafId/currentLane/lanes
+- [x] 不新增 `session/tree`/`session/status`/`pigo/tree`
+- [x] 自动化测试覆盖方法面与通知面仍是标准面
 
 **Type:** fullstack
 

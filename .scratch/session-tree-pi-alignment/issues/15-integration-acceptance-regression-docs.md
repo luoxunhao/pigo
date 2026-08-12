@@ -4,7 +4,7 @@
 
 **Blocked by:** 01-14
 
-**Status:** ready-for-agent
+**Status:** partial
 
 ## Acceptance Criteria
 

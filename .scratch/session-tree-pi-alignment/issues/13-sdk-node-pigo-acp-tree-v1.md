@@ -4,15 +4,15 @@
 
 **Blocked by:** 07 - ACP/HTTP 树 surface v1
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Acceptance Criteria
 
-- [ ] SDK `initialize` 请求带 `clientCapabilities._meta.pigo.sessionTree.version=1`
-- [ ] SDK 解析 server `agentCapabilities._meta.pigo.sessionTree`
-- [ ] SDK 消费 `session_info_update` 的 currentLeafId/currentLane/lanes
-- [ ] SDK 对未知版本忽略并保持文本 fallback
-- [ ] 相关 SDK 测试通过
+- [x] SDK `initialize` 请求带 `clientCapabilities._meta.pigo.sessionTree.version=1`
+- [x] SDK 解析 server `agentCapabilities._meta.pigo.sessionTree`
+- [x] SDK 消费 `session_info_update` 的 currentLeafId/currentLane/lanes
+- [x] SDK 对未知版本忽略并保持文本 fallback
+- [x] 相关 SDK 测试通过
 
 **Type:** frontend
 

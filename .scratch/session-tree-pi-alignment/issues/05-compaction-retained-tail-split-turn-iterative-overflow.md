@@ -4,18 +4,18 @@
 
 **Blocked by:** 03 - v4 typed JSONL codec, 04 - ProjectLeaf 统一投影
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Acceptance Criteria
 
-- [ ] compaction entry 含 `summary/retainedTail/tokensBefore/details?/usage?/fromHook?`
-- [ ] 上下文投影只读 compaction entry + retainedTail + 其后 entries
-- [ ] split turn 生成 turn prefix summary 并合并
-- [ ] 迭代 summary 从上次 retainedTail 末尾之后开始，previousSummary 走 update prompt
-- [ ] overflow/truncated length 同模型时移除失败 assistant 并自动重试一次
-- [ ] 每次 prompt 提交前检查 aborted；跳过模型不匹配与 compaction 边界前旧 usage
-- [ ] 压缩作为新 compaction entry 追加到当前 lane 并推进 leaf
-- [ ] 不再写 `firstKeptEntryId`；相关测试通过
+- [x] compaction entry 含 `summary/retainedTail/tokensBefore/details?/usage?/fromHook?`
+- [x] 上下文投影只读 compaction entry + retainedTail + 其后 entries
+- [x] split turn 生成 turn prefix summary 并合并
+- [x] 迭代 summary 从上次 retainedTail 末尾之后开始，previousSummary 走 update prompt
+- [x] overflow/truncated length 同模型时移除失败 assistant 并自动重试一次
+- [x] 每次 prompt 提交前检查 aborted；跳过模型不匹配与 compaction 边界前旧 usage
+- [x] 压缩作为新 compaction entry 追加到当前 lane 并推进 leaf
+- [x] 不再写 `firstKeptEntryId`；相关测试通过
 
 **Type:** backend
 

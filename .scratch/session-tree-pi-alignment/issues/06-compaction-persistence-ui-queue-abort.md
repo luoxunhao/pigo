@@ -4,7 +4,7 @@
 
 **Blocked by:** 05 - Compaction retainedTail + split-turn + 迭代 + overflow
 
-**Status:** ready-for-agent
+**Status:** partial
 
 ## Acceptance Criteria
 

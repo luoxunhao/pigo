@@ -4,15 +4,15 @@
 
 **Blocked by:** 07 - ACP/HTTP 树 surface v1, 09 - sessionstore SQLite 重写
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Acceptance Criteria
 
-- [ ] OpenAPI 是权威契约，新字段全部入 schema
-- [ ] 生成类型与 client 可编译
-- [ ] CI/脚本检查生成产物无 diff
-- [ ] HTTP 集成测试覆盖 structured `/tree`、status、session list
-- [ ] 不引入破坏旧字段的重命名
+- [x] OpenAPI 是权威契约，新字段全部入 schema
+- [x] 生成类型与 client 可编译
+- [x] CI/脚本检查生成产物无 diff
+- [x] HTTP 集成测试覆盖 structured `/tree`、status、session list
+- [x] 不引入破坏旧字段的重命名
 
 **Type:** backend
 

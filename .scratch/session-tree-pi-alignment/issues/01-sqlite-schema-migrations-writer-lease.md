@@ -4,18 +4,18 @@
 
 **Blocked by:** None
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Acceptance Criteria
 
-- [ ] `sessionstore.Open(pigoHome)` 幂等创建 `sessions.db` 与全部表/索引/虚拟表
-- [ ] `schema_migrations` 记录已应用版本，SQL 迁移在事务内执行
-- [ ] PRAGMA 生效且有测试可观测
-- [ ] FTS5 虚拟表可创建，`entries` / `facts` trigger 保持索引同步
-- [ ] writer lease 默认 `ttlMs=30000`、`heartbeatIntervalMs=10000`，heartbeat 严格小于 TTL
-- [ ] takeover 递增 fence；renew/release 校验 owner+fence+未过期
-- [ ] 丢失 lease 的写操作报错，不静默重写
-- [ ] 对应包测试通过
+- [x] `sessionstore.Open(pigoHome)` 幂等创建 `sessions.db` 与全部表/索引/虚拟表
+- [x] `schema_migrations` 记录已应用版本，SQL 迁移在事务内执行
+- [x] PRAGMA 生效且有测试可观测
+- [x] FTS5 虚拟表可创建，`entries` / `facts` trigger 保持索引同步
+- [x] writer lease 默认 `ttlMs=30000`、`heartbeatIntervalMs=10000`，heartbeat 严格小于 TTL
+- [x] takeover 递增 fence；renew/release 校验 owner+fence+未过期
+- [x] 丢失 lease 的写操作报错，不静默重写
+- [x] 对应包测试通过
 
 **Type:** backend
 

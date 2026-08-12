@@ -4,7 +4,7 @@
 
 **Blocked by:** 09 - sessionstore SQLite 重写 + 旧 JSONL 运行时删除
 
-**Status:** ready-for-agent
+**Status:** partial
 
 ## Acceptance Criteria
 
