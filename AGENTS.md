@@ -27,9 +27,9 @@ pigo.exe -v                       # 打印版本信息
 
 | 路径 | 职责 |
 |---|---|
-| `cmd/pigo` | 入口：CLI 参数解析、TUI/REPL/headless 分发、`--acp` stdio server |
+| `cmd/pigo` | 入口：CLI 参数解析、TUI/REPL/headless 分发、`pigo acp` stdio server |
 | `internal/acp` | ACP 协议层：`dispatch.go` 核心分发、`pigo_rpc.go` 已实现的 `pigo/*` RPC、`extensions.go` 斜杠命令层、`sessioninfo.go` / `events.go` 负载与事件助手、`server_*.go` transport |
-| `internal/cli` | TUI、REPL、headless、acpcmd 等前端 |
+| `internal/cli` | TUI、REPL、headless 等前端 |
 | `internal/agenttool` | 工具实现：bash、search、websearch、文件工具等 |
 | `internal/provider` | 模型 provider 与流式协议适配 |
 | `internal/sessionstore` | 会话与转录持久化 |
@@ -48,6 +48,7 @@ pigo.exe -v                       # 打印版本信息
   - 新增 ACP 客户端只做客户端侧映射，不要新建 `xx_extensions.go`；协议方法只加一次，所有客户端共享。
 - 会话删除必须走 `internal/sessionstore` 的 store API，保持磁盘持久化一致。
 - 新增能力默认在核心层实现；外部客户端通过 ACP 暴露，TUI/REPL 通过共享 runtime 直连，避免旁路实现。
+- 不为旧协议/旧接口保留兼容 shim；移除即移除。`--acp`、`model/set`、`pigo/*` 已从对外入口移除，不再提供向后兼容 alias。
 - 提交信息使用中文，subject 概括改动，必要时 body 说明动机；未经明确要求不 push。
 
 ## 责任边界
@@ -86,7 +87,7 @@ Zed 通过 `agent_servers.pigo` 使用 pigo：
 
 ## ACP 工具策略与 hooks
 
-- `--acp` 模式与 TUI/headless 共享 pigo 侧策略：`config.toml` 的 `allowed_tools` / `disallowed_tools` 与 CLI `--allowed-tools` / `--disallowed-tools` 对 ACP 会话生效。
+- `pigo acp` 模式与 TUI/headless 共享 pigo 侧策略：`config.toml` 的 `allowed_tools` / `disallowed_tools` 与 CLI `--allowed-tools` / `--disallowed-tools` 对 ACP 会话生效。
 - 工具事件按 `pending -> in_progress -> completed/failed` 发出；`tool_call_update` 必须携带 `rawInput`，被拦截或失败的调用也要让客户端能形成工具卡。
 - `allow_always` 写入 `~/.pigo/trust.json` 并跨进程重启生效；`allow_once` 不持久化；`reject_always` 写入 Untrusted。
 - 主目录受信任时，项目内附加目录视为同一项目信任边界，不要求每个附加目录单独信任。

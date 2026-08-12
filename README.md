@@ -319,7 +319,7 @@ disallowed_tools = ["bash"]
 
 ### ACP 客户端
 
-`--acp` 模式与 TUI/headless 共享同一套 pigo 侧策略：
+`pigo acp` 模式与 TUI/headless 共享同一套 pigo 侧策略：
 
 - `config.toml` 的 `allowed_tools` / `disallowed_tools` 和 CLI `--allowed-tools` / `--disallowed-tools` 对 ACP 会话生效；被过滤的工具不会出现在模型工具集中。
 - 命令级控制复用 `PreToolUse` hooks。hooks 按 `session/new` 的 cwd 逐会话解析：全局 hooks 始终加载，项目 hooks 仅当该目录受信任时加载。
@@ -334,7 +334,7 @@ Zed 的 `agent_servers.pigo` 中可把工具策略放进 args：
 "pigo": {
   "type": "custom",
   "command": "E:/project/pigo/pigo.exe",
-  "args": ["--acp", "--allowed-tools", "read,grep", "--disallowed-tools", "bash"]
+  "args": ["acp", "--allowed-tools", "read,grep", "--disallowed-tools", "bash"]
 }
 ```
 
