@@ -207,4 +207,3 @@ func (r *RuntimeRunner) snapshotRecorder() *agenttool.FileSnapshotRecorder {
 	}
 	return nil
 }
-

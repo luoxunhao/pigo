@@ -94,6 +94,9 @@ func TestCommandServiceListAndExecute(t *testing.T) {
 		}
 		if cmd.Name == "skill:direct" {
 			sawDirect = true
+			if cmd.Description != "(skill)" {
+				t.Fatalf("prefixed skill fallback description = %q", cmd.Description)
+			}
 		}
 		if cmd.Name == "resume" {
 			sawResume = true

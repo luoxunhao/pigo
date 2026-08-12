@@ -918,9 +918,12 @@ func (m Model) runSlash(line string) (tea.Model, tea.Cmd) {
 			m.relayout()
 			return m, nil
 		}
-		if !m.running {
-			_ = m.session.persist()
+		if m.running {
+			m.transcript.addSystem("cannot resume while a run is in progress")
+			m.relayout()
+			return m, nil
 		}
+		_ = m.session.persist()
 		history, err := m.session.switchHTTPSession(context.Background(), metas[n-1].SessionID)
 		if err != nil {
 			m.transcript.addSystem("resume failed: " + err.Error())

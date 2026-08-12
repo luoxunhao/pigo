@@ -955,6 +955,14 @@ func runResume(out io.Writer, deps *replDeps, line string) {
 		msgs[i] = e.Message
 	}
 	deps.header = header
+	if deps.live != nil {
+		if header.Model != "" {
+			deps.live.Model = header.Model
+		}
+		if header.Provider != "" {
+			deps.live.ProviderName = header.Provider
+		}
+	}
 	deps.agentCtx.Messages = msgs
 	deps.persisted = len(msgs)
 	deps.curLeaf = ""

@@ -53,9 +53,9 @@ func (c *CommandService) List() gen.CommandListResult {
 			desc := cmd.Description
 			if cmd.Source == runtime.SourceSkill && !strings.HasPrefix(name, "skill:") {
 				name = "skill:" + cmd.Name
-				if desc == "" {
-					desc = "(skill)"
-				}
+			}
+			if cmd.Source == runtime.SourceSkill && desc == "" {
+				desc = "(skill)"
 			}
 			if seen[name] {
 				continue

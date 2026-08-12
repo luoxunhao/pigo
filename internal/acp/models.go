@@ -105,4 +105,3 @@ func (m *ConfiguredModels) Delete(key string) error {
 	m.cfg.DeleteModel(key)
 	return config.SaveFileConfig(m.path, m.cfg)
 }
-
