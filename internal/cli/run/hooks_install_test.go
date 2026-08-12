@@ -149,7 +149,7 @@ func TestInstallSeamsBeforeRunsHookBeforePermission(t *testing.T) {
 }
 
 func TestInstallSeamsPropagatesToSubAgentTool(t *testing.T) {
-	tool := runtime.NewTaskTool(func() runtime.RunConfig { return runtime.RunConfig{} }, nil)
+	tool := runtime.NewSubAgentTool(runtime.SubAgentSpec{Name: "task", NewRunConfig: func() runtime.RunConfig { return runtime.RunConfig{} }})
 	reg := agenttool.NewToolRegistry()
 	if err := reg.Register(tool); err != nil {
 		t.Fatal(err)
@@ -189,7 +189,7 @@ func TestInstallSeamsBlocksChildBash(t *testing.T) {
 	childFactory := func() runtime.RunConfig {
 		return runtime.RunConfig{Batch: agenttool.BatchConfig{ToolExecutorConfig: agenttool.ToolExecutorConfig{Registry: childReg}}}
 	}
-	taskTool := runtime.NewTaskTool(childFactory, nil)
+	taskTool := runtime.NewSubAgentTool(runtime.SubAgentSpec{Name: "task", NewRunConfig: childFactory})
 	parentReg := agenttool.NewToolRegistry()
 	if err := parentReg.Register(taskTool); err != nil {
 		t.Fatal(err)

@@ -16,6 +16,7 @@ import (
 
 func TestSessionCreateAndList(t *testing.T) {
 	pigoHome := t.TempDir()
+	cleanupStores(t)
 	workspace := filepath.Join(t.TempDir(), "ws")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatal(err)
@@ -38,7 +39,7 @@ func TestSessionCreateAndList(t *testing.T) {
 	if created.SessionId == "" || created.Directory != workspace {
 		t.Fatalf("created = %+v", created)
 	}
-	list, apiErr := svc.List(workspace, "", 50)
+	list, apiErr := svc.List(workspace, "", 50, false)
 	if apiErr != nil {
 		t.Fatalf("List: %v", apiErr)
 	}
@@ -49,6 +50,7 @@ func TestSessionCreateAndList(t *testing.T) {
 
 func TestSessionCreateMissingDefaultModel(t *testing.T) {
 	pigoHome := t.TempDir()
+	cleanupStores(t)
 	cfgPath := filepath.Join(t.TempDir(), "config.toml")
 	if err := config.SaveFileConfig(cfgPath, config.FileConfig{}); err != nil {
 		t.Fatal(err)
@@ -61,6 +63,7 @@ func TestSessionCreateMissingDefaultModel(t *testing.T) {
 }
 
 func TestSessionCreateRejectsRelativeDirectory(t *testing.T) {
+	cleanupStores(t)
 	svc := NewSessionService(t.TempDir())
 	_, apiErr := svc.Create(gen.NewSessionRequest{Directory: "relative"})
 	if apiErr == nil || apiErr.Code != CodeInvalidParams {
@@ -70,6 +73,7 @@ func TestSessionCreateRejectsRelativeDirectory(t *testing.T) {
 
 func TestSessionHTTPCreateAndList(t *testing.T) {
 	pigoHome := t.TempDir()
+	cleanupStores(t)
 	workspace := filepath.Join(t.TempDir(), "ws")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatal(err)
@@ -119,6 +123,7 @@ func TestSessionHTTPCreateAndList(t *testing.T) {
 
 func TestSessionLoadCloseDeleteStatus(t *testing.T) {
 	pigoHome := t.TempDir()
+	cleanupStores(t)
 	workspace := filepath.Join(t.TempDir(), "ws")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatal(err)
@@ -171,6 +176,7 @@ func TestSessionLoadCloseDeleteStatus(t *testing.T) {
 
 func TestSessionUpdateConfigAndMode(t *testing.T) {
 	pigoHome := t.TempDir()
+	cleanupStores(t)
 	workspace := filepath.Join(t.TempDir(), "ws")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatal(err)

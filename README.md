@@ -378,10 +378,9 @@ flowchart LR
 
 | 路径 / 变量 | 用途 |
 |-------------|------|
-| `$PIGO_HOME` | 覆盖 `~/.pigo` 基础目录（sessions、plugins、trust 等） |
-| `$PIGO_SKILLS_DIR` | 覆盖技能目录，默认 `~/.agents/skills` |
-| `~/.config/pigo/config.toml` | 用户配置（`$XDG_CONFIG_HOME` 生效时在其下） |
-| `~/.pigo/projects/<workspace>/sessions` | 会话持久化 |
+| `PIGO_HOME` | 覆盖 `~/.pigo` 基础目录（影响 plugins、commands、prompts） |
+| `PIGO_SKILLS_DIR` | 覆盖技能目录（默认 `~/.agents/skills`） |
+| `~/.pigo/sessions.db` | 会话 canonical 存储（SQLite；v4 JSONL 仅用于导出/导入） |
 | `~/.pigo/plugins` | 外部插件 |
 | `~/.pigo/prompts` / `~/.pigo/commands` | 全局提示词模板 |
 | `.pigo/prompts` | 项目提示词模板（仅受信任目录） |

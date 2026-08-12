@@ -109,7 +109,7 @@ func (s *SessionService) Create(req gen.NewSessionRequest) (gen.Session, *APIErr
 }
 
 // List returns sessions filtered by directory and cursor.
-func (s *SessionService) List(directory, before string, limit int) (gen.SessionListResult, *APIError) {
+func (s *SessionService) List(directory, before string, limit int, includeSubagents bool) (gen.SessionListResult, *APIError) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
@@ -129,6 +129,9 @@ func (s *SessionService) List(directory, before string, limit int) (gen.SessionL
 	}
 	if err != nil {
 		return gen.SessionListResult{}, Internal(err.Error())
+	}
+	if !includeSubagents {
+		metas = nonSubagentSessions(metas)
 	}
 	offset := 0
 	if before != "" {
@@ -152,6 +155,10 @@ func (s *SessionService) List(directory, before string, limit int) (gen.SessionL
 			Directory: m.WorkspacePath,
 			Title:     &title,
 			UpdatedAt: &updatedAt,
+			ParentSessionId:  optString(m.ParentSessionID),
+			ParentToolCallId: optString(m.ParentToolCallID),
+			SubagentType:     optString(m.SubagentType),
+			SessionKind:      optString(m.SessionKind),
 		})
 	}
 	var next *string
@@ -171,11 +178,16 @@ func (s *SessionService) Load(sessionID string, req gen.LoadSessionRequest) (gen
 	if err != nil {
 		return gen.SessionLoadResult{}, Internal(err.Error())
 	}
-	meta, _, _, err := store.Load(sessionID)
+	meta, err := store.LoadMetadata(sessionID)
 	if err != nil {
 		return gen.SessionLoadResult{}, NotFound(CodeSessionNotFound, "session not found: "+sessionID)
 	}
-	_, entries, err := store.TranscriptStore().LoadEntries(sessionID)
+	if req.LeafId != nil && *req.LeafId != "" {
+		if apiErr := s.moveLeaf(store, sessionID, *req.LeafId); apiErr != nil {
+			return gen.SessionLoadResult{}, apiErr
+		}
+	}
+	proj, err := store.Projection(sessionID, "")
 	if err != nil {
 		return gen.SessionLoadResult{}, Internal(err.Error())
 	}
@@ -192,7 +204,7 @@ func (s *SessionService) Load(sessionID string, req gen.LoadSessionRequest) (gen
 			offset = n
 		}
 	}
-	end := len(entries) - offset
+	end := len(proj.Entries) - offset
 	if end < 0 {
 		end = 0
 	}
@@ -201,8 +213,8 @@ func (s *SessionService) Load(sessionID string, req gen.LoadSessionRequest) (gen
 		start = 0
 	}
 	messages := make([]gen.Message, 0, end-start)
-	for _, e := range entries[start:end] {
-		messages = append(messages, entryToDomainMessage(e))
+	for i, e := range proj.Entries[start:end] {
+		messages = append(messages, v4EntryToDomainMessage(e, start+i, proj.Lane))
 	}
 	var next *string
 	if start > 0 && len(messages) > 0 {
@@ -220,6 +232,9 @@ func (s *SessionService) Load(sessionID string, req gen.LoadSessionRequest) (gen
 		Messages:      messages,
 		HasMore:       start > 0,
 		NextCursor:    next,
+		CurrentLeafId: optString(proj.LeafID),
+		CurrentLane:   optString(proj.Lane),
+		Lanes:         lanesToGen(proj.Lanes),
 	}, nil
 }
 
@@ -235,7 +250,7 @@ func (s *SessionService) Messages(sessionID, directory, before string, limit int
 	if _, err := store.LoadMetadata(sessionID); err != nil {
 		return gen.MessageListResult{}, NotFound(CodeSessionNotFound, "session not found: "+sessionID)
 	}
-	_, entries, err := store.TranscriptStore().LoadEntries(sessionID)
+	proj, err := store.Projection(sessionID, "")
 	if err != nil {
 		return gen.MessageListResult{}, Internal(err.Error())
 	}
@@ -248,7 +263,7 @@ func (s *SessionService) Messages(sessionID, directory, before string, limit int
 			offset = n
 		}
 	}
-	end := len(entries) - offset
+	end := len(proj.Entries) - offset
 	if end < 0 {
 		end = 0
 	}
@@ -257,8 +272,8 @@ func (s *SessionService) Messages(sessionID, directory, before string, limit int
 		start = 0
 	}
 	messages := make([]gen.Message, 0, end-start)
-	for _, e := range entries[start:end] {
-		messages = append(messages, entryToDomainMessage(e))
+	for i, e := range proj.Entries[start:end] {
+		messages = append(messages, v4EntryToDomainMessage(e, start+i, proj.Lane))
 	}
 	var next *string
 	if start > 0 && len(messages) > 0 {
@@ -307,13 +322,24 @@ func (s *SessionService) Status(sessionID, directory string) (gen.SessionStatusR
 	if err != nil {
 		return gen.SessionStatusResult{}, Internal(err.Error())
 	}
-	meta, _, _, err := store.Load(sessionID)
+	meta, err := store.LoadMetadata(sessionID)
 	if err != nil {
 		return gen.SessionStatusResult{}, NotFound(CodeSessionNotFound, "session not found: "+sessionID)
+	}
+	proj, err := store.Projection(sessionID, "")
+	if err != nil {
+		return gen.SessionStatusResult{}, Internal(err.Error())
 	}
 	model := meta.ModelName
 	mode := "build"
 	thinking := "medium"
+	if proj.Model != "" {
+		model = proj.Model
+	}
+	if proj.ThinkingLevel != "" {
+		thinking = proj.ThinkingLevel
+	}
+	mode = sessionMode(meta)
 	queued := 0
 	return gen.SessionStatusResult{
 		SessionId:     sessionID,
@@ -322,6 +348,9 @@ func (s *SessionService) Status(sessionID, directory string) (gen.SessionStatusR
 		Mode:          &mode,
 		ThinkingLevel: &thinking,
 		QueuedCount:   &queued,
+		CurrentLeafId: optString(proj.LeafID),
+		CurrentLane:   optString(proj.Lane),
+		Lanes:         lanesToGen(proj.Lanes),
 	}, nil
 }
 
@@ -509,4 +538,31 @@ func configuredModelName(m config.ModelConfig) string {
 		return m.Name
 	}
 	return m.Key()
+}
+
+func optString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func lanesToGen(lanes []session.LaneState) *[]gen.LaneState {
+	out := make([]gen.LaneState, 0, len(lanes))
+	for _, l := range lanes {
+		item := gen.LaneState{Lane: l.Lane}
+		if l.LeafID != nil {
+			item.LeafId = l.LeafID
+		}
+		out = append(out, item)
+	}
+	return &out
+}
+
+func (s *SessionService) moveLeaf(store *sessionstore.Store, sessionID, leafID string) *APIError {
+	target := leafID
+	if err := store.MoveLane(sessionID, "main", &target); err != nil {
+		return NotFound(CodeSessionNotFound, "leaf not found: "+leafID)
+	}
+	return nil
 }

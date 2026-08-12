@@ -2,20 +2,15 @@
 // stream-json headless run, the session listing/resume helpers, and the
 // process-isolated sub-agent JSON-RPC server (--subagent-rpc).
 //
-// Session persistence is unified on the project-scoped store: new sessions are
-// written only under $PIGO_HOME/projects/<workspace-slug>/sessions, never to
-// the legacy flat ~/.pigo/sessions directory. The legacy flat store stays
-// readable as a fallback so old sessions can be listed and, on first resume,
-// migrated once into the project-scoped store. This removes the previous
-// double-write where interactive and headless paths persisted the same session
-// to two different roots.
+// Session persistence is unified on the canonical SQLite store at
+// $PIGO_HOME/sessions.db. Legacy v1/v2/v3 JSONL is quarantined by
+// scripts/quarantine-legacy-sessions.* and is never read at runtime.
 package headless
 
 import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"time"
 
@@ -39,29 +34,8 @@ func ProjectStore() (*sessionstore.Store, error) {
 	return sessionstore.OpenForWorkspace(home, cwd)
 }
 
-// LegacySessionStore returns the legacy flat session store at
-// $PIGO_HOME/sessions (else ~/.pigo/sessions). It is read-only for new data:
-// sessions written before the project-scoped store remain readable, and a
-// resumed legacy session is migrated into the project store on first use.
-func LegacySessionStore() (*session.Store, error) {
-	home, err := sessionstore.PigoHome()
-	if err != nil {
-		return nil, err
-	}
-	return session.NewStore(filepath.Join(home, "sessions"))
-}
-
-// SessionStore is retained as an alias for legacy callers. New callers should
-// use ProjectStore; the flat store stays readable for old sessions.
-func SessionStore() (*session.Store, error) {
-	return LegacySessionStore()
-}
-
-// EnsureProjectSession makes sure sessionID exists in the project-scoped store
-// for the given workspace. If it only exists in the legacy flat store, it is
-// migrated once (metadata + transcript + index) so every subsequent write goes
-// to the single project-scoped location. It returns an error when the session
-// exists nowhere.
+// EnsureProjectSession makes sure sessionID exists in the canonical store for
+// the given workspace.
 func EnsureProjectSession(home, cwd, sessionID string) error {
 	proj, err := sessionstore.OpenForWorkspace(home, cwd)
 	if err != nil {
@@ -70,43 +44,22 @@ func EnsureProjectSession(home, cwd, sessionID string) error {
 	if _, err := proj.LoadMetadata(sessionID); err == nil {
 		return nil
 	}
-	migrated, err := migrateLegacySession(proj, sessionID, cwd)
-	if err != nil {
-		return err
-	}
-	if !migrated {
-		return fmt.Errorf("pigo: session %q not found", sessionID)
-	}
-	return nil
+	return fmt.Errorf("pigo: session %q not found", sessionID)
 }
 
-// migrateLegacySession copies a legacy flat session into proj verbatim (entry
-// ids/parentIds preserved) and re-anchors it to the resumed workspace so the
-// store layout and metadata agree. It reports false when the legacy store has
-// no such session.
-func migrateLegacySession(proj *sessionstore.Store, sessionID, cwd string) (bool, error) {
-	legacy, err := LegacySessionStore()
+// SessionStore returns the tree-oriented session.Store view over the canonical
+// SQLite store. It is the compatibility seam for local front-ends that still
+// call the old session.Store API directly.
+func SessionStore() (*session.Store, error) {
+	proj, err := ProjectStore()
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	header, entries, err := legacy.LoadEntries(sessionID)
-	if err != nil {
-		return false, nil
-	}
-	header.Cwd = cwd
-	meta := sessionstore.NewMetadata(sessionID, "Session", "pigo", header.Model, cwd)
-	meta.CreatedAt = header.CreatedAt
-	meta.LastActiveAt = header.UpdatedAt
-	meta.MessageCount = len(entries)
-	if err := proj.ImportEntries(meta, header, entries); err != nil {
-		return false, err
-	}
-	return true, nil
+	return proj.TranscriptStore(), nil
 }
 
-// AllSessionHeaders returns headers for every known session across all project
-// stores plus any not-yet-migrated legacy flat sessions, most recently updated
-// first. Project-scoped entries win when an id exists in both.
+// AllSessionHeaders returns headers for every known session in the canonical
+// store, most recently updated first.
 func AllSessionHeaders() ([]session.SessionHeader, error) {
 	home, err := sessionstore.PigoHome()
 	if err != nil {
@@ -123,15 +76,6 @@ func AllSessionHeaders() ([]session.SessionHeader, error) {
 			UpdatedAt: m.LastActiveAt,
 			Model:     m.ModelName,
 			Cwd:       m.WorkspacePath,
-		}
-	}
-	if legacy, err := LegacySessionStore(); err == nil {
-		if headers, err := legacy.List(); err == nil {
-			for _, h := range headers {
-				if _, ok := byID[h.ID]; !ok {
-					byID[h.ID] = h
-				}
-			}
 		}
 	}
 	out := make([]session.SessionHeader, 0, len(byID))
@@ -197,7 +141,6 @@ type headlessSession struct {
 // branch leaf) or creates a fresh session otherwise. It returns the prior
 // messages to seed into the context ahead of the new prompt, plus the session
 // state used to persist the run afterward. Fresh sessions are created in the
-// project-scoped store; a legacy flat session is migrated there on first resume.
 func openHeadlessSession(resumeID, model, providerName, sysPrompt string) (agentcore.MessageList, headlessSession, error) {
 	proj, err := ProjectStore()
 	if err != nil {
@@ -209,19 +152,11 @@ func openHeadlessSession(resumeID, model, providerName, sysPrompt string) (agent
 	if resumeID != "" {
 		_, h, msgs, err := proj.Load(resumeID)
 		if err != nil {
-			// Not in the project store yet: migrate the legacy flat session once,
-			// then load from the single project-scoped location.
-			if _, merr := migrateLegacySession(proj, resumeID, cwd); merr != nil {
-				return nil, headlessSession{}, merr
-			}
-			_, h, msgs, err = proj.Load(resumeID)
-			if err != nil {
-				return nil, headlessSession{}, err
-			}
+			return nil, headlessSession{}, err
 		}
 		curLeaf := ""
-		if _, entries, lerr := proj.TranscriptStore().LoadEntries(resumeID); lerr == nil && len(entries) > 0 {
-			curLeaf = entries[len(entries)-1].ID
+		if projection, perr := proj.Projection(resumeID, ""); perr == nil {
+			curLeaf = projection.LeafID
 		}
 		// A resumed header keeps its own SystemPrompt when present so the run is
 		// faithful to the original session.

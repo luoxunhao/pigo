@@ -100,15 +100,6 @@ func SetupEnv(model, baseURL, protocol, providerName, apiKey string, noTools, no
 			tools = append(tools, &agenttool.MemorySearchTool{Store: store})
 		}
 	}
-	// Wire the generic task tool (US-002, #454) unless tools are disabled. It
-	// dispatches general-purpose sub-agents that reuse the resolved provider
-	// stream/model. Each spawn gets a fresh child RunConfig whose registry is the
-	// builtins with "task" removed (the nesting guard, so a child cannot fan out
-	// again), and all task calls in a run share one semaphore capping concurrency.
-	if !noTools {
-		sem := runtime.NewSubagentSemaphore()
-		tools = append(tools, SessionTaskTool(cwd, policy, model, resolvedName, prov, resolvedKey, sem, nil))
-	}
 	// Discover external plugins (US-016) and append their tools. Plugin loading
 	// is fault-tolerant: a plugin that fails to start is logged and skipped, and
 	// disabling tools (--no-tools) skips plugin discovery entirely.
@@ -116,6 +107,13 @@ func SetupEnv(model, baseURL, protocol, providerName, apiKey string, noTools, no
 	if !noTools {
 		if m, err := plugin.Discover(PluginsDir(), os.Stderr, os.Stderr); err == nil {
 			tools = append(tools, m.Tools()...)
+			for _, spec := range m.Subagents() {
+				tool, err := PluginSubagentTool(cwd, policy, model, resolvedName, prov, resolvedKey, spec, m.Tools())
+				if err != nil {
+					return Env{}, err
+				}
+				tools = append(tools, tool)
+			}
 			mgr = m
 		} else {
 			fmt.Fprintf(os.Stderr, "pigo: plugin discovery failed: %v\n", err)
@@ -177,6 +175,68 @@ func SetupEnv(model, baseURL, protocol, providerName, apiKey string, noTools, no
 	}, nil
 }
 
+// PluginSubagentTool builds a runtime sub-agent tool from a plugin manifest
+// declaration. Tools are resolved against builtins plus all plugin tools;
+// unknown names fail closed. Process isolation uses builtins only and requires
+// a model id.
+func PluginSubagentTool(cwd string, policy ToolPolicy, model, providerName string, prov provider.Provider, apiKey string, spec plugin.SubagentSpec, pluginTools []agentcore.AgentTool) (*runtime.SubAgentTool, error) {
+	if strings.TrimSpace(spec.Name) == "" {
+		return nil, fmt.Errorf("plugin subagent: empty name")
+	}
+	all := append(BuiltinToolsExcept(cwd, false, "task"), pluginTools...)
+	byName := map[string]agentcore.AgentTool{}
+	for _, t := range all {
+		byName[t.Name()] = t
+	}
+	var selected []agentcore.AgentTool
+	if len(spec.Tools) == 0 {
+		selected = append(selected, all...)
+	} else {
+		for _, name := range spec.Tools {
+			t, ok := byName[name]
+			if !ok {
+				return nil, fmt.Errorf("plugin subagent %q: unknown tool %q", spec.Name, name)
+			}
+			selected = append(selected, t)
+		}
+	}
+	childCreds := provider.NewCredentialStore(nil)
+	childCreds.SetOverride(providerName, apiKey)
+	factory := func() runtime.RunConfig {
+		return runtime.RunConfig{
+			LoopConfig: runtime.LoopConfig{
+				Model:     model,
+				Provider:  providerName,
+				Stream:    provider.StreamFnFromProvider(prov),
+				GetAPIKey: childCreds.GetAPIKey,
+			},
+			Batch: agenttool.BatchConfig{
+				ToolExecutorConfig: agenttool.ToolExecutorConfig{Registry: ToolRegistry(selected)},
+			},
+		}
+	}
+	sub := runtime.SubAgentSpec{
+		Name:         spec.Name,
+		Description:  spec.Description,
+		SystemPrompt: spec.SystemPrompt,
+		Tools:        selected,
+		NewRunConfig: factory,
+		Cwd:          cwd,
+	}
+	if strings.EqualFold(spec.Isolation, "process") {
+		if spec.Model == "" {
+			return nil, fmt.Errorf("plugin subagent %q: process isolation requires model", spec.Name)
+		}
+		sub.Isolation = runtime.SubAgentIsolationProcess
+		sub.Process = runtime.SubAgentProcessConfig{Model: spec.Model}
+		sub.Tools = nil
+		for _, t := range selected {
+			sub.Process.ToolNames = append(sub.Process.ToolNames, t.Name())
+		}
+	}
+	return runtime.NewSubAgentTool(sub), nil
+}
+
 // resolveStartupProvider resolves the startup provider, supporting a default
 // model of the form custom-<slug>/<modelId> from the config provider registry.
 func resolveStartupProvider(model, baseURL, protocol, providerName, apiKey string) (provider.Provider, string, string, string, error) {
@@ -235,33 +295,6 @@ func HasReadTool(tools []agentcore.AgentTool) bool {
 		}
 	}
 	return false
-}
-
-// SessionTaskTool builds a generic task sub-agent tool whose children operate
-// in cwd. It is used both by SetupEnv (single-project drivers) and by the ACP
-// session builder (shared processes), so a task child never inherits the
-// startup directory of a different workspace.
-func SessionTaskTool(cwd string, policy ToolPolicy, model, providerName string, prov provider.Provider, apiKey string, sem chan struct{}, registry *runtime.Registry) *runtime.SubAgentTool {
-	childCreds := provider.NewCredentialStore(nil)
-	childCreds.SetOverride(providerName, apiKey)
-	factory := func() runtime.RunConfig {
-		childTools := ChildToolSet(cwd, policy)
-		return runtime.RunConfig{
-			LoopConfig: runtime.LoopConfig{
-				Model:     model,
-				Provider:  providerName,
-				Stream:    provider.StreamFnFromProvider(prov),
-				GetAPIKey: childCreds.GetAPIKey,
-			},
-			Batch: agenttool.BatchConfig{
-				ToolExecutorConfig: agenttool.ToolExecutorConfig{Registry: ToolRegistry(childTools)},
-			},
-		}
-	}
-	tool := runtime.NewTaskTool(factory, sem)
-	tool.SetSubagentRegistry(registry)
-	tool.SetSubagentCwd(cwd)
-	return tool
 }
 
 // resolveAppendInstructions maps each --append-system-prompt value to the text

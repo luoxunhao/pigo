@@ -45,6 +45,9 @@ pigo.exe -v                       # 打印版本信息
 - 斜杠命令通过 serve 的 `POST /api/v1/commands` 与 `POST /api/v1/session/{id}/command` 暴露，再经 `available_commands_update` 通知 ACP 客户端。
 - 只实现标准 ACP 方法；不实现 `session/resume`、`session/fork` 等非标准 ACP 扩展。命令能力一律通过 `available_commands_update` + `/command` 暴露。
 - 会话删除必须走 `internal/sessionstore` 的 store API，保持磁盘持久化一致。
+- 会话 canonical 存储是 `$PIGO_HOME/sessions.db`（SQLite，pi 对齐 schema）；v4 typed JSONL 仅用于 `/export`、`/import`，不承担运行时读写。
+- `lanes.main.leaf_id` 是 resume / `session/load` / 所有前端的 leaf 权威来源；不再读写 `metadata.customMetadata["curLeaf"]`。
+- 旧 v1/v2/v3 JSONL 与 `$PIGO_HOME/sessions`、`$PIGO_HOME/projects/*/sessions` 运行时不再可读；升级前执行 `scripts/quarantine-legacy-sessions.ps1` 或 `.sh` 隔离旧目录。
 - 新增能力默认在核心层实现；外部客户端通过 ACP 暴露，TUI/REPL 通过共享 runtime 直连，避免旁路实现。
 - 不为旧协议/旧接口保留兼容 shim；移除即移除。`--acp`、`model/set`、`pigo/*` 已从对外入口移除，不再提供向后兼容 alias。
 - 提交信息使用中文，subject 概括改动，必要时 body 说明动机；未经明确要求不 push。

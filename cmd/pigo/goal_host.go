@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -208,21 +207,12 @@ func goalSummary(state *agenttool.GoalState) string {
 
 func persistGoalStore(store *sessionstore.Store, sessionID string, header session.SessionHeader, msgs agentcore.MessageList, prevCount int) error {
 	var curLeaf string
-	if _, entries, err := store.TranscriptStore().LoadEntries(sessionID); err == nil && len(entries) > 0 {
-		curLeaf = entries[len(entries)-1].ID
-	}
-	if meta, err := store.LoadMetadata(sessionID); err == nil && len(meta.CustomMetadata) > 0 {
-		var custom map[string]any
-		if json.Unmarshal(meta.CustomMetadata, &custom) == nil {
-			if leaf, ok := custom["curLeaf"].(string); ok && leaf != "" {
-				curLeaf = leaf
-			}
-		}
+	if proj, err := store.Projection(sessionID, ""); err == nil {
+		curLeaf = proj.LeafID
 	}
 	header.UpdatedAt = time.Now().UTC()
-	var newLeaf string
 	if len(msgs) < prevCount {
-		if err := store.TranscriptStore().Save(header, msgs); err != nil {
+		if err := store.Save(header, msgs); err != nil {
 			return err
 		}
 		curLeaf = ""
@@ -231,11 +221,10 @@ func persistGoalStore(store *sessionstore.Store, sessionID string, header sessio
 		if len(msgs) >= prevCount {
 			tail = msgs[prevCount:]
 		}
-		leaf, err := store.AppendBranch(sessionID, header, curLeaf, tail)
+		_, err := store.AppendBranch(sessionID, header, curLeaf, tail)
 		if err != nil {
 			return err
 		}
-		newLeaf = leaf
 	}
 	meta, err := store.LoadMetadata(sessionID)
 	if err != nil {
@@ -244,17 +233,5 @@ func persistGoalStore(store *sessionstore.Store, sessionID string, header sessio
 	meta.ModelName = header.Model
 	meta.LastActiveAt = header.UpdatedAt
 	meta.MessageCount = len(msgs)
-	custom := map[string]any{}
-	if len(meta.CustomMetadata) > 0 {
-		_ = json.Unmarshal(meta.CustomMetadata, &custom)
-	}
-	if newLeaf != "" {
-		custom["curLeaf"] = newLeaf
-	} else {
-		delete(custom, "curLeaf")
-	}
-	if b, marshalErr := json.Marshal(custom); marshalErr == nil {
-		meta.CustomMetadata = b
-	}
 	return store.SaveMetadata(meta)
 }

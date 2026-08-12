@@ -505,7 +505,7 @@ func (t *SubAgentTool) executeChildSession(ctx context.Context, id, prompt, desc
 			tools = cfg.Batch.ToolExecutorConfig.Registry.List()
 		}
 	}
-	child := t.registry.CreateOrGet(parentID, id, "task", t.spec.SystemPrompt, tools, factory, nil, t.spec.Cwd)
+	child := t.registry.CreateOrGet(parentID, id, t.spec.Name, t.spec.SystemPrompt, tools, factory, nil, t.spec.Cwd)
 
 	parentEmit := agentcore.ProgressEmitterFromContext(ctx)
 	sink := t.registry.eventSink()
@@ -513,7 +513,7 @@ func (t *SubAgentTool) executeChildSession(ctx context.Context, id, prompt, desc
 		"sessionId":        child.ID,
 		"parentSessionId":  parentID,
 		"parentToolCallId": id,
-		"subagentType":     "task",
+		"subagentType":     t.spec.Name,
 	}
 	onEvent := func(ev agentcore.AgentEvent) {
 		if sink != nil {
@@ -551,7 +551,7 @@ func (t *SubAgentTool) executeChildSession(ctx context.Context, id, prompt, desc
 		"sessionId":        child.ID,
 		"parentSessionId":  parentID,
 		"parentToolCallId": id,
-		"subagentType":     "task",
+		"subagentType":     t.spec.Name,
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {

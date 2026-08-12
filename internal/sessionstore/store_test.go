@@ -1,6 +1,7 @@
 package sessionstore
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,6 +56,7 @@ func TestCreateLoadListAppendDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
 
 	meta := NewMetadata("sess-1", "Fix bug", "agentic", "openrouter/free", ws)
 	header := session.SessionHeader{
@@ -81,8 +83,8 @@ func TestCreateLoadListAppendDelete(t *testing.T) {
 	if len(list) != 1 || list[0].SessionID != "sess-1" {
 		t.Fatalf("list = %+v, want one sess-1", list)
 	}
-	if list[0].MessageCount != 0 {
-		t.Fatalf("fresh session message count = %d, want 0", list[0].MessageCount)
+	if list[0].MessageCount != 2 {
+		t.Fatalf("fresh session message count = %d, want 2", list[0].MessageCount)
 	}
 
 	loadedMeta, loadedHeader, loadedMsgs, err := store.Load("sess-1")
@@ -111,7 +113,7 @@ func TestCreateLoadListAppendDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.MessageCount != 2 || after.TurnCount != 1 || after.ToolCallCount != 1 {
+	if after.MessageCount != 4 || after.TurnCount != 2 || after.ToolCallCount != 1 {
 		t.Fatalf("counts after append = %+v", after)
 	}
 
@@ -125,12 +127,12 @@ func TestCreateLoadListAppendDelete(t *testing.T) {
 	if len(list) != 0 {
 		t.Fatalf("list after delete = %+v, want empty", list)
 	}
-	if _, err := store.LoadMetadata("sess-1"); !os.IsNotExist(err) {
+	if _, err := store.LoadMetadata("sess-1"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("metadata still readable after delete: %v", err)
 	}
 }
 
-func TestIndexRebuildAfterStaleEntry(t *testing.T) {
+func TestDeleteRemovesSession(t *testing.T) {
 	home := t.TempDir()
 	ws := filepath.Join(home, "ws")
 	if err := os.MkdirAll(ws, 0o755); err != nil {
@@ -140,6 +142,7 @@ func TestIndexRebuildAfterStaleEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
 	header := session.SessionHeader{ID: "a", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	if err := store.Create(NewMetadata("a", "A", "agentic", "m", ws), header, nil); err != nil {
 		t.Fatal(err)
@@ -147,7 +150,7 @@ func TestIndexRebuildAfterStaleEntry(t *testing.T) {
 	if err := store.Create(NewMetadata("b", "B", "agentic", "m", ws), session.SessionHeader{ID: "b", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(store.metadataPath("a")); err != nil {
+	if err := store.Delete("a"); err != nil {
 		t.Fatal(err)
 	}
 	list, err := store.List()
@@ -169,6 +172,7 @@ func TestCreateRejectsDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
 	header := session.SessionHeader{ID: "x", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	if err := store.Create(NewMetadata("x", "X", "agentic", "m", ws), header, nil); err != nil {
 		t.Fatal(err)
@@ -191,10 +195,12 @@ func TestSeparateProjectsIsolateSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = storeA.Close() })
 	storeB, err := OpenForWorkspace(home, wsB)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = storeB.Close() })
 	headerA := session.SessionHeader{ID: "s", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	if err := storeA.Create(NewMetadata("s", "S", "agentic", "m", wsA), headerA, nil); err != nil {
 		t.Fatal(err)
@@ -218,6 +224,7 @@ func TestAppendBranchUpdatesMetadataAndPreservesTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
 	now := time.Now().UTC()
 	meta := NewMetadata("sess-branch", "Branch", "pigo", "m", ws)
 	header := session.SessionHeader{ID: "sess-branch", CreatedAt: now, UpdatedAt: now, Model: "m", Provider: "p", Cwd: ws}
@@ -250,13 +257,12 @@ func TestAppendBranchUpdatesMetadataAndPreservesTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Create seeds zero counts; AppendBranch counts only the appended batch, so
-	// the metadata reflects the branch write (2 messages, 1 user turn).
-	if meta2.MessageCount != 2 {
-		t.Errorf("MessageCount = %d, want 2", meta2.MessageCount)
+	// Create seeds the initial two messages; AppendBranch adds the second batch.
+	if meta2.MessageCount != 4 {
+		t.Errorf("MessageCount = %d, want 4", meta2.MessageCount)
 	}
-	if meta2.TurnCount != 1 {
-		t.Errorf("TurnCount = %d, want 1", meta2.TurnCount)
+	if meta2.TurnCount != 2 {
+		t.Errorf("TurnCount = %d, want 2", meta2.TurnCount)
 	}
 	if !meta2.LastActiveAt.Equal(header.UpdatedAt) {
 		t.Errorf("LastActiveAt = %v, want %v", meta2.LastActiveAt, header.UpdatedAt)
@@ -285,6 +291,7 @@ func TestImportEntriesRoundTripsTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
 
 	src, err := session.NewStore(t.TempDir())
 	if err != nil {
@@ -348,10 +355,12 @@ func TestListAllScansProjects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = storeA.Close() })
 	storeB, err := OpenForWorkspace(home, wsB)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = storeB.Close() })
 	older := time.Now().UTC().Add(-2 * time.Hour)
 	newer := time.Now().UTC()
 	metaA := NewMetadata("sess-a", "A", "pigo", "m", wsA)
@@ -387,4 +396,9 @@ func TestListAllScansProjects(t *testing.T) {
 	if len(empty) != 0 {
 		t.Fatalf("ListAll on empty home returned %d sessions, want 0", len(empty))
 	}
+	emptyStore, err := Open(filepath.Join(home, "empty"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = emptyStore.Close() })
 }

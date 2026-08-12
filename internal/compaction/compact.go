@@ -8,6 +8,7 @@ package compaction
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/provider"
@@ -30,12 +31,20 @@ type CompactionDetails struct {
 type CompactionResult struct {
 	// Summary is the structured summary that replaces the compacted history.
 	Summary string
+	// TurnPrefixSummary is the split-turn prefix summary, empty for clean cuts.
+	TurnPrefixSummary string
 	// FirstKeptIndex is the index of the first retained message.
 	FirstKeptIndex int
+	// RetainedTail is the self-contained tail carried by the compaction entry.
+	RetainedTail []agentcore.Message
 	// TokensBefore is the estimated context tokens before compaction.
 	TokensBefore int
 	// Details holds the file operations extracted from the compacted range.
 	Details CompactionDetails
+	// FromHook reports a hook-triggered compaction.
+	FromHook bool
+	// Usage is optional provider usage metadata for the summary request.
+	Usage json.RawMessage
 }
 
 // Compact prepares and generates a compaction over msgs. It cuts at
@@ -71,6 +80,8 @@ func Compact(
 		return nil, nil
 	}
 	toSummarize := msgs[start:cut.FirstKeptIndex]
+	retainedTail := append([]agentcore.Message(nil), msgs[cut.FirstKeptIndex:]...)
+	turnPrefixSummary := ""
 
 	// Seed file ops from the previous compaction, then fold in this range.
 	ops := NewFileOps()
@@ -91,13 +102,29 @@ func Compact(
 	if err != nil {
 		return nil, err
 	}
+	if cut.IsSplitTurn && cut.TurnStartIndex > start {
+		historySummary, err := GenerateSummary(ctx, stream, model, msgs[start:cut.TurnStartIndex], settings.ReserveTokens, previousSummary, cfg)
+		if err != nil {
+			return nil, err
+		}
+		turnPrefixSummary, err = GenerateSummary(ctx, stream, model, msgs[cut.TurnStartIndex:cut.FirstKeptIndex], settings.ReserveTokens, historySummary, cfg)
+		if err != nil {
+			return nil, err
+		}
+		summary = historySummary
+		if strings.TrimSpace(turnPrefixSummary) != "" {
+			summary += "\n\n" + turnPrefixSummary
+		}
+	}
 	summary += formatFileOperations(readFiles, modifiedFiles)
 
 	return &CompactionResult{
-		Summary:        summary,
-		FirstKeptIndex: cut.FirstKeptIndex,
-		TokensBefore:   EstimateContextTokens(msgs).Tokens,
-		Details:        CompactionDetails{ReadFiles: readFiles, ModifiedFiles: modifiedFiles},
+		Summary:          summary,
+		TurnPrefixSummary: turnPrefixSummary,
+		FirstKeptIndex:   cut.FirstKeptIndex,
+		RetainedTail:     retainedTail,
+		TokensBefore:     EstimateContextTokens(msgs).Tokens,
+		Details:          CompactionDetails{ReadFiles: readFiles, ModifiedFiles: modifiedFiles},
 	}, nil
 }
 
@@ -125,6 +152,10 @@ func (r *CompactionResult) Message(now int64) agentcore.CompactionMessage {
 func (r *CompactionResult) RebuildContext(msgs []agentcore.Message, now int64) agentcore.MessageList {
 	out := make(agentcore.MessageList, 0, len(msgs)-r.FirstKeptIndex+1)
 	out = append(out, r.Message(now))
-	out = append(out, msgs[r.FirstKeptIndex:]...)
+	tail := r.RetainedTail
+	if len(tail) == 0 {
+		tail = msgs[r.FirstKeptIndex:]
+	}
+	out = append(out, tail...)
 	return out
 }

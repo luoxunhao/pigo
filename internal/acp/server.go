@@ -120,6 +120,11 @@ func buildInitializeResponse(version string) map[string]any {
 				"delete": map[string]any{},
 			},
 			"mcpCapabilities": map[string]any{"http": false, "sse": false},
+			"_meta": map[string]any{
+				"pigo": map[string]any{
+					"sessionTree": map[string]any{"version": 1},
+				},
+			},
 		},
 		"authMethods": []any{},
 		"agentInfo": map[string]any{

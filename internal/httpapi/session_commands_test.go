@@ -17,6 +17,7 @@ import (
 
 func TestCommandServiceCoreSessionCommands(t *testing.T) {
 	pigoHome := t.TempDir()
+	cleanupStores(t)
 	workspace := filepath.Join(t.TempDir(), "ws")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatal(err)
@@ -96,5 +97,61 @@ func TestCommandServiceCoreSessionCommands(t *testing.T) {
 	}
 	if _, apiErr := svc.Execute(ctx, created.SessionId, gen.CommandRequest{Directory: workspace, Command: "compact"}); apiErr == nil {
 		t.Fatal("compact without backend should fail")
+	}
+}
+
+func TestTreeStructuredAndLabel(t *testing.T) {
+	pigoHome := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "ws")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.SaveFileConfig(cfgPath, config.FileConfig{
+		Model: "test/provider",
+		Models: []config.ModelConfig{{
+			Provider: "test", ModelID: "provider", Name: "Provider",
+			BaseURL: "http://localhost", Protocol: "openai",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer sessionstore.CloseAll()
+	sessions := NewSessionServiceWithConfig(pigoHome, cfgPath)
+	created, apiErr := sessions.Create(gen.NewSessionRequest{Directory: workspace})
+	if apiErr != nil {
+		t.Fatal(apiErr)
+	}
+	store, err := sessions.storeFor(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := session.SessionHeader{ID: created.SessionId, Model: "test/provider", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if _, err := store.AppendBranch(created.SessionId, header, "", agentcore.MessageList{
+		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("hello")}},
+		agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant, Content: agentcore.ContentList{agentcore.NewTextContent("hi")}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewCommandService(sessions, nil, nil, nil, nil, nil, nil, nil)
+	ctx := context.Background()
+	tree, apiErr := svc.Execute(ctx, created.SessionId, gen.CommandRequest{Directory: workspace, Command: "tree"})
+	if apiErr != nil {
+		t.Fatal(apiErr)
+	}
+	if tree.Structured == nil || tree.Structured.Kind != "sessionTree" {
+		t.Fatalf("tree structured = %+v", tree.Structured)
+	}
+	one := "1 start"
+	labelResp, apiErr := svc.Execute(ctx, created.SessionId, gen.CommandRequest{Directory: workspace, Command: "label", Arguments: &one})
+	if apiErr != nil || labelResp.Text == nil || !strings.Contains(*labelResp.Text, "set label") {
+		t.Fatalf("label = %+v, err = %v", labelResp, apiErr)
+	}
+	status, apiErr := sessions.Status(created.SessionId, workspace)
+	if apiErr != nil {
+		t.Fatal(apiErr)
+	}
+	if status.CurrentLeafId == nil || status.Lanes == nil || len(*status.Lanes) == 0 {
+		t.Fatalf("status tree fields = %+v", status)
 	}
 }

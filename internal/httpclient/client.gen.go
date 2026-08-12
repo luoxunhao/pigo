@@ -22,7 +22,8 @@ type AvailableCommand struct {
 	Input       *struct {
 		Hint *string `json:"hint,omitempty"`
 	} `json:"input,omitempty"`
-	Name string `json:"name"`
+	Name            string    `json:"name"`
+	StructuredKinds *[]string `json:"structuredKinds,omitempty"`
 }
 
 // CommandListResult defines model for CommandListResult.
@@ -108,20 +109,34 @@ type Health struct {
 	Version string `json:"version"`
 }
 
+// LaneState defines model for LaneState.
+type LaneState struct {
+	Lane   string  `json:"lane"`
+	LeafId *string `json:"leafId,omitempty"`
+}
+
 // LoadSessionRequest defines model for LoadSessionRequest.
 type LoadSessionRequest struct {
 	AdditionalDirectories *[]string `json:"additionalDirectories,omitempty"`
 	Before                *string   `json:"before,omitempty"`
 	Directory             string    `json:"directory"`
+	LeafId                *string   `json:"leafId,omitempty"`
 	Limit                 *int      `json:"limit,omitempty"`
 }
 
 // Message defines model for Message.
 type Message struct {
 	Content   []map[string]interface{} `json:"content"`
+	EntryId   *string                  `json:"entryId,omitempty"`
+	EntryType *string                  `json:"entryType,omitempty"`
 	Id        string                   `json:"id"`
+	Lane      *string                  `json:"lane,omitempty"`
 	Model     *string                  `json:"model,omitempty"`
+	ParentId  *string                  `json:"parentId,omitempty"`
+	RawInput  *map[string]interface{}  `json:"rawInput,omitempty"`
+	RawOutput *string                  `json:"rawOutput,omitempty"`
 	Role      string                   `json:"role"`
+	Seq       *int                     `json:"seq,omitempty"`
 	Timestamp string                   `json:"timestamp"`
 	Usage     *map[string]interface{}  `json:"usage,omitempty"`
 }
@@ -203,6 +218,7 @@ type PromptRequest struct {
 type PromptResponse struct {
 	MessageId  string                  `json:"messageId"`
 	StopReason string                  `json:"stopReason"`
+	Structured *StructuredResult       `json:"structured,omitempty"`
 	Text       *string                 `json:"text,omitempty"`
 	Usage      *map[string]interface{} `json:"usage,omitempty"`
 }
@@ -247,8 +263,11 @@ type SessionListResult struct {
 // SessionLoadResult defines model for SessionLoadResult.
 type SessionLoadResult struct {
 	ConfigOptions []ConfigOption `json:"configOptions"`
+	CurrentLane   *string        `json:"currentLane,omitempty"`
+	CurrentLeafId *string        `json:"currentLeafId,omitempty"`
 	Directory     string         `json:"directory"`
 	HasMore       bool           `json:"hasMore"`
+	Lanes         *[]LaneState   `json:"lanes,omitempty"`
 	Messages      []Message      `json:"messages"`
 	NextCursor    *string        `json:"nextCursor,omitempty"`
 	SessionId     string         `json:"sessionId"`
@@ -257,6 +276,9 @@ type SessionLoadResult struct {
 // SessionStatusResult defines model for SessionStatusResult.
 type SessionStatusResult struct {
 	ContextUsage  *ContextUsage `json:"contextUsage,omitempty"`
+	CurrentLane   *string       `json:"currentLane,omitempty"`
+	CurrentLeafId *string       `json:"currentLeafId,omitempty"`
+	Lanes         *[]LaneState  `json:"lanes,omitempty"`
 	Mode          *string       `json:"mode,omitempty"`
 	Model         *string       `json:"model,omitempty"`
 	QueuedCount   *int          `json:"queuedCount,omitempty"`
@@ -269,7 +291,11 @@ type SessionStatusResult struct {
 type SessionSummary struct {
 	AdditionalDirectories *[]string `json:"additionalDirectories,omitempty"`
 	Directory             string    `json:"directory"`
+	ParentSessionId       *string   `json:"parentSessionId,omitempty"`
+	ParentToolCallId      *string   `json:"parentToolCallId,omitempty"`
 	SessionId             string    `json:"sessionId"`
+	SessionKind           *string   `json:"sessionKind,omitempty"`
+	SubagentType          *string   `json:"subagentType,omitempty"`
 	Title                 *string   `json:"title,omitempty"`
 	UpdatedAt             *string   `json:"updatedAt,omitempty"`
 }
@@ -284,6 +310,13 @@ type SetModeRequest struct {
 type SetTrustRequest struct {
 	Decision string `json:"decision"`
 	Path     string `json:"path"`
+}
+
+// StructuredResult defines model for StructuredResult.
+type StructuredResult struct {
+	Data    map[string]interface{} `json:"data"`
+	Kind    string                 `json:"kind"`
+	Version int                    `json:"version"`
 }
 
 // TestModelRequest defines model for TestModelRequest.
@@ -350,9 +383,10 @@ type DeleteTrustParams struct {
 
 // ListSessionsParams defines parameters for ListSessions.
 type ListSessionsParams struct {
-	Directory *string `form:"directory,omitempty" json:"directory,omitempty"`
-	Before    *string `form:"before,omitempty" json:"before,omitempty"`
-	Limit     *int    `form:"limit,omitempty" json:"limit,omitempty"`
+	Directory        *string `form:"directory,omitempty" json:"directory,omitempty"`
+	Before           *string `form:"before,omitempty" json:"before,omitempty"`
+	Limit            *int    `form:"limit,omitempty" json:"limit,omitempty"`
+	IncludeSubagents *bool   `form:"includeSubagents,omitempty" json:"includeSubagents,omitempty"`
 }
 
 // DeleteSessionParams defines parameters for DeleteSession.
@@ -1937,6 +1971,18 @@ func NewListSessionsRequest(server string, params *ListSessionsParams) (*http.Re
 		if params.Limit != nil {
 
 			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.IncludeSubagents != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "includeSubagents", *params.IncludeSubagents, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "boolean", Format: ""}); err != nil {
 				return nil, err
 			} else {
 				for _, qp := range strings.Split(queryFrag, "&") {

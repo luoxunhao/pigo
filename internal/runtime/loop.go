@@ -161,6 +161,10 @@ type RunConfig struct {
 	// when persistent memory is disabled (memory.enabled=false), which fully
 	// disables checkpoint writing. A checkpoint write failure is non-fatal.
 	MemoryRoot string
+
+	// OnCompaction, when non-nil, receives every successful auto-compaction
+	// result so the caller can persist it as a typed compaction entry.
+	OnCompaction func(ctx context.Context, res *compaction.CompactionResult) error
 }
 
 // LoopEventStream is the stream returned by the loop entry points: it carries
@@ -501,11 +505,22 @@ func maybeAutoCompact(ctx context.Context, agentCtx *agentcore.AgentContext, cfg
 		// Nothing to summarize (cut point left no prefix); leave context as-is.
 		return
 	}
+	if cfg.OnCompaction != nil {
+		if err := cfg.OnCompaction(ctx, res); err != nil {
+			_ = emit(agentcore.CompactionEvent{
+				Reason:       "threshold",
+				TokensBefore: before,
+				TokensAfter:  before,
+				KeptCount:    len(agentCtx.Messages),
+				ErrorMessage: "persist compaction: " + err.Error(),
+			})
+			return
+		}
+	}
 	// Persist a checkpoint of the collapsed prefix before rewriting the context so
 	// a later run can reload it (infinite context, #480/#481). It reuses the
 	// summary compaction just produced — no extra LLM call — and is best-effort:
 	// a write failure is logged and the run continues on the compacted context.
-	writeCompactionCheckpoint(ctx, agentCtx.Messages, res, cfg)
 	now := nowMillis()
 	rebuilt := res.RebuildContext(agentCtx.Messages, now)
 	summarized := len(agentCtx.Messages) - (len(rebuilt) - 1)
@@ -542,7 +557,27 @@ func runCompaction(ctx context.Context, msgs agentcore.MessageList, cfg *RunConf
 		}
 	}
 	scfg := provider.StreamConfig{APIKey: key, ThinkingLevel: cfg.ThinkingLevel}
-	return compaction.Compact(ctx, stream, model, msgs, cfg.Compaction, -1, nil, "", scfg)
+	prevIndex, prevDetails, prevSummary := lastCompactionInfo(msgs)
+	return compaction.Compact(ctx, stream, model, msgs, cfg.Compaction, prevIndex, prevDetails, prevSummary, scfg)
+}
+
+func lastCompactionInfo(msgs agentcore.MessageList) (int, *compaction.CompactionDetails, string) {
+	idx := -1
+	var details *compaction.CompactionDetails
+	summary := ""
+	for i, m := range msgs {
+		if c, ok := m.(agentcore.CompactionMessage); ok {
+			idx = i
+			summary = c.Summary
+			if len(c.Details) > 0 {
+				var d compaction.CompactionDetails
+				if json.Unmarshal(c.Details, &d) == nil {
+					details = &d
+				}
+			}
+		}
+	}
+	return idx, details, summary
 }
 
 // writeCompactionCheckpoint persists the just-produced compaction summary as a

@@ -166,7 +166,11 @@ func (s *Server) ListSessions(w http.ResponseWriter, r *http.Request, params gen
 	if params.Limit != nil {
 		limit = *params.Limit
 	}
-	resp, apiErr := s.sessions.List(directory, before, limit)
+	includeSubagents := false
+	if params.IncludeSubagents != nil {
+		includeSubagents = *params.IncludeSubagents
+	}
+	resp, apiErr := s.sessions.List(directory, before, limit, includeSubagents)
 	if apiErr != nil {
 		WriteError(w, r, apiErr)
 		return

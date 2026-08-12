@@ -119,6 +119,16 @@ func (m *Manager) Modes() []ModeSpec {
 	return out
 }
 
+// Subagents returns the aggregated declarative sub-agent specs of every loaded
+// plugin, in load order.
+func (m *Manager) Subagents() []SubagentSpec {
+	var out []SubagentSpec
+	for _, p := range m.plugins {
+		out = append(out, p.Manifest.Subagents...)
+	}
+	return out
+}
+
 // Subscribers reports whether any loaded plugin subscribes to the given event
 // type. It lets a caller skip building an event payload when nobody is listening
 // (US-017, #133).

@@ -38,6 +38,9 @@ func ReadJSONL(r io.Reader) (SessionHeader, []Entry, error) {
 // directory of outPath must already exist. It returns the number of entries
 // written so a caller can report progress.
 func (s *Store) Export(id, outPath string) (int, error) {
+	if s.backend != nil {
+		return s.backend.Export(id, outPath)
+	}
 	header, entries, err := s.LoadEntries(id)
 	if err != nil {
 		return 0, err
@@ -71,6 +74,9 @@ func (s *Store) Export(id, outPath string) (int, error) {
 // An HTML file (or any non-JSONL input) fails to parse and returns an error
 // rather than importing garbage.
 func (s *Store) Import(inPath string, now time.Time) (SessionHeader, []Entry, error) {
+	if s.backend != nil {
+		return s.backend.Import(inPath, now)
+	}
 	f, err := os.Open(inPath)
 	if err != nil {
 		return SessionHeader{}, nil, fmt.Errorf("session: open import %s: %w", inPath, err)

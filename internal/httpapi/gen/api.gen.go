@@ -25,7 +25,8 @@ type AvailableCommand struct {
 	Input       *struct {
 		Hint *string `json:"hint,omitempty"`
 	} `json:"input,omitempty"`
-	Name string `json:"name"`
+	Name            string    `json:"name"`
+	StructuredKinds *[]string `json:"structuredKinds,omitempty"`
 }
 
 // CommandListResult defines model for CommandListResult.
@@ -111,20 +112,34 @@ type Health struct {
 	Version string `json:"version"`
 }
 
+// LaneState defines model for LaneState.
+type LaneState struct {
+	Lane   string  `json:"lane"`
+	LeafId *string `json:"leafId,omitempty"`
+}
+
 // LoadSessionRequest defines model for LoadSessionRequest.
 type LoadSessionRequest struct {
 	AdditionalDirectories *[]string `json:"additionalDirectories,omitempty"`
 	Before                *string   `json:"before,omitempty"`
 	Directory             string    `json:"directory"`
+	LeafId                *string   `json:"leafId,omitempty"`
 	Limit                 *int      `json:"limit,omitempty"`
 }
 
 // Message defines model for Message.
 type Message struct {
 	Content   []map[string]interface{} `json:"content"`
+	EntryId   *string                  `json:"entryId,omitempty"`
+	EntryType *string                  `json:"entryType,omitempty"`
 	Id        string                   `json:"id"`
+	Lane      *string                  `json:"lane,omitempty"`
 	Model     *string                  `json:"model,omitempty"`
+	ParentId  *string                  `json:"parentId,omitempty"`
+	RawInput  *map[string]interface{}  `json:"rawInput,omitempty"`
+	RawOutput *string                  `json:"rawOutput,omitempty"`
 	Role      string                   `json:"role"`
+	Seq       *int                     `json:"seq,omitempty"`
 	Timestamp string                   `json:"timestamp"`
 	Usage     *map[string]interface{}  `json:"usage,omitempty"`
 }
@@ -206,6 +221,7 @@ type PromptRequest struct {
 type PromptResponse struct {
 	MessageId  string                  `json:"messageId"`
 	StopReason string                  `json:"stopReason"`
+	Structured *StructuredResult       `json:"structured,omitempty"`
 	Text       *string                 `json:"text,omitempty"`
 	Usage      *map[string]interface{} `json:"usage,omitempty"`
 }
@@ -250,8 +266,11 @@ type SessionListResult struct {
 // SessionLoadResult defines model for SessionLoadResult.
 type SessionLoadResult struct {
 	ConfigOptions []ConfigOption `json:"configOptions"`
+	CurrentLane   *string        `json:"currentLane,omitempty"`
+	CurrentLeafId *string        `json:"currentLeafId,omitempty"`
 	Directory     string         `json:"directory"`
 	HasMore       bool           `json:"hasMore"`
+	Lanes         *[]LaneState   `json:"lanes,omitempty"`
 	Messages      []Message      `json:"messages"`
 	NextCursor    *string        `json:"nextCursor,omitempty"`
 	SessionId     string         `json:"sessionId"`
@@ -260,6 +279,9 @@ type SessionLoadResult struct {
 // SessionStatusResult defines model for SessionStatusResult.
 type SessionStatusResult struct {
 	ContextUsage  *ContextUsage `json:"contextUsage,omitempty"`
+	CurrentLane   *string       `json:"currentLane,omitempty"`
+	CurrentLeafId *string       `json:"currentLeafId,omitempty"`
+	Lanes         *[]LaneState  `json:"lanes,omitempty"`
 	Mode          *string       `json:"mode,omitempty"`
 	Model         *string       `json:"model,omitempty"`
 	QueuedCount   *int          `json:"queuedCount,omitempty"`
@@ -272,7 +294,11 @@ type SessionStatusResult struct {
 type SessionSummary struct {
 	AdditionalDirectories *[]string `json:"additionalDirectories,omitempty"`
 	Directory             string    `json:"directory"`
+	ParentSessionId       *string   `json:"parentSessionId,omitempty"`
+	ParentToolCallId      *string   `json:"parentToolCallId,omitempty"`
 	SessionId             string    `json:"sessionId"`
+	SessionKind           *string   `json:"sessionKind,omitempty"`
+	SubagentType          *string   `json:"subagentType,omitempty"`
 	Title                 *string   `json:"title,omitempty"`
 	UpdatedAt             *string   `json:"updatedAt,omitempty"`
 }
@@ -287,6 +313,13 @@ type SetModeRequest struct {
 type SetTrustRequest struct {
 	Decision string `json:"decision"`
 	Path     string `json:"path"`
+}
+
+// StructuredResult defines model for StructuredResult.
+type StructuredResult struct {
+	Data    map[string]interface{} `json:"data"`
+	Kind    string                 `json:"kind"`
+	Version int                    `json:"version"`
 }
 
 // TestModelRequest defines model for TestModelRequest.
@@ -353,9 +386,10 @@ type DeleteTrustParams struct {
 
 // ListSessionsParams defines parameters for ListSessions.
 type ListSessionsParams struct {
-	Directory *string `form:"directory,omitempty" json:"directory,omitempty"`
-	Before    *string `form:"before,omitempty" json:"before,omitempty"`
-	Limit     *int    `form:"limit,omitempty" json:"limit,omitempty"`
+	Directory        *string `form:"directory,omitempty" json:"directory,omitempty"`
+	Before           *string `form:"before,omitempty" json:"before,omitempty"`
+	Limit            *int    `form:"limit,omitempty" json:"limit,omitempty"`
+	IncludeSubagents *bool   `form:"includeSubagents,omitempty" json:"includeSubagents,omitempty"`
 }
 
 // DeleteSessionParams defines parameters for DeleteSession.
@@ -1087,6 +1121,19 @@ func (siw *ServerInterfaceWrapper) ListSessions(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	// ------------- Optional query parameter "includeSubagents" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "includeSubagents", r.URL.Query(), &params.IncludeSubagents, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "includeSubagents"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "includeSubagents", Err: err})
+		}
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListSessions(w, r, params)
 	}))
@@ -1735,51 +1782,54 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
-	"5KKmcHvpu3/Y/28A",
+	"5Fxbc9u6Ef4rHLaPrOTkpA/Vm+tkzvGcuPFETvuQ8XRgci3hhCQYAFSievTfO7jwvuBFN9vtmyOAwN6w",
+	"++1ikSc/ZEnGUkil8BdPPgeRsVSA/scHzhlXf4QslZBK9SfJspiGRFKWzv8QLFW/iXANCVF//ZnDo7/w",
+	"/zSvVp2bUTHXq/2dRVt/t9sFfgQi5DRTC/kLs5VX7D7z1Qz7oVr3ckNoTB5iuGJJQtJI/ZZxlgGX1NDa",
+	"WO7Jl9sM/IUvJKfpyt8FPk2zXHY/W9NUIvN3QfELe/gDQqlWSEkC6NJC8jyUOYfod5pGelkqIRHoZPsD",
+	"4Zxs9T4cvueUQ+QvvpotmqK5RyixQvhIhfwMIo8RvkIzpUlMn3Y6Eh6itdyhh8LP8D0HgZBH+CpPCpvr",
+	"yCislNwZiyiHUDK+xbVWp7CaWi2JE5s+0tWn0nZaksw5h1T+k8Q5rn6KE+o0F6Y3Qs2koqkp+uLfQxzT",
+	"yA8KI9Izh9gVbvupTRptRA1JDhtQfQs3pS4SExZBjEpYj4yn+kZN/5BKvh2k2exZ7uAgWsJP+UWQFXSJ",
+	"FvQ/dT3SVMIKuPouFxBhI5grek9FyDbANeXCfcoy+jtsURE9EAFfeDzNcjPOJAtZPGyIxfL3I4jHtdtH",
+	"4ET9FhtCpLfEjlcPZ3pwQyPgw2yXMysB19buNZs2kdiJVHb1L5pG7If6Ic1j7bD9heQ5BIhJJeTnHfsG",
+	"qRg5XW18PdGbiTzLGJfiOiEr6NvogbEYiHELa5p+o+nqI2zaepwWLwuKLX2YXCvU0ZEoFPBmELW8B0lo",
+	"3NneLODc1X6FaDLCZRnpD8zRjSKqHCOJb2vfNgRa7ZaAKLxNZ01unAOq1o5DjsCvVqt/i/H4G5BYrhFI",
+	"pX+vu52a6jfABQ7RWsQUq1SfYDR8JCksJZGIp41JikskBvJ4HfVYqoMivSBKBCPREoQi0u2KS32+t6iE",
+	"wiTLD/wHeGQcJoOiOsPdIZpQaeDzI9F++K8X2m/QJE/8xduLiwALSDjKwmRzU5km4s5SiYnAjYJABWkH",
+	"K3rsbptNAmlOIynBxYCNBH5GOKTSQRQnP66LxMOxUsUtJz8+5dLO7i7FYocHhu84opA0ASFJkqGf5YVe",
+	"BujCIKampb5BUOqzxwj68pU1ETdN6645DeuRJiA68wFmQin8lFc5F4z38O7wACUdQUkvyq717xMT1OhA",
+	"Q3SH6K2QkNxylmS4aUnGDgrD9bRjKHdVwnEZASlyUDVpGn7HVG0zNzU8Kvw1pgdtalzM2MzBAb5NCpNz",
+	"iHDT7oO5HcTXPeKQKgIdazfg35Hg3r5AGQOKJwSGNSDewogoMnfpVvTlnocaKIJlcSv7B/w4A7zoxxBJ",
+	"mC2BKyg2LWInLqzrzt4llTFMqe5gMrsFnlArsyzeOgVnijFj3EM5E91OO9dLsU3Dz7aGiSgpDCGTztNq",
+	"gssYUqqpQbWomywn8wMqn666rIwxEypb9TM/rahnt+vj3KWLPmkHvpAs+wxEsHSg4Dt08pflTOtJFMPw",
+	"Ux4TkdWtoUa4Qyqlg27Kow99HKeS5gwqPWCip15SsHKN1/X3LH2dg98pdTRnWaNg3xmhbEJ303dWzQqj",
+	"uS32HAxljb3rO2Gc2NDWgwavjn+XERwda56gXj4Uk4WR3JiIUU0NWtcidbI7UgkQJfTosC/Bm5R3lbyN",
+	"F6UlYZknCRlRyC/X72OHkeic9yNlxvLRVZUoxsdWsIYsqDfrVrWR8axVlTgMBT5XAn+SQzKyDFBYpCQy",
+	"77tna9wWDVhPNfck1nJMlU9Hj99zyCG6Ynkq8Yy1T5eBL7Sg0aGJGLNuCHbVPgVbl3P+pMyUHpe9UjFz",
+	"7hiLr0jsSvcHBGtGVXMDPp4/kJXaxFV8dWV0gZ9nEZEQXcp9TyeuF2mqTHunPWO8Rd1D2G8cxNzxXPQk",
+	"YRBS4SoKZkSukYEWKXpWUK2E0tHORLqEEEkmXz19cxlF96LHdYFQzLSLBYYQjIc7EAZUOoXprmk5bg4H",
+	"tunpPKjnlsitmxm8owncOOpvIg9DEGglrG36diZKrDIuRwnyTKalSejDfpBKTicElhpPQziuWBqj64t2",
+	"LkUTSZ/FjOwAMwsO1eKOXlXZu0Jyj5UOBIQ5p3K7VMIuey1oeJkbe9BK0NaofvXLJdZSZqZzj6aPrHOj",
+	"4d9yqsKgd3l77T0y7mV0xTwBfAMz7/Lq1qPCI56QJI0IjzwSkUwC99gGuCfXVKjvZn4ZK3z9+W93d7dq",
+	"oHYLvPAvZm9mF6aRClKSUX/h/zK7mP3iG5vWHM1JRuebN/N6G9wKtLKUqkhR9POV2ZapjVqAkwSkzoq/",
+	"PvlU7fc9B+3kTTrf8PtV42NbJfdBs5Xy7cXF0Ropu+1/SEOlneTFVEjTTinJSjQb99SvlaTUMXHK6VeQ",
+	"5iD5J2Ws1u+F8PRrzB5I7BlS20yp3/x749jCdZeDujeoehuKzpCj0I85nF3zeKowuntGEZpxz+KumTpG",
+	"7y4uXKuWZJo2GFziHSOaN0pLzmNXlrBOaVLtOhkikmIKelSGeZxHtnNLRwImEG6bHW8nMj68J/DM5of2",
+	"9iEyr7rdPFNyPbUlzmURq1ENlZDvRMrpINcz66UNaRGV6GFPiUm14eexPLlKnoo/r6OdwRMxSOgq573+",
+	"/ba60sWitAWqNkhXK/ttMU+L2u8woGP9haE3cgeiXGJhSACXZ2Pm+KbcvHgZZcd9QhRkc/w4FLGwD8lc",
+	"3l6/Z+Fw2FHVtvlaJnFTOm1Bd47Sb3c3H72IhfqJg97Zy8gKZg387S++3ldcmB6dJhewKV5IuBj5YGaM",
+	"wq3kUWp76/BRy8sPQbyOjxu1tKkfq2niQJytlahF+RchOZBkojKXyw+e/twznxtbfbOXrVqNNrS8Ltto",
+	"XVq2jbYnDA92B4x74BsagsreDKHbqVZctso4gWBx1/Qqkq96W5AjiiJA0jb31OVis9dZsb1L+58ySC9v",
+	"r5cZhIeaQLsY0KHe7uWJDEL6aBeaqvCsbL2ZS54LORzadb1nnAHYyHjkkK4J8Ioil8chYZt2YK/Y0sHd",
+	"ac0FM6fDcq1yG6LHJj+ilxEcEC+hxsjxQUS7Kr4vjGgp7mAw0ZBNzaZF1aTgVLytCx7Vkznion0KsMeX",
+	"puG//uGkzn98UZqGcR7B0t4DoRG7qm2f0jt3GxHQmKYnFW56b2MRMHSKrjhUBeMTHaVud+iZc8uCvR5J",
+	"h1oO00+mmv23w1TTPcTzpxKTjkg7K+UNJ2p1rDs+Qo1A3UcOd4VaqgT2OGegr/Bq9yzrr6eS5v0pS7vP",
+	"e9Cwh9t9h+6wUq+a/e6UZ28ekjS0L11x76nHLTv2+cqJDWdE2SLJpGcojzsQ0fYjDzIeMwE9fKvh/2W/",
+	"o/k/ktsZEnXt/wtBhf3hJ4S5LDtFX51jav1PG2d2Sa02+557SDByPrDUh91cYmqPGenRee3B7utTOPLa",
+	"+HkAX609tg9kMxK9yOhT70l11V4sEzfF1FfijF9Y1njSclznaTFWlDOTiiL8i7PE4r2wqxJTmKGa9+r8",
+	"Vasb88y+qvbc2FWtfbkAuapGqcvS8h9qiKtXjW6j0Y8eqzeQZ3BczbXqxL6IS0v8Oejet5flcp5WhFe8",
+	"wtzHiN6colLZtKPyWSZuLQbFvVpE1Hzl+uIQcJEzsiTbr9wS+O/e7lUFG5uPmnn/Jur58kgr0U+d/y9M",
+	"5e2RN28+EnfbyyEu5bTmUj20GcDN5unT6y1hHD1larwF60majISfBZHoq177Hz18ffJzHvsLf+7vqkvf",
+	"djA0zQOBV1weq2y/2fwCaZQxmkoxqync3Bzv7nf/HQA=",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

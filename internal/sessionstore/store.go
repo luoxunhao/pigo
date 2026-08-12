@@ -1,12 +1,13 @@
-// Package sessionstore implements project-scoped session persistence for
-// pigo. Sessions are grouped under $PIGO_HOME/projects/<workspace-slug>/sessions/
-// so each project keeps an isolated session list. The layout mirrors the facts
-// of ash's session persistence (metadata + index + transcript) so a future
-// desktop client can read the store directly.
+// Package sessionstore implements the canonical pigo session store. Sessions
+// live in a single SQLite database at $PIGO_HOME/sessions.db; projects are
+// distinguished by sessions.cwd. v4 typed JSONL is used only for export/import.
 package sessionstore
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,15 +21,14 @@ import (
 
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/session"
+	_ "modernc.org/sqlite"
 )
 
-// SchemaVersion is the current metadata/index schema version. It is written
-// into every metadata and index file and checked on read; an unknown higher
-// version is a hard error so a newer store is never silently misread.
+// SchemaVersion is kept for metadata compatibility. SQLite migrations own the
+// canonical schema version now.
 const SchemaVersion = 1
 
-// maxSlugLen mirrors ash's project slug cap. Longer canonical paths keep a
-// readable prefix plus a sha256 suffix so the slug stays stable and unique.
+// maxSlugLen mirrors ash's project slug cap.
 const maxSlugLen = 200
 
 // Status is the lifecycle status of a persisted session.
@@ -41,67 +41,59 @@ const (
 )
 
 // Metadata is the project-scoped metadata persisted per session. The JSON
-// shape is camelCase, matching ash's SessionMetadata contract closely enough
-// for a future desktop client to read it directly.
+// shape is camelCase for client compatibility. Header is pigo's runtime header
+// (system prompt, model, timestamps, lineage) stored inside sessions.metadata.
 type Metadata struct {
-	SchemaVersion    int             `json:"schemaVersion"`
-	SessionID        string          `json:"sessionId"`
-	SessionName      string          `json:"sessionName"`
-	AgentType        string          `json:"agentType"`
-	SessionKind      string          `json:"sessionKind,omitempty"`
-	ModelName        string          `json:"modelName"`
-	CreatedAt        time.Time       `json:"createdAt"`
-	LastActiveAt     time.Time       `json:"lastActiveAt"`
-	LastFinishedAt   *time.Time      `json:"lastFinishedAt,omitempty"`
-	TurnCount        int             `json:"turnCount"`
-	MessageCount     int             `json:"messageCount"`
-	ToolCallCount    int             `json:"toolCallCount"`
-	Status           Status          `json:"status"`
-	Tags             []string        `json:"tags,omitempty"`
-	WorkspacePath    string          `json:"workspacePath"`
-	WorkspaceHost    string          `json:"workspaceHostname,omitempty"`
-	CustomMetadata   json.RawMessage `json:"customMetadata,omitempty"`
-	ParentSessionID  string          `json:"parentSessionId,omitempty"`
-	ParentToolCallID string          `json:"parentToolCallId,omitempty"`
-	SubagentType     string          `json:"subagentType,omitempty"`
+	SchemaVersion    int                    `json:"schemaVersion"`
+	SessionID        string                 `json:"sessionId"`
+	SessionName      string                 `json:"sessionName"`
+	AgentType        string                 `json:"agentType"`
+	SessionKind      string                 `json:"sessionKind,omitempty"`
+	ModelName        string                 `json:"modelName"`
+	CreatedAt        time.Time              `json:"createdAt"`
+	LastActiveAt     time.Time              `json:"lastActiveAt"`
+	LastFinishedAt   *time.Time             `json:"lastFinishedAt,omitempty"`
+	TurnCount        int                    `json:"turnCount"`
+	MessageCount     int                    `json:"messageCount"`
+	ToolCallCount    int                    `json:"toolCallCount"`
+	Status           Status                 `json:"status"`
+	Tags             []string               `json:"tags,omitempty"`
+	WorkspacePath    string                 `json:"workspacePath"`
+	WorkspaceHost    string                 `json:"workspaceHostname,omitempty"`
+	CustomMetadata   json.RawMessage        `json:"customMetadata,omitempty"`
+	ParentSessionID  string                 `json:"parentSessionId,omitempty"`
+	ParentToolCallID string                 `json:"parentToolCallId,omitempty"`
+	SubagentType     string                 `json:"subagentType,omitempty"`
+	Plugin           string                 `json:"plugin,omitempty"`
+	Header           *session.SessionHeader `json:"header,omitempty"`
 }
 
-// SessionKindSubagent marks a child session created by the task tool.
+// SessionKindSubagent marks a child session.
 const SessionKindSubagent = "subagent"
 
-// DefaultWorkspaceHost is the hostname recorded for local workspaces, matching
-// ash's local workspace identity.
+// DefaultWorkspaceHost is the hostname recorded for local workspaces.
 const DefaultWorkspaceHost = "localhost"
 
-// NewMetadata builds metadata for a fresh session with zero counts.
-func NewMetadata(sessionID, sessionName, agentType, modelName, workspacePath string) Metadata {
-	now := time.Now().UTC()
-	return Metadata{
-		SchemaVersion: SchemaVersion,
-		SessionID:     sessionID,
-		SessionName:   sessionName,
-		AgentType:     agentType,
-		ModelName:     modelName,
-		CreatedAt:     now,
-		LastActiveAt:  now,
-		Status:        StatusActive,
-		WorkspacePath: workspacePath,
-		WorkspaceHost: DefaultWorkspaceHost,
-	}
-}
-
-// StoredMetadataFile is the on-disk envelope for a metadata file.
+// StoredMetadataFile is kept as a compatibility envelope; SQLite does not use it.
 type StoredMetadataFile struct {
 	SchemaVersion int `json:"schemaVersion"`
 	Metadata      `json:",inline"`
 }
 
-// IndexFile is the project-level session index.
+// IndexFile is kept as a compatibility type; SQLite queries replace it.
 type IndexFile struct {
 	SchemaVersion int        `json:"schemaVersion"`
 	UpdatedAt     time.Time  `json:"updatedAt"`
 	Sessions      []Metadata `json:"sessions"`
 }
+
+//go:embed migrations/001_initial.sql
+var migration001 string
+
+var (
+	dbMu sync.Mutex
+	dbs  = map[string]*sql.DB{}
+)
 
 // PigoHome returns $PIGO_HOME, falling back to ~/.pigo when unset.
 func PigoHome() (string, error) {
@@ -115,15 +107,13 @@ func PigoHome() (string, error) {
 	return filepath.Join(home, ".pigo"), nil
 }
 
-// ProjectsRoot returns the root that holds one directory per workspace.
+// ProjectsRoot returns the legacy projects root. It is retained for migration
+// tooling and slug compatibility; canonical data lives in sessions.db.
 func ProjectsRoot(pigoHome string) string {
 	return filepath.Join(pigoHome, "projects")
 }
 
 // WorkspaceSlug derives a stable directory-safe slug from a workspace path.
-// It mirrors ash's project runtime slug: canonical path, ASCII alphanumerics
-// lowercased, everything else replaced with '-', trimmed, capped with a
-// sha256 suffix when too long.
 func WorkspaceSlug(workspacePath string) string {
 	if strings.TrimSpace(workspacePath) == "" {
 		return "workspace"
@@ -133,7 +123,6 @@ func WorkspaceSlug(workspacePath string) string {
 		canonical = abs
 	}
 	canonical = filepath.Clean(canonical)
-
 	var b strings.Builder
 	for _, r := range canonical {
 		switch {
@@ -160,303 +149,190 @@ func WorkspaceSlug(workspacePath string) string {
 	return prefix + "-" + suffix
 }
 
-// SessionsDirForWorkspace returns the sessions directory for a workspace under
-// the given pigo home.
+// SessionsDirForWorkspace returns the legacy sessions directory for a
+// workspace. Quarantine scripts use it; runtime does not.
 func SessionsDirForWorkspace(pigoHome, workspacePath string) string {
 	return filepath.Join(ProjectsRoot(pigoHome), WorkspaceSlug(workspacePath), "sessions")
 }
 
-// Store is a project-scoped session store. It owns the metadata files and the
-// project index, and delegates transcript persistence to the legacy JSONL
-// session format so resume/rewind/tree behavior stays unchanged.
-type Store struct {
-	sessionsDir string
-	transcripts *session.Store
-	mu          sync.Mutex
+// DatabasePath returns the canonical SQLite database path.
+func DatabasePath(pigoHome string) string {
+	return filepath.Join(pigoHome, "sessions.db")
 }
 
-// OpenForWorkspace opens (creating if needed) the session store for a
-// workspace under the given pigo home.
-func OpenForWorkspace(pigoHome, workspacePath string) (*Store, error) {
-	dir := SessionsDirForWorkspace(pigoHome, workspacePath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("sessionstore: create sessions dir: %w", err)
+// NewMetadata builds metadata for a fresh session with zero counts.
+func NewMetadata(sessionID, sessionName, agentType, modelName, workspacePath string) Metadata {
+	now := time.Now().UTC()
+	return Metadata{
+		SchemaVersion: SchemaVersion,
+		SessionID:     sessionID,
+		SessionName:   sessionName,
+		AgentType:     agentType,
+		ModelName:     modelName,
+		CreatedAt:     now,
+		LastActiveAt:  now,
+		Status:        StatusActive,
+		WorkspacePath: workspacePath,
+		WorkspaceHost: DefaultWorkspaceHost,
 	}
-	ts, err := session.NewStore(dir)
+}
+
+// Store is a project-scoped view over the canonical SQLite database.
+type Store struct {
+	db        *sql.DB
+	pigoHome  string
+	cwd       string
+	mu        sync.Mutex
+	transcripts *session.Store
+}
+
+// backendAdapter adapts Store to session.Backend. The legacy session.Store
+// API carries the session id on the header for branch writes, while the
+// sessionstore API passes it explicitly.
+type backendAdapter struct {
+	s *Store
+}
+
+func (a *backendAdapter) Save(header session.SessionHeader, messages agentcore.MessageList) error {
+	return a.s.Save(header, messages)
+}
+
+func (a *backendAdapter) SaveEntries(header session.SessionHeader, entries []session.Entry) error {
+	return a.s.SaveEntries(header, entries)
+}
+
+func (a *backendAdapter) LoadEntries(id string) (session.SessionHeader, []session.Entry, error) {
+	return a.s.LoadEntries(id)
+}
+
+func (a *backendAdapter) Load(id string) (session.SessionHeader, agentcore.MessageList, error) {
+	_, header, msgs, err := a.s.Load(id)
+	return header, msgs, err
+}
+
+func (a *backendAdapter) List() ([]session.SessionHeader, error) {
+	return a.s.ListHeaders()
+}
+
+func (a *backendAdapter) Append(id string, updatedAt time.Time, messages agentcore.MessageList) error {
+	return a.s.Append(id, updatedAt, messages)
+}
+
+func (a *backendAdapter) AppendBranch(header session.SessionHeader, parentLeafID string, messages agentcore.MessageList) (string, error) {
+	return a.s.AppendBranch(header.ID, header, parentLeafID, messages)
+}
+
+func (a *backendAdapter) Fork(sourceID, leafID string, now time.Time) (session.SessionHeader, []session.Entry, error) {
+	return a.s.Fork(sourceID, leafID, now)
+}
+
+func (a *backendAdapter) Export(id, outPath string) (int, error) {
+	return a.s.Export(id, outPath)
+}
+
+func (a *backendAdapter) Import(inPath string, now time.Time) (session.SessionHeader, []session.Entry, error) {
+	return a.s.Import(inPath, now)
+}
+
+// Open opens the canonical store for a pigo home.
+func Open(pigoHome string) (*Store, error) {
+	if pigoHome == "" {
+		return nil, errors.New("sessionstore: pigoHome must not be empty")
+	}
+	db, err := openDB(pigoHome)
 	if err != nil {
 		return nil, err
 	}
-	return &Store{sessionsDir: dir, transcripts: ts}, nil
+	st := &Store{db: db, pigoHome: pigoHome}
+	st.transcripts = session.NewBackendStore(&backendAdapter{st})
+	return st, nil
 }
 
-// Dir returns the sessions directory this store owns.
-func (s *Store) Dir() string { return s.sessionsDir }
+// OpenForWorkspace opens the canonical store scoped to a workspace.
+func OpenForWorkspace(pigoHome, workspacePath string) (*Store, error) {
+	st, err := Open(pigoHome)
+	if err != nil {
+		return nil, err
+	}
+	if workspacePath != "" {
+		st.cwd = filepath.Clean(workspacePath)
+	}
+	return st, nil
+}
 
-// TranscriptStore exposes the underlying JSONL store for callers that need the
-// legacy append/branch primitives.
+// Dir returns the legacy directory; canonical storage is sessions.db.
+func (s *Store) Dir() string {
+	if s.pigoHome == "" {
+		return ""
+	}
+	return filepath.Join(s.pigoHome, "projects")
+}
+
+// TranscriptStore exposes the tree-oriented session API over SQLite.
 func (s *Store) TranscriptStore() *session.Store { return s.transcripts }
 
-// Create writes a new session: metadata plus transcript. It fails when the
-// session id is empty or a session with the same id already exists.
-func (s *Store) Create(meta Metadata, header session.SessionHeader, messages agentcore.MessageList) error {
-	if meta.SessionID == "" {
-		return errors.New("sessionstore: session id must not be empty")
+func openDB(pigoHome string) (*sql.DB, error) {
+	dbMu.Lock()
+	defer dbMu.Unlock()
+	if db := dbs[pigoHome]; db != nil {
+		return db, nil
 	}
-	if header.ID == "" {
-		header.ID = meta.SessionID
+	if err := os.MkdirAll(pigoHome, 0o755); err != nil {
+		return nil, fmt.Errorf("sessionstore: create pigo home: %w", err)
 	}
-	if header.ID != meta.SessionID {
-		return fmt.Errorf("sessionstore: header id %q != metadata id %q", header.ID, meta.SessionID)
-	}
-	meta.SchemaVersion = SchemaVersion
-	normalize(&meta)
-	if _, err := s.LoadMetadata(meta.SessionID); err == nil {
-		return fmt.Errorf("sessionstore: session %q already exists", meta.SessionID)
-	}
-	if err := s.writeMetadata(meta); err != nil {
-		return err
-	}
-	if err := s.transcripts.Save(header, messages); err != nil {
-		return fmt.Errorf("sessionstore: save transcript: %w", err)
-	}
-	return s.upsertIndex(meta)
-}
-
-// ImportEntries materializes an existing transcript (entries with their
-// id/parentId tree preserved) as a session in this store: metadata + transcript
-// + index. It is the migration primitive that brings a legacy flat session into
-// the project-scoped store without regenerating entry ids, so fork/clone/tree
-// behavior survives the move. It fails when a session with the same id already
-// exists in this store.
-func (s *Store) ImportEntries(meta Metadata, header session.SessionHeader, entries []session.Entry) error {
-	if meta.SessionID == "" {
-		return errors.New("sessionstore: session id must not be empty")
-	}
-	if header.ID == "" {
-		header.ID = meta.SessionID
-	}
-	if header.ID != meta.SessionID {
-		return fmt.Errorf("sessionstore: header id %q != metadata id %q", header.ID, meta.SessionID)
-	}
-	meta.SchemaVersion = SchemaVersion
-	normalize(&meta)
-	if _, err := s.LoadMetadata(meta.SessionID); err == nil {
-		return fmt.Errorf("sessionstore: session %q already exists", meta.SessionID)
-	}
-	if err := s.writeMetadata(meta); err != nil {
-		return err
-	}
-	if err := s.transcripts.SaveEntries(header, entries); err != nil {
-		return fmt.Errorf("sessionstore: save transcript: %w", err)
-	}
-	return s.upsertIndex(meta)
-}
-
-// SaveMetadata updates a session's metadata and refreshes the index. It does
-// not touch the transcript.
-func (s *Store) SaveMetadata(meta Metadata) error {
-	if meta.SessionID == "" {
-		return errors.New("sessionstore: session id must not be empty")
-	}
-	meta.SchemaVersion = SchemaVersion
-	normalize(&meta)
-	if err := s.writeMetadata(meta); err != nil {
-		return err
-	}
-	return s.upsertIndex(meta)
-}
-
-// UpdateHeader rewrites a session's transcript header while preserving all
-// existing entries. It is used when session/load rebuilds the system prompt so
-// the corrected header is persisted for later resumes.
-func (s *Store) UpdateHeader(sessionID string, header session.SessionHeader) error {
-	if header.ID == "" {
-		header.ID = sessionID
-	}
-	if header.ID != sessionID {
-		return fmt.Errorf("sessionstore: header id %q != session id %q", header.ID, sessionID)
-	}
-	_, entries, err := s.transcripts.LoadEntries(sessionID)
+	path := DatabasePath(pigoHome)
+	db, err := sql.Open("sqlite", path)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("sessionstore: open %s: %w", path, err)
 	}
-	return s.transcripts.SaveEntries(header, entries)
+	db.SetMaxOpenConns(1)
+	for _, pragma := range []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA synchronous=FULL",
+		"PRAGMA busy_timeout=5000",
+		"PRAGMA foreign_keys=ON",
+	} {
+		if _, err := db.Exec(pragma); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("sessionstore: %s: %w", pragma, err)
+		}
+	}
+	if err := applyMigrations(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	dbs[pigoHome] = db
+	return db, nil
 }
 
-// LoadMetadata reads a session's metadata.
-func (s *Store) LoadMetadata(sessionID string) (Metadata, error) {
-	var file StoredMetadataFile
-	if err := readJSON(s.metadataPath(sessionID), &file); err != nil {
-		return Metadata{}, err
+func applyMigrations(db *sql.DB) error {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+		version INTEGER PRIMARY KEY,
+		applied_at TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("sessionstore: create schema_migrations: %w", err)
 	}
-	if file.SchemaVersion > SchemaVersion {
-		return Metadata{}, fmt.Errorf("sessionstore: metadata schema %d newer than supported %d", file.SchemaVersion, SchemaVersion)
-	}
-	return file.Metadata, nil
-}
-
-// Load reads a session's metadata plus its transcript header and messages.
-func (s *Store) Load(sessionID string) (Metadata, session.SessionHeader, agentcore.MessageList, error) {
-	meta, err := s.LoadMetadata(sessionID)
+	var version int
+	err := db.QueryRow(`SELECT COALESCE(MAX(version),0) FROM schema_migrations`).Scan(&version)
 	if err != nil {
-		return Metadata{}, session.SessionHeader{}, nil, err
+		return fmt.Errorf("sessionstore: read migrations: %w", err)
 	}
-	header, msgs, err := s.transcripts.Load(sessionID)
-	if err != nil {
-		return Metadata{}, session.SessionHeader{}, nil, err
-	}
-	return meta, header, msgs, nil
-}
-
-// Append grows an existing session's transcript and bumps its metadata counts
-// and last-active timestamp. The session must already exist.
-func (s *Store) Append(sessionID string, updatedAt time.Time, messages agentcore.MessageList) error {
-	if len(messages) == 0 {
+	if version >= 1 {
 		return nil
 	}
-	if err := s.transcripts.Append(sessionID, updatedAt, messages); err != nil {
-		return err
-	}
-	meta, err := s.LoadMetadata(sessionID)
+	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
-	meta.LastActiveAt = updatedAt
-	meta.MessageCount += len(messages)
-	for _, m := range messages {
-		switch m.(type) {
-		case agentcore.UserMessage:
-			meta.TurnCount++
-		case agentcore.ToolResultMessage:
-			meta.ToolCallCount++
-		}
+	defer tx.Rollback()
+	if _, err := tx.Exec(migration001); err != nil {
+		return fmt.Errorf("sessionstore: apply migration 001: %w", err)
 	}
-	return s.SaveMetadata(meta)
-}
-
-// AppendBranch grows an existing session's transcript as a branch descending
-// from parentLeafID and refreshes the metadata counts/timestamp. It mirrors
-// Append but preserves the on-disk entry tree (and therefore any sibling
-// branches), so /tree leaf-switching and fork behavior keep working on the
-// unified store. An empty parentLeafID roots a new chain.
-func (s *Store) AppendBranch(sessionID string, header session.SessionHeader, parentLeafID string, messages agentcore.MessageList) (string, error) {
-	if len(messages) == 0 {
-		return parentLeafID, nil
-	}
-	leaf, err := s.transcripts.AppendBranch(header, parentLeafID, messages)
-	if err != nil {
-		return "", err
-	}
-	meta, err := s.LoadMetadata(sessionID)
-	if err != nil {
-		return "", err
-	}
-	if header.UpdatedAt.IsZero() {
-		meta.LastActiveAt = time.Now().UTC()
-	} else {
-		meta.LastActiveAt = header.UpdatedAt
-	}
-	meta.MessageCount += len(messages)
-	for _, m := range messages {
-		switch m.(type) {
-		case agentcore.UserMessage:
-			meta.TurnCount++
-		case agentcore.ToolResultMessage:
-			meta.ToolCallCount++
-		}
-	}
-	return leaf, s.SaveMetadata(meta)
-}
-
-// Touch refreshes a session's last-active timestamp.
-func (s *Store) Touch(sessionID string) error {
-	meta, err := s.LoadMetadata(sessionID)
-	if err != nil {
+	if _, err := tx.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES(1, ?)`, time.Now().UTC().Format(time.RFC3339)); err != nil {
 		return err
 	}
-	meta.LastActiveAt = time.Now().UTC()
-	return s.SaveMetadata(meta)
+	return tx.Commit()
 }
-
-// List returns all visible sessions, most recently active first. The index is
-// used when present and consistent; otherwise it is rebuilt by scanning the
-// metadata files.
-func (s *Store) List() ([]Metadata, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.listLocked()
-}
-
-// ListAll returns the metadata of every session in every project store under
-// pigoHome, most recently active first. It is the cross-project listing used by
-// --list-sessions / --continue and the dream distillation source. A missing
-// projects root (no project-scoped sessions yet) is not an error; corrupt
-// metadata files are skipped so one bad session cannot hide the rest.
-func ListAll(pigoHome string) ([]Metadata, error) {
-	root := ProjectsRoot(pigoHome)
-	projects, err := os.ReadDir(root)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("sessionstore: read projects root: %w", err)
-	}
-	var all []Metadata
-	for _, p := range projects {
-		if !p.IsDir() {
-			continue
-		}
-		dir := filepath.Join(root, p.Name(), "sessions")
-		files, err := os.ReadDir(dir)
-		if err != nil {
-			continue // a project without a sessions dir is not an error
-		}
-		for _, f := range files {
-			if f.IsDir() || !strings.HasSuffix(f.Name(), ".metadata.json") {
-				continue
-			}
-			var file StoredMetadataFile
-			if err := readJSON(filepath.Join(dir, f.Name()), &file); err != nil {
-				continue
-			}
-			if file.SchemaVersion > SchemaVersion {
-				continue
-			}
-			file.Metadata.SessionID = strings.TrimSuffix(f.Name(), ".metadata.json")
-			all = append(all, file.Metadata)
-		}
-	}
-	sort.Slice(all, func(i, j int) bool {
-		return all[i].LastActiveAt.After(all[j].LastActiveAt)
-	})
-	return all, nil
-}
-
-// Delete removes a session's metadata and transcript and updates the index.
-func (s *Store) Delete(sessionID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, p := range []string{s.metadataPath(sessionID), s.transcriptPath(sessionID)} {
-		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("sessionstore: remove %s: %w", p, err)
-		}
-	}
-	index, err := s.loadIndexLocked()
-	if err != nil {
-		return err
-	}
-	kept := index.Sessions[:0]
-	for _, m := range index.Sessions {
-		if m.SessionID != sessionID {
-			kept = append(kept, m)
-		}
-	}
-	index.Sessions = kept
-	index.UpdatedAt = time.Now().UTC()
-	return s.writeIndexLocked(index)
-}
-
-// Helpers.
 
 func normalize(meta *Metadata) {
 	if meta.WorkspaceHost == "" {
@@ -468,156 +344,1142 @@ func normalize(meta *Metadata) {
 	if meta.Tags == nil {
 		meta.Tags = []string{}
 	}
+	meta.SchemaVersion = SchemaVersion
 }
 
-func (s *Store) metadataPath(id string) string {
-	return filepath.Join(s.sessionsDir, id+".metadata.json")
+func newOwnerID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("owner-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
 }
 
-func (s *Store) transcriptPath(id string) string {
-	return filepath.Join(s.sessionsDir, session.FileName(id))
+func (s *Store) claimLeaseTx(tx *sql.Tx, sessionID string) (owner string, fence int64, err error) {
+	owner = newOwnerID()
+	now := time.Now().UnixMilli()
+	expires := now + 30000
+	res, err := tx.Exec(`INSERT INTO writer_leases(session_id, owner_id, fence, expires_at_ms)
+		VALUES(?,?,1,?)
+		ON CONFLICT(session_id) DO UPDATE SET
+			owner_id=excluded.owner_id,
+			fence=writer_leases.fence+1,
+			expires_at_ms=excluded.expires_at_ms
+		WHERE writer_leases.expires_at_ms <= ?`, sessionID, owner, expires, now)
+	if err != nil {
+		return "", 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return "", 0, err
+	}
+	if n == 0 {
+		return "", 0, fmt.Errorf("sessionstore: writer lease was lost for %s", sessionID)
+	}
+	// Read the fence back (1 on first insert, incremented on takeover).
+	err = tx.QueryRow(`SELECT fence FROM writer_leases WHERE session_id=? AND owner_id=?`, sessionID, owner).Scan(&fence)
+	if err != nil {
+		return "", 0, err
+	}
+	return owner, fence, nil
 }
 
-func (s *Store) indexPath() string {
-	return filepath.Join(s.sessionsDir, "index.json")
+func (s *Store) releaseLeaseTx(tx *sql.Tx, sessionID, owner string, fence int64) {
+	_, _ = tx.Exec(`DELETE FROM writer_leases WHERE session_id=? AND owner_id=? AND fence=?`, sessionID, owner, fence)
 }
 
-func (s *Store) writeMetadata(meta Metadata) error {
-	file := StoredMetadataFile{SchemaVersion: SchemaVersion, Metadata: meta}
-	return writeJSONAtomic(s.metadataPath(meta.SessionID), file)
-}
-
-func (s *Store) upsertIndex(meta Metadata) error {
+func (s *Store) withLease(sessionID string, fn func(tx *sql.Tx) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	index, err := s.loadIndexLocked()
+	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
-	replaced := false
-	for i := range index.Sessions {
-		if index.Sessions[i].SessionID == meta.SessionID {
-			index.Sessions[i] = meta
-			replaced = true
-			break
-		}
-	}
-	if !replaced {
-		index.Sessions = append(index.Sessions, meta)
-	}
-	sort.Slice(index.Sessions, func(i, j int) bool {
-		return index.Sessions[i].LastActiveAt.After(index.Sessions[j].LastActiveAt)
-	})
-	index.UpdatedAt = time.Now().UTC()
-	return s.writeIndexLocked(index)
-}
-
-func (s *Store) listLocked() ([]Metadata, error) {
-	index, err := s.loadIndexLocked()
-	if err == nil && index.SchemaVersion == SchemaVersion && indexConsistent(index.Sessions, s.sessionsDir) {
-		return index.Sessions, nil
-	}
-	return s.rebuildIndexLocked()
-}
-
-func (s *Store) loadIndexLocked() (IndexFile, error) {
-	var index IndexFile
-	if err := readJSON(s.indexPath(), &index); err != nil {
-		if os.IsNotExist(err) {
-			return IndexFile{SchemaVersion: SchemaVersion}, nil
-		}
-		return IndexFile{}, err
-	}
-	return index, nil
-}
-
-func (s *Store) writeIndexLocked(index IndexFile) error {
-	index.SchemaVersion = SchemaVersion
-	return writeJSONAtomic(s.indexPath(), index)
-}
-
-func (s *Store) rebuildIndexLocked() ([]Metadata, error) {
-	entries, err := os.ReadDir(s.sessionsDir)
+	defer tx.Rollback()
+	owner, fence, err := s.claimLeaseTx(tx, sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("sessionstore: read sessions dir: %w", err)
+		return err
 	}
-	var metas []Metadata
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".metadata.json") {
-			continue
-		}
-		id := strings.TrimSuffix(e.Name(), ".metadata.json")
-		meta, err := s.LoadMetadata(id)
-		if err != nil {
-			continue // one corrupt session must not hide the rest
-		}
-		metas = append(metas, meta)
+	if err := fn(tx); err != nil {
+		return err
 	}
-	sort.Slice(metas, func(i, j int) bool {
-		return metas[i].LastActiveAt.After(metas[j].LastActiveAt)
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	_, _ = s.db.Exec(`DELETE FROM writer_leases WHERE session_id=? AND owner_id=? AND fence=?`, sessionID, owner, fence)
+	return nil
+}
+
+// Close closes the underlying database handle and forgets it from the process
+// registry. Tests and short-lived CLI processes should call it when done.
+func (s *Store) Close() error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	dbMu.Lock()
+	if dbs[s.pigoHome] == s.db {
+		delete(dbs, s.pigoHome)
+	}
+	dbMu.Unlock()
+	return s.db.Close()
+}
+
+// CloseAll closes every process-level SQLite handle. Tests use it to release
+// temp databases before TempDir cleanup.
+func CloseAll() {
+	dbMu.Lock()
+	for _, db := range dbs {
+		_ = db.Close()
+	}
+	dbs = map[string]*sql.DB{}
+	dbMu.Unlock()
+}
+
+func (s *Store) upsertSessionTx(tx *sql.Tx, meta Metadata, header session.SessionHeader) error {
+	meta.SchemaVersion = SchemaVersion
+	normalize(&meta)
+	if header.ID == "" {
+		header.ID = meta.SessionID
+	}
+	meta.Header = &header
+	raw, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+	if header.CreatedAt.IsZero() {
+		header.CreatedAt = time.Now().UTC()
+	}
+	if header.UpdatedAt.IsZero() {
+		header.UpdatedAt = header.CreatedAt
+	}
+	cwd := header.Cwd
+	if cwd == "" {
+		cwd = meta.WorkspacePath
+	}
+	parent := meta.ParentSessionID
+	if parent == "" {
+		parent = header.ParentSession
+	}
+	_, err = tx.Exec(`INSERT INTO sessions(id, created_at, cwd, parent_session_id, metadata)
+		VALUES(?,?,?,?,?)
+		ON CONFLICT(id) DO UPDATE SET
+			cwd=excluded.cwd,
+			parent_session_id=excluded.parent_session_id,
+			metadata=excluded.metadata`,
+		header.ID, header.CreatedAt.UTC().Format(time.RFC3339), cwd, nullable(parent), string(raw))
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO session_sequences(session_id, next_seq) VALUES(?,0)`, header.ID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO session_stats(session_id, message_count, cached_tokens, uncached_tokens, total_tokens, cost_total) VALUES(?,0,0,0,0,0)`, header.ID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO lanes(session_id, lane, leaf_id, open_operation_id) VALUES(?,'main',NULL,NULL)`, header.ID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) loadMetadataRow(row *sql.Row) (Metadata, error) {
+	var raw string
+	err := row.Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Metadata{}, notFound("")
+	}
+	if err != nil {
+		return Metadata{}, err
+	}
+	return decodeMetadata(raw)
+}
+
+func decodeMetadata(raw string) (Metadata, error) {
+	var m Metadata
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return Metadata{}, fmt.Errorf("sessionstore: decode metadata: %w", err)
+	}
+	normalize(&m)
+	return m, nil
+}
+
+func notFound(id string) error {
+	return fmt.Errorf("sessionstore: session %q not found: %w", id, os.ErrNotExist)
+}
+
+func nullable(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// Create writes a new session (sessions/sequences/stats/main lane) and claims
+// a writer lease in the same transaction.
+func (s *Store) Create(meta Metadata, header session.SessionHeader, messages agentcore.MessageList) error {
+	if meta.SessionID == "" && header.ID == "" {
+		return errors.New("sessionstore: session id must not be empty")
+	}
+	id := meta.SessionID
+	if id == "" {
+		id = header.ID
+	}
+	if header.ID == "" {
+		header.ID = id
+	}
+	if header.ID != id {
+		return fmt.Errorf("sessionstore: header id %q != metadata id %q", header.ID, id)
+	}
+	meta.SessionID = id
+	meta.Header = &header
+	return s.withLease(id, func(tx *sql.Tx) error {
+		var exists int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM sessions WHERE id=?`, id).Scan(&exists); err != nil {
+			return err
+		}
+		if exists > 0 {
+			return fmt.Errorf("sessionstore: session %q already exists", id)
+		}
+		if err := s.upsertSessionTx(tx, meta, header); err != nil {
+			return err
+		}
+		if len(messages) > 0 {
+			if err := s.insertMessagesTx(tx, id, "", messages); err != nil {
+				return err
+			}
+			meta.MessageCount = len(messages)
+			meta.TurnCount, meta.ToolCallCount = countMessages(messages)
+			raw, err := json.Marshal(meta)
+			if err != nil {
+				return err
+			}
+			_, err = tx.Exec(`UPDATE sessions SET metadata=? WHERE id=?`, string(raw), id)
+			return err
+		}
+		return nil
 	})
-	index := IndexFile{
-		SchemaVersion: SchemaVersion,
-		UpdatedAt:     time.Now().UTC(),
-		Sessions:      metas,
+}
+
+func countMessages(msgs agentcore.MessageList) (turns, toolCalls int) {
+	for _, m := range msgs {
+		switch m.(type) {
+		case agentcore.UserMessage:
+			turns++
+		case agentcore.ToolResultMessage:
+			toolCalls++
+		}
 	}
-	if err := s.writeIndexLocked(index); err != nil {
+	return turns, toolCalls
+}
+
+// ImportEntries materializes v3 legacy entries into SQLite.
+func (s *Store) ImportEntries(meta Metadata, header session.SessionHeader, entries []session.Entry) error {
+	if header.ID == "" {
+		header.ID = meta.SessionID
+	}
+	if header.ID != meta.SessionID {
+		return fmt.Errorf("sessionstore: header id %q != metadata id %q", header.ID, meta.SessionID)
+	}
+	meta.Header = &header
+	v4, err := session.FromLegacyEntries(entries)
+	if err != nil {
+		return err
+	}
+	return s.withLease(header.ID, func(tx *sql.Tx) error {
+		var exists int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM sessions WHERE id=?`, header.ID).Scan(&exists); err != nil {
+			return err
+		}
+		if exists > 0 {
+			return fmt.Errorf("sessionstore: session %q already exists", header.ID)
+		}
+		if err := s.upsertSessionTx(tx, meta, header); err != nil {
+			return err
+		}
+		return s.insertV4EntriesTx(tx, header.ID, "", v4)
+	})
+}
+
+// ImportV4Entries materializes v4 typed entries and facts into SQLite.
+func (s *Store) ImportV4Entries(meta Metadata, header session.SessionHeader, entries []session.V4Entry, facts []session.V4Fact) error {
+	if header.ID == "" {
+		header.ID = meta.SessionID
+	}
+	if header.ID != meta.SessionID {
+		return fmt.Errorf("sessionstore: header id %q != metadata id %q", header.ID, meta.SessionID)
+	}
+	meta.Header = &header
+	return s.withLease(header.ID, func(tx *sql.Tx) error {
+		var exists int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM sessions WHERE id=?`, header.ID).Scan(&exists); err != nil {
+			return err
+		}
+		if exists > 0 {
+			return fmt.Errorf("sessionstore: session %q already exists", header.ID)
+		}
+		if err := s.upsertSessionTx(tx, meta, header); err != nil {
+			return err
+		}
+		if err := s.insertV4EntriesTx(tx, header.ID, "", entries); err != nil {
+			return err
+		}
+		return s.insertFactsTx(tx, header.ID, facts)
+	})
+}
+
+// SaveMetadata updates a session's metadata JSON.
+func (s *Store) SaveMetadata(meta Metadata) error {
+	if meta.SessionID == "" {
+		return errors.New("sessionstore: session id must not be empty")
+	}
+	normalize(&meta)
+	raw, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+	return s.withLease(meta.SessionID, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE sessions SET metadata=?, cwd=? WHERE id=?`, string(raw), meta.WorkspacePath, meta.SessionID)
+		return err
+	})
+}
+
+// LoadMetadata reads a session's metadata.
+func (s *Store) LoadMetadata(sessionID string) (Metadata, error) {
+	return s.loadMetadataRow(s.db.QueryRow(`SELECT metadata FROM sessions WHERE id=?`, sessionID))
+}
+
+// Load reads metadata, header, and the main-lane projection messages.
+func (s *Store) Load(sessionID string) (Metadata, session.SessionHeader, agentcore.MessageList, error) {
+	meta, err := s.LoadMetadata(sessionID)
+	if err != nil {
+		return Metadata{}, session.SessionHeader{}, nil, err
+	}
+	var header session.SessionHeader
+	if meta.Header != nil {
+		header = *meta.Header
+	}
+	proj, err := s.Projection(sessionID, "")
+	if err != nil {
+		return Metadata{}, session.SessionHeader{}, nil, err
+	}
+	return meta, header, proj.Messages, nil
+}
+
+// UpdateHeader rewrites the stored header while preserving entries.
+func (s *Store) UpdateHeader(sessionID string, header session.SessionHeader) error {
+	meta, err := s.LoadMetadata(sessionID)
+	if err != nil {
+		return err
+	}
+	header.ID = sessionID
+	meta.Header = &header
+	return s.SaveMetadata(meta)
+}
+
+// Append grows the session from the current main-lane leaf.
+func (s *Store) Append(sessionID string, updatedAt time.Time, messages agentcore.MessageList) error {
+	leaf, err := s.MainLeaf(sessionID)
+	if err != nil {
+		return err
+	}
+	header, err := s.Header(sessionID)
+	if err != nil {
+		return err
+	}
+	header.UpdatedAt = updatedAt
+	_, err = s.AppendBranch(sessionID, header, leaf, messages)
+	return err
+}
+
+// AppendBranch appends messages as a chain descending from parentLeafID.
+func (s *Store) AppendBranch(sessionID string, header session.SessionHeader, parentLeafID string, messages agentcore.MessageList) (string, error) {
+	if len(messages) == 0 {
+		return parentLeafID, nil
+	}
+	if header.ID == "" {
+		header.ID = sessionID
+	}
+	if header.ID != sessionID {
+		return "", fmt.Errorf("sessionstore: header id %q != session id %q", header.ID, sessionID)
+	}
+	var entries []session.V4Entry
+	for _, m := range messages {
+		e, err := session.NewV4Entry(session.NewEntryID(), parentLeafID, time.Now().UTC(), m)
+		if err != nil {
+			return "", err
+		}
+		parentLeafID = e.ID
+		entries = append(entries, e)
+	}
+	return s.appendV4Entries(sessionID, header, entries)
+}
+
+// AppendV4Entry appends one typed entry to the main lane.
+func (s *Store) AppendV4Entry(sessionID string, header session.SessionHeader, e session.V4Entry) (string, error) {
+	return s.appendV4Entries(sessionID, header, []session.V4Entry{e})
+}
+
+func (s *Store) appendV4Entries(sessionID string, header session.SessionHeader, entries []session.V4Entry) (string, error) {
+	if len(entries) == 0 {
+		leaf, _ := s.MainLeaf(sessionID)
+		return leaf, nil
+	}
+	meta, err := s.LoadMetadata(sessionID)
+	if err != nil {
+		meta = NewMetadata(sessionID, "Session", "pigo", header.Model, header.Cwd)
+		meta.Header = &header
+	}
+	if header.UpdatedAt.IsZero() {
+		header.UpdatedAt = time.Now().UTC()
+	}
+	meta.Header = &header
+	meta.ModelName = header.Model
+	meta.LastActiveAt = header.UpdatedAt
+	err = s.withLease(sessionID, func(tx *sql.Tx) error {
+		exists := 0
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM sessions WHERE id=?`, sessionID).Scan(&exists); err != nil {
+			return err
+		}
+		if exists == 0 {
+			if err := s.upsertSessionTx(tx, meta, header); err != nil {
+				return err
+			}
+		} else {
+			raw, err := json.Marshal(meta)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`UPDATE sessions SET metadata=?, cwd=?, parent_session_id=? WHERE id=?`,
+				string(raw), meta.WorkspacePath, nullable(meta.ParentSessionID), sessionID); err != nil {
+				return err
+			}
+		}
+		if err := s.insertV4EntriesTx(tx, sessionID, "", entries); err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if e.IsMessageEntry() {
+				if msg, err := e.MessageValue(); err == nil {
+					switch msg.(type) {
+					case agentcore.UserMessage:
+						meta.TurnCount++
+					case agentcore.ToolResultMessage:
+						meta.ToolCallCount++
+					}
+				}
+			}
+		}
+		messageCount := 0
+		for _, e := range entries {
+			if e.IsMessageEntry() {
+				messageCount++
+			}
+		}
+		meta.MessageCount += messageCount
+		raw, err := json.Marshal(meta)
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(`UPDATE sessions SET metadata=? WHERE id=?`, string(raw), sessionID)
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	return entries[len(entries)-1].ID, nil
+}
+
+func (s *Store) insertMessagesTx(tx *sql.Tx, sessionID, parentLeafID string, messages agentcore.MessageList) error {
+	var entries []session.V4Entry
+	for _, m := range messages {
+		e, err := session.NewV4Entry(session.NewEntryID(), parentLeafID, time.Now().UTC(), m)
+		if err != nil {
+			return err
+		}
+		parentLeafID = e.ID
+		entries = append(entries, e)
+	}
+	return s.insertV4EntriesTx(tx, sessionID, "", entries)
+}
+
+func (s *Store) insertV4EntriesTx(tx *sql.Tx, sessionID, lane string, entries []session.V4Entry) error {
+	if lane == "" {
+		lane = "main"
+	}
+	var next int
+	if err := tx.QueryRow(`SELECT next_seq FROM session_sequences WHERE session_id=?`, sessionID).Scan(&next); err != nil {
+		return err
+	}
+	leaf := ""
+	if err := tx.QueryRow(`SELECT COALESCE(leaf_id,'') FROM lanes WHERE session_id=? AND lane=?`, sessionID, lane).Scan(&leaf); err != nil {
+		return err
+	}
+	for i := range entries {
+		if entries[i].ID == "" {
+			entries[i].ID = session.NewEntryID()
+		}
+		if entries[i].ParentID == "" && leaf != "" && i == 0 {
+			entries[i].ParentID = leaf
+		}
+		if entries[i].Timestamp.IsZero() {
+			entries[i].Timestamp = time.Now().UTC()
+		}
+		payload, err := json.Marshal(entries[i])
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO entries(session_id, seq, id, parent_id, type, timestamp, payload)
+			VALUES(?,?,?,?,?,?,?)`,
+			sessionID, next, entries[i].ID, nullable(entries[i].ParentID), entries[i].Type,
+			entries[i].Timestamp.UTC().Format(time.RFC3339), string(payload)); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE lanes SET leaf_id=? WHERE session_id=? AND lane=?`, entries[i].ID, sessionID, lane); err != nil {
+			return err
+		}
+		leaf = entries[i].ID
+		next++
+	}
+	if _, err := tx.Exec(`UPDATE session_sequences SET next_seq=? WHERE session_id=?`, next, sessionID); err != nil {
+		return err
+	}
+	messageEntries := 0
+	for _, e := range entries {
+		if e.IsMessageEntry() {
+			messageEntries++
+		}
+	}
+	if messageEntries > 0 {
+		if _, err := tx.Exec(`UPDATE session_stats SET message_count = message_count + ? WHERE session_id=?`, messageEntries, sessionID); err != nil {
+			return err
+		}
+	}
+	return s.rebuildBranchCacheTx(tx, sessionID)
+}
+
+func (s *Store) rebuildBranchCacheTx(tx *sql.Tx, sessionID string) error {
+	if _, err := tx.Exec(`DELETE FROM branch_entries WHERE session_id=?`, sessionID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM branch_tips WHERE session_id=?`, sessionID); err != nil {
+		return err
+	}
+	rows, err := tx.Query(`SELECT id, parent_id FROM entries WHERE session_id=? ORDER BY seq`, sessionID)
+	if err != nil {
+		return err
+	}
+	var nodes []session.V4Entry
+	children := map[string][]string{}
+	byID := map[string]session.V4Entry{}
+	for rows.Next() {
+		var n session.V4Entry
+		var parent sql.NullString
+		var id string
+		if err := rows.Scan(&id, &parent); err != nil {
+			rows.Close()
+			return err
+		}
+		n.ID, n.ParentID = id, parent.String
+		nodes = append(nodes, n)
+		byID[id] = n
+		if parent.Valid && parent.String != "" {
+			children[parent.String] = append(children[parent.String], id)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(byID) == 0 {
+		return nil
+	}
+	var tips []string
+	for _, n := range byID {
+		if len(children[n.ID]) == 0 {
+			tips = append(tips, n.ID)
+		}
+	}
+	sort.Strings(tips)
+	for _, tip := range tips {
+		branchID := "branch-" + session.NewUUIDv7()
+		path := session.PathToLeafV4(nodes, tip)
+		for i, e := range path {
+			if _, err := tx.Exec(`INSERT INTO branch_entries(session_id, branch_id, entry_id, entry_seq, entry_type, custom_type)
+				VALUES(?,?,?,?,?,?)`, sessionID, branchID, e.ID, i, e.Type, nullable(e.CustomType)); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(`INSERT INTO branch_tips(session_id, tip_id, branch_id) VALUES(?,?,?)`, sessionID, tip, branchID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Delete removes a session and its dependencies.
+func (s *Store) Delete(sessionID string) error {
+	return s.withLease(sessionID, func(tx *sql.Tx) error {
+		for _, table := range []string{"branch_entries", "branch_tips", "facts", "lanes", "lane_moves", "records", "entries", "writer_leases", "session_stats", "session_sequences"} {
+			if _, err := tx.Exec(`DELETE FROM `+table+` WHERE session_id=?`, sessionID); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(`DELETE FROM sessions WHERE id=?`, sessionID); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+// List returns visible sessions for this workspace, newest first.
+func (s *Store) List() ([]Metadata, error) {
+	rows, err := s.db.Query(`SELECT metadata FROM sessions WHERE cwd=?`, s.cwd)
+	if err != nil {
 		return nil, err
 	}
-	return metas, nil
-}
-
-func indexConsistent(sessions []Metadata, dir string) bool {
-	for _, m := range sessions {
-		if _, err := os.Stat(filepath.Join(dir, m.SessionID+".metadata.json")); err != nil {
-			return false
+	defer rows.Close()
+	var out []Metadata
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
 		}
+		m, err := decodeMetadata(raw)
+		if err != nil {
+			continue
+		}
+		out = append(out, m)
 	}
-	return true
+	sort.Slice(out, func(i, j int) bool { return out[i].LastActiveAt.After(out[j].LastActiveAt) })
+	return out, rows.Err()
 }
 
-func readJSON(path string, v any) error {
-	data, err := os.ReadFile(path)
+// ListAll returns metadata of every session under pigoHome.
+func ListAll(pigoHome string) ([]Metadata, error) {
+	st, err := Open(pigoHome)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := st.db.Query(`SELECT metadata FROM sessions`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Metadata
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			continue
+		}
+		m, err := decodeMetadata(raw)
+		if err != nil {
+			continue
+		}
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].LastActiveAt.After(out[j].LastActiveAt) })
+	return out, rows.Err()
+}
+
+// Touch refreshes last-active.
+func (s *Store) Touch(sessionID string) error {
+	meta, err := s.LoadMetadata(sessionID)
 	if err != nil {
 		return err
 	}
-	if len(data) == 0 {
-		return fmt.Errorf("sessionstore: empty file %s", path)
+	meta.LastActiveAt = time.Now().UTC()
+	return s.SaveMetadata(meta)
+}
+
+// Entries returns all v4 entries in physical order.
+func (s *Store) Entries(sessionID string) ([]session.V4Entry, error) {
+	rows, err := s.db.Query(`SELECT id, parent_id, type, timestamp, payload FROM entries WHERE session_id=? ORDER BY seq`, sessionID)
+	if err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal(data, v); err != nil {
-		return fmt.Errorf("sessionstore: parse %s: %w", path, err)
+	defer rows.Close()
+	var out []session.V4Entry
+	for rows.Next() {
+		var id, typ, timestamp, payload string
+		var parent sql.NullString
+		if err := rows.Scan(&id, &parent, &typ, &timestamp, &payload); err != nil {
+			return nil, err
+		}
+		var e session.V4Entry
+		if err := json.Unmarshal([]byte(payload), &e); err != nil {
+			return nil, err
+		}
+		e.ID = id
+		e.Type = typ
+		e.ParentID = parent.String
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// Facts returns name/label facts.
+func (s *Store) Facts(sessionID string) ([]session.V4Fact, error) {
+	rows, err := s.db.Query(`SELECT kind, key, value FROM facts WHERE session_id=? ORDER BY seq`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []session.V4Fact
+	for rows.Next() {
+		var kind string
+		var key, value sql.NullString
+		if err := rows.Scan(&kind, &key, &value); err != nil {
+			return nil, err
+		}
+		out = append(out, session.V4Fact{Type: "fact", Kind: kind, Key: key.String, Value: value.String})
+	}
+	return out, rows.Err()
+}
+
+// Lanes returns the session's lane states.
+func (s *Store) Lanes(sessionID string) ([]session.LaneState, error) {
+	rows, err := s.db.Query(`SELECT lane, leaf_id FROM lanes WHERE session_id=? ORDER BY CASE lane WHEN 'main' THEN 0 ELSE 1 END, lane`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []session.LaneState
+	for rows.Next() {
+		var lane string
+		var leaf sql.NullString
+		if err := rows.Scan(&lane, &leaf); err != nil {
+			return nil, err
+		}
+		ls := session.LaneState{Lane: lane}
+		if leaf.Valid {
+			ls.LeafID = &leaf.String
+		}
+		out = append(out, ls)
+	}
+	return out, rows.Err()
+}
+
+// MainLeaf returns the main lane's leaf id.
+func (s *Store) MainLeaf(sessionID string) (string, error) {
+	var leaf sql.NullString
+	if err := s.db.QueryRow(`SELECT leaf_id FROM lanes WHERE session_id=? AND lane='main'`, sessionID).Scan(&leaf); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", notFound(sessionID)
+		}
+		return "", err
+	}
+	return leaf.String, nil
+}
+
+// Header returns the stored session header.
+func (s *Store) Header(sessionID string) (session.SessionHeader, error) {
+	meta, err := s.LoadMetadata(sessionID)
+	if err != nil {
+		return session.SessionHeader{}, err
+	}
+	if meta.Header != nil {
+		return *meta.Header, nil
+	}
+	return session.SessionHeader{ID: sessionID, CreatedAt: meta.CreatedAt, UpdatedAt: meta.LastActiveAt, Model: meta.ModelName, Cwd: meta.WorkspacePath}, nil
+}
+
+// Projection builds the unified root-to-leaf projection.
+func (s *Store) Projection(sessionID, leafID string) (*session.ProjectLeaf, error) {
+	entries, err := s.Entries(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	lanes, err := s.Lanes(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	facts, err := s.Facts(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if leafID == "" {
+		for _, l := range lanes {
+			if l.Lane == "main" && l.LeafID != nil {
+				leafID = *l.LeafID
+			}
+		}
+	}
+	if len(entries) > 0 && leafID == "" {
+		return nil, fmt.Errorf("sessionstore: session %s main lane has no leaf", sessionID)
+	}
+	if leafID != "" {
+		found := false
+		for _, e := range entries {
+			if e.ID == leafID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("sessionstore: leaf %q not found in session %s", leafID, sessionID)
+		}
+	}
+	return session.BuildProjection(entries, lanes, leafID, facts)
+}
+
+// MoveLane persists a lane move and writes lane_moves.
+func (s *Store) MoveLane(sessionID, lane string, leafID *string) error {
+	return s.withLease(sessionID, func(tx *sql.Tx) error {
+		if leafID != nil {
+			var exists int
+			if err := tx.QueryRow(`SELECT COUNT(*) FROM entries WHERE session_id=? AND id=?`, sessionID, *leafID).Scan(&exists); err != nil {
+				return err
+			}
+			if exists == 0 {
+				return fmt.Errorf("sessionstore: entry %q not found", *leafID)
+			}
+		}
+		if _, err := tx.Exec(`UPDATE lanes SET leaf_id=? WHERE session_id=? AND lane=?`, nullable(leafValue(leafID)), sessionID, lane); err != nil {
+			return err
+		}
+		var next int
+		if err := tx.QueryRow(`SELECT next_seq FROM session_sequences WHERE session_id=?`, sessionID).Scan(&next); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO lane_moves(session_id, seq, lane, leaf_id) VALUES(?,?,?,?)`,
+			sessionID, next, lane, nullable(leafValue(leafID))); err != nil {
+			return err
+		}
+		_, err := tx.Exec(`UPDATE session_sequences SET next_seq=? WHERE session_id=?`, next+1, sessionID)
+		return err
+	})
+}
+
+func leafValue(id *string) string {
+	if id == nil {
+		return ""
+	}
+	return *id
+}
+
+// SetName writes a name fact.
+func (s *Store) SetName(sessionID, name string) error {
+	return s.SetFact(sessionID, "name", "", name)
+}
+
+// SetLabel writes or clears a label fact.
+func (s *Store) SetLabel(sessionID, targetID string, label string) error {
+	return s.SetFact(sessionID, "label", targetID, label)
+}
+
+func (s *Store) SetFact(sessionID, kind, key, value string) error {
+	return s.withLease(sessionID, func(tx *sql.Tx) error {
+		return s.insertFactTx(tx, sessionID, kind, key, value)
+	})
+}
+
+func (s *Store) insertFactsTx(tx *sql.Tx, sessionID string, facts []session.V4Fact) error {
+	for _, f := range facts {
+		if err := s.insertFactTx(tx, sessionID, f.Kind, f.Key, f.Value); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func writeJSONAtomic(path string, v any) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("sessionstore: create dir: %w", err)
+func (s *Store) insertFactTx(tx *sql.Tx, sessionID, kind, key, value string) error {
+	var next int
+	if err := tx.QueryRow(`SELECT next_seq FROM session_sequences WHERE session_id=?`, sessionID).Scan(&next); err != nil {
+		return err
 	}
-	data, err := json.MarshalIndent(v, "", "  ")
+	var v any
+	if value != "" {
+		v = value
+	}
+	if _, err := tx.Exec(`INSERT INTO facts(session_id, seq, kind, key, value) VALUES(?,?,?,?,?)`,
+		sessionID, next, kind, nullable(key), v); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`UPDATE session_sequences SET next_seq=? WHERE session_id=?`, next+1, sessionID)
+	return err
+}
+
+// Search runs a cwd-scoped FTS search.
+func (s *Store) Search(query string, limit int) ([]SearchResult, error) {
+	if strings.TrimSpace(query) == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.Query(`SELECT session_id, entry_id, kind, snippet(session_search_fts, 4, '[', ']', '...', 12)
+		FROM session_search_fts
+		WHERE session_id IN (SELECT id FROM sessions WHERE cwd=?) AND session_search_fts MATCH ?
+		ORDER BY bm25(session_search_fts)
+		LIMIT ?`, s.cwd, query, limit)
 	if err != nil {
-		return fmt.Errorf("sessionstore: marshal %s: %w", path, err)
+		return nil, err
 	}
-	data = append(data, '\n')
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	defer rows.Close()
+	var out []SearchResult
+	for rows.Next() {
+		var r SearchResult
+		if err := rows.Scan(&r.SessionID, &r.EntryID, &r.Kind, &r.Snippet); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SearchResult is one FTS hit.
+type SearchResult struct {
+	SessionID string `json:"sessionId"`
+	EntryID   string `json:"entryId"`
+	Kind      string `json:"kind"`
+	Snippet   string `json:"snippet"`
+}
+
+// Backend implementation for session.Store.
+
+func (s *Store) Save(header session.SessionHeader, messages agentcore.MessageList) error {
+	meta, err := s.LoadMetadata(header.ID)
+	if errors.Is(err, os.ErrNotExist) {
+		meta = NewMetadata(header.ID, "Session", "pigo", header.Model, header.Cwd)
+	}
+	meta.Header = &header
+	meta.MessageCount = len(messages)
+	meta.TurnCount = 0
+	meta.ToolCallCount = 0
+	for _, m := range messages {
+		switch m.(type) {
+		case agentcore.UserMessage:
+			meta.TurnCount++
+		case agentcore.ToolResultMessage:
+			meta.ToolCallCount++
+		}
+	}
+	meta.LastActiveAt = header.UpdatedAt
+	return s.withLease(header.ID, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`DELETE FROM entries WHERE session_id=?`, header.ID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM facts WHERE session_id=?`, header.ID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE lanes SET leaf_id=NULL WHERE session_id=?`, header.ID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE session_stats SET message_count=0, total_tokens=0 WHERE session_id=?`, header.ID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE session_sequences SET next_seq=0 WHERE session_id=?`, header.ID); err != nil {
+			return err
+		}
+		if exists := 0; tx.QueryRow(`SELECT COUNT(*) FROM sessions WHERE id=?`, header.ID).Scan(&exists) == nil && exists == 0 {
+			if err := s.upsertSessionTx(tx, meta, header); err != nil {
+				return err
+			}
+		} else {
+			raw, err := json.Marshal(meta)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`UPDATE sessions SET metadata=?, cwd=? WHERE id=?`, string(raw), header.Cwd, header.ID); err != nil {
+				return err
+			}
+		}
+		if len(messages) > 0 {
+			if err := s.insertMessagesTx(tx, header.ID, "", messages); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (s *Store) SaveEntries(header session.SessionHeader, entries []session.Entry) error {
+	v4, err := session.FromLegacyEntries(entries)
 	if err != nil {
-		return fmt.Errorf("sessionstore: create temp: %w", err)
+		return err
 	}
-	tmpPath := tmp.Name()
-	cleanup := func() { _ = os.Remove(tmpPath) }
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		cleanup()
-		return fmt.Errorf("sessionstore: write %s: %w", tmpPath, err)
+	return s.withLease(header.ID, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`DELETE FROM entries WHERE session_id=?`, header.ID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM facts WHERE session_id=?`, header.ID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE lanes SET leaf_id=NULL WHERE session_id=?`, header.ID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE session_sequences SET next_seq=0 WHERE session_id=?`, header.ID); err != nil {
+			return err
+		}
+		if len(v4) > 0 {
+			if err := s.insertV4EntriesTx(tx, header.ID, "", v4); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (s *Store) LoadEntries(id string) (session.SessionHeader, []session.Entry, error) {
+	header, err := s.Header(id)
+	if err != nil {
+		return session.SessionHeader{}, nil, err
 	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return fmt.Errorf("sessionstore: close %s: %w", tmpPath, err)
+	entries, err := s.Entries(id)
+	if err != nil {
+		return session.SessionHeader{}, nil, err
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		cleanup()
-		return fmt.Errorf("sessionstore: rename %s: %w", path, err)
+	legacy, err := session.ToLegacyEntries(entries)
+	if err != nil {
+		return session.SessionHeader{}, nil, err
 	}
-	return nil
+	return header, legacy, nil
+}
+
+func (s *Store) ListHeaders() ([]session.SessionHeader, error) {
+	metas, err := s.List()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]session.SessionHeader, 0, len(metas))
+	for _, m := range metas {
+		if m.Header != nil {
+			out = append(out, *m.Header)
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) Fork(sourceID, leafID string, now time.Time) (session.SessionHeader, []session.Entry, error) {
+	entries, err := s.Entries(sourceID)
+	if err != nil {
+		return session.SessionHeader{}, nil, err
+	}
+	path := session.PathToLeafV4(entries, leafID)
+	src, err := s.Header(sourceID)
+	if err != nil {
+		return session.SessionHeader{}, nil, err
+	}
+	newHeader := session.SessionHeader{
+		ID:            session.NewID(now),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		Model:         src.Model,
+		Provider:      src.Provider,
+		SystemPrompt:  src.SystemPrompt,
+		ParentSession: sourceID,
+		Cwd:           src.Cwd,
+	}
+	legacy, err := session.ToLegacyEntries(path)
+	if err != nil {
+		return session.SessionHeader{}, nil, err
+	}
+	return newHeader, legacy, nil
+}
+
+func (s *Store) Export(id, outPath string) (int, error) {
+	header, err := s.Header(id)
+	if err != nil {
+		return 0, err
+	}
+	entries, err := s.Entries(id)
+	if err != nil {
+		return 0, err
+	}
+	facts, err := s.Facts(id)
+	if err != nil {
+		return 0, err
+	}
+	leaf, _ := s.MainLeaf(id)
+	v4Header := session.V4Header{
+		Type:          "session",
+		Version:       session.V4SchemaVersion,
+		ID:            id,
+		CreatedAt:     header.CreatedAt,
+		UpdatedAt:     header.UpdatedAt,
+		Cwd:           header.Cwd,
+		Model:         header.Model,
+		Provider:      header.Provider,
+		SystemPrompt:  header.SystemPrompt,
+		ParentSessionID: header.ParentSession,
+	}
+	if leaf != "" {
+		v4Header.LeafID = &leaf
+	}
+	f, err := os.Create(outPath)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	ext := strings.ToLower(filepath.Ext(outPath))
+	if ext == ".html" || ext == ".htm" {
+		legacy, err := session.ToLegacyEntries(entries)
+		if err != nil {
+			return 0, err
+		}
+		if err := session.WriteHTML(f, header, legacy); err != nil {
+			return 0, err
+		}
+	} else {
+		if err := session.WriteV4JSONL(f, v4Header, entries, facts); err != nil {
+			return 0, err
+		}
+	}
+	if err := f.Close(); err != nil {
+		return 0, err
+	}
+	return len(entries), nil
+}
+
+func (s *Store) Import(inPath string, now time.Time) (session.SessionHeader, []session.Entry, error) {
+	f, err := os.Open(inPath)
+	if err != nil {
+		return session.SessionHeader{}, nil, err
+	}
+	defer f.Close()
+	src, entries, facts, err := session.ReadV4JSONL(f)
+	if err != nil {
+		return session.SessionHeader{}, nil, err
+	}
+	newHeader := session.SessionHeader{
+		ID:            session.NewID(now),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		Model:         src.Model,
+		Provider:      src.Provider,
+		SystemPrompt:  src.SystemPrompt,
+		ParentSession: src.ID,
+		Cwd:           src.Cwd,
+	}
+	_ = facts
+	legacy, err := session.ToLegacyEntries(entries)
+	if err != nil {
+		return session.SessionHeader{}, nil, err
+	}
+	return newHeader, legacy, nil
+}
+
+// ImportV4 reads a v4 JSONL export and returns a fresh header, typed entries,
+// and facts without writing them.
+func (s *Store) ImportV4(inPath string, now time.Time) (session.SessionHeader, []session.V4Entry, []session.V4Fact, error) {
+	f, err := os.Open(inPath)
+	if err != nil {
+		return session.SessionHeader{}, nil, nil, err
+	}
+	defer f.Close()
+	src, entries, facts, err := session.ReadV4JSONL(f)
+	if err != nil {
+		return session.SessionHeader{}, nil, nil, err
+	}
+	newHeader := session.SessionHeader{
+		ID:            session.NewID(now),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		Model:         src.Model,
+		Provider:      src.Provider,
+		SystemPrompt:  src.SystemPrompt,
+		ParentSession: src.ID,
+		Cwd:           src.Cwd,
+	}
+	return newHeader, entries, facts, nil
 }

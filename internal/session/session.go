@@ -329,17 +329,57 @@ func treeOneLine(s string) string {
 	return s
 }
 
-// NewID returns a time-ordered session id: a UTC timestamp stem that sorts
-// lexicographically by creation time (e.g. "20260710-142530-uniq"). The suffix
-// disambiguates sessions created within the same second.
-func NewID(now time.Time) string {
-	return fmt.Sprintf("%s-%06d", now.UTC().Format("20060102-150405"), now.UTC().Nanosecond()/1000%1_000_000)
+// NewUUIDv7 returns a UUIDv7 session id, matching pi's session id convention.
+func NewUUIDv7() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%d-%06d", time.Now().UnixMilli(), time.Now().Nanosecond()/1000%1_000_000)
+	}
+	b[6] = (b[6] & 0x0f) | 0x70
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// Store persists sessions as JSONL files under a directory (typically
-// ~/.pigo/sessions). The zero value is unusable; construct with NewStore.
+// NewID returns a UUIDv7 session id. The time argument is retained for API
+// compatibility; creation timestamps are stored separately.
+func NewID(time.Time) string {
+	return NewUUIDv7()
+}
+
+// Backend is the storage seam used by sessionstore's SQLite canonical store.
+// The legacy JSONL Store keeps the same methods for tests and local front-ends
+// that have not yet migrated; a backend-backed Store delegates every operation
+// to SQLite while preserving the callers' tree-oriented API.
+type Backend interface {
+	Save(header SessionHeader, messages agentcore.MessageList) error
+	SaveEntries(header SessionHeader, entries []Entry) error
+	LoadEntries(id string) (SessionHeader, []Entry, error)
+	Load(id string) (SessionHeader, agentcore.MessageList, error)
+	List() ([]SessionHeader, error)
+	Append(id string, updatedAt time.Time, messages agentcore.MessageList) error
+	AppendBranch(header SessionHeader, parentLeafID string, messages agentcore.MessageList) (string, error)
+	Fork(sourceID, leafID string, now time.Time) (SessionHeader, []Entry, error)
+	Export(id, outPath string) (int, error)
+	Import(inPath string, now time.Time) (SessionHeader, []Entry, error)
+}
+
+// NewEntryID returns a fresh 8-hex entry id. It is the public form of
+// newEntryID for SQLite-backed stores.
+func NewEntryID() string {
+	return newEntryID()
+}
+
+// Store persists sessions. The zero value is unusable; construct with NewStore
+// (legacy JSONL) or NewBackendStore (SQLite canonical store).
 type Store struct {
-	dir string
+	dir     string
+	backend Backend
+}
+
+// NewBackendStore returns a Store backed by a session.Backend.
+func NewBackendStore(backend Backend) *Store {
+	return &Store{backend: backend}
 }
 
 // NewStore returns a Store rooted at dir, creating the directory if needed.
@@ -354,7 +394,12 @@ func NewStore(dir string) (*Store, error) {
 }
 
 // Dir returns the store's root directory.
-func (s *Store) Dir() string { return s.dir }
+func (s *Store) Dir() string {
+	if s.backend != nil {
+		return ""
+	}
+	return s.dir
+}
 
 // path returns the on-disk path for a session id.
 func (s *Store) path(id string) string { return filepath.Join(s.dir, FileName(id)) }
@@ -364,6 +409,9 @@ func (s *Store) path(id string) string { return filepath.Join(s.dir, FileName(id
 // SchemaVersion; CreatedAt/UpdatedAt are left as the caller set them. Save is
 // the whole-session write; Append adds messages to an existing file.
 func (s *Store) Save(header SessionHeader, messages agentcore.MessageList) error {
+	if s.backend != nil {
+		return s.backend.Save(header, messages)
+	}
 	header.Version = SchemaVersion
 	if header.ID == "" {
 		return fmt.Errorf("session: header ID must not be empty")
@@ -380,6 +428,9 @@ func (s *Store) Save(header SessionHeader, messages agentcore.MessageList) error
 // needs: it copies a path of existing entries into a new session file without
 // disturbing their identifiers. The header's Version is forced to SchemaVersion.
 func (s *Store) SaveEntries(header SessionHeader, entries []Entry) error {
+	if s.backend != nil {
+		return s.backend.SaveEntries(header, entries)
+	}
 	header.Version = SchemaVersion
 	if header.ID == "" {
 		return fmt.Errorf("session: header ID must not be empty")
@@ -465,6 +516,9 @@ func writeSessionEntries(w io.Writer, header SessionHeader, entries []Entry) err
 // Old v1/v2 files (bare message lines) are migrated transparently. Load is the
 // linear view; LoadEntries exposes the id/parentId tree metadata.
 func (s *Store) Load(id string) (SessionHeader, agentcore.MessageList, error) {
+	if s.backend != nil {
+		return s.backend.Load(id)
+	}
 	header, entries, err := s.LoadEntries(id)
 	if err != nil {
 		return SessionHeader{}, nil, err
@@ -482,6 +536,9 @@ func (s *Store) Load(id string) (SessionHeader, agentcore.MessageList, error) {
 // ParentID chained to the previous entry, so old sessions load and resume
 // exactly as they did before (US-005 acceptance criterion b/d).
 func (s *Store) LoadEntries(id string) (SessionHeader, []Entry, error) {
+	if s.backend != nil {
+		return s.backend.LoadEntries(id)
+	}
 	f, err := os.Open(s.path(id))
 	if err != nil {
 		return SessionHeader{}, nil, fmt.Errorf("session: open %s: %w", id, err)
@@ -557,6 +614,9 @@ func readSession(r io.Reader) (SessionHeader, []Entry, error) {
 // rather than failing the whole listing, so one corrupt session does not hide
 // the rest.
 func (s *Store) List() ([]SessionHeader, error) {
+	if s.backend != nil {
+		return s.backend.List()
+	}
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		return nil, fmt.Errorf("session: read store dir: %w", err)
@@ -612,6 +672,9 @@ func (s *Store) loadHeader(id string) (SessionHeader, error) {
 // load-modify-save under the hood, which is simple and correct for the session
 // sizes pigo produces.
 func (s *Store) Append(id string, updatedAt time.Time, messages agentcore.MessageList) error {
+	if s.backend != nil {
+		return s.backend.Append(id, updatedAt, messages)
+	}
 	header, existing, err := s.Load(id)
 	if err != nil {
 		return err
@@ -635,6 +698,9 @@ func (s *Store) Append(id string, updatedAt time.Time, messages agentcore.Messag
 // entry — so the caller can track the active branch. If the session file does not
 // yet exist it is created (the fresh-session first-turn case).
 func (s *Store) AppendBranch(header SessionHeader, parentLeafID string, messages agentcore.MessageList) (string, error) {
+	if s.backend != nil {
+		return s.backend.AppendBranch(header, parentLeafID, messages)
+	}
 	if header.ID == "" {
 		return "", fmt.Errorf("session: header ID must not be empty")
 	}
@@ -679,6 +745,9 @@ func (s *Store) AppendBranch(header SessionHeader, parentLeafID string, messages
 // source), which is the correct behavior for forking before the very first
 // message.
 func (s *Store) Fork(sourceID, leafID string, now time.Time) (SessionHeader, []Entry, error) {
+	if s.backend != nil {
+		return s.backend.Fork(sourceID, leafID, now)
+	}
 	srcHeader, entries, err := s.LoadEntries(sourceID)
 	if err != nil {
 		return SessionHeader{}, nil, err

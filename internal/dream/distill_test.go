@@ -41,6 +41,7 @@ func userMsg(text string) agentcore.UserMessage {
 // any not-yet-migrated legacy flat sessions.
 func TestResolveSessionStoreSeesProjectAndLegacy(t *testing.T) {
 	home := t.TempDir()
+	cleanupStores(t)
 	t.Setenv("PIGO_HOME", home)
 	ws := filepath.Join(home, "proj")
 	if err := os.MkdirAll(ws, 0o755); err != nil {
