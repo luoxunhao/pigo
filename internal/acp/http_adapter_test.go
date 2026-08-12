@@ -73,4 +73,7 @@ func TestHTTPAdapterStandardFlow(t *testing.T) {
 	if stopReason != "end_turn" {
 		t.Fatalf("stopReason = %q", stopReason)
 	}
+	if err := client.Resume(ctx, sessionID, workspace); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
 }

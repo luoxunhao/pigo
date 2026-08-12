@@ -30,6 +30,7 @@ const (
 	MethodInitialize        = "initialize"
 	MethodSessionNew        = "session/new"
 	MethodSessionLoad       = "session/load"
+	MethodSessionResume     = "session/resume"
 	MethodSessionList       = "session/list"
 	MethodSessionDelete     = "session/delete"
 	MethodSessionClose      = "session/close"

@@ -48,7 +48,15 @@ func (c *CommandService) List() gen.CommandListResult {
 			if serveUnsupportedCommands[cmd.Name] {
 				continue
 			}
-			item := gen.AvailableCommand{Name: cmd.Name, Description: cmd.Description}
+			name := cmd.Name
+			desc := cmd.Description
+			if cmd.Source == runtime.SourceSkill {
+				name = "skill:" + cmd.Name
+				if desc == "" {
+					desc = "(skill)"
+				}
+			}
+			item := gen.AvailableCommand{Name: name, Description: desc}
 			if cmd.ArgumentHint != "" {
 				item.Input = hintInput(cmd.ArgumentHint)
 			}
@@ -68,6 +76,9 @@ func (c *CommandService) List() gen.CommandListResult {
 }
 
 func (c *CommandService) Execute(ctx context.Context, sessionID string, req gen.CommandRequest) (gen.PromptResponse, *APIError) {
+	// ACP clients invoke skills as /skill:<name>; strip the prefix before the
+	// registry lookup so the underlying slash command still resolves.
+	req.Command = strings.TrimPrefix(req.Command, "skill:")
 	args := ""
 	if req.Arguments != nil {
 		args = strings.TrimSpace(*req.Arguments)

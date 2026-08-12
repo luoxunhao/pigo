@@ -39,6 +39,10 @@ func TestCommandServiceListAndExecute(t *testing.T) {
 		Description: "get weather",
 		Expand:      func(args string) string { return "weather prompt" },
 	})
+	reg.AddSkill(runtime.SlashCommand{
+		Name:   "empty-desc",
+		Expand: func(args string) string { return "empty" },
+	})
 	reg.AddBuiltin(runtime.SlashCommand{
 		Name:        "rewind",
 		Description: "rewind not wired over serve yet",
@@ -62,6 +66,25 @@ func TestCommandServiceListAndExecute(t *testing.T) {
 			t.Fatal("unsupported command should not be advertised")
 		}
 	}
+	sawSkill := false
+	sawSkillFallback := false
+	for _, cmd := range list.Commands {
+		if cmd.Name == "skill:weather" {
+			sawSkill = true
+			if cmd.Description != "get weather" {
+				t.Fatalf("skill description = %q", cmd.Description)
+			}
+		}
+		if cmd.Name == "skill:empty-desc" {
+			sawSkillFallback = true
+			if cmd.Description != "(skill)" {
+				t.Fatalf("skill fallback description = %q", cmd.Description)
+			}
+		}
+	}
+	if !sawSkill || !sawSkillFallback {
+		t.Fatalf("skills not advertised with skill: prefix: %+v", list.Commands)
+	}
 	name := "My Session"
 	resp, apiErr := svc.Execute(context.Background(), created.SessionId, gen.CommandRequest{Directory: workspace, Command: "name", Arguments: &name})
 	if apiErr != nil {
@@ -80,7 +103,7 @@ func TestCommandServiceListAndExecute(t *testing.T) {
 	if _, apiErr := svc.Execute(context.Background(), created.SessionId, gen.CommandRequest{Directory: workspace, Command: "nope"}); apiErr == nil {
 		t.Fatal("expected unknown command error")
 	}
-	skillResp, apiErr := svc.Execute(context.Background(), created.SessionId, gen.CommandRequest{Directory: workspace, Command: "weather"})
+	skillResp, apiErr := svc.Execute(context.Background(), created.SessionId, gen.CommandRequest{Directory: workspace, Command: "skill:weather"})
 	if apiErr != nil {
 		t.Fatal(apiErr)
 	}
