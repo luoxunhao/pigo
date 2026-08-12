@@ -119,7 +119,7 @@ func TestHTTPAdapterToolUpdatedCarriesResultShape(t *testing.T) {
 
 func TestHTTPAdapterRejectsNonStandardMethods(t *testing.T) {
 	adapter := NewHTTPAdapter(nil, nil, "test")
-	for _, method := range []string{"model/set", "pigo/command", "pigo/event", "pigo/goal"} {
+	for _, method := range []string{"model/set", "pigo/command", "pigo/event", "pigo/goal", "session/resume", "session/fork"} {
 		_, rpcErr := adapter.HandleRequest(context.Background(), RequestID{}, method, nil)
 		if rpcErr == nil || rpcErr.Code != CodeMethodNotFound {
 			t.Fatalf("%s rpcErr = %v, want method not found", method, rpcErr)

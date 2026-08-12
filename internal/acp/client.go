@@ -115,15 +115,6 @@ func (c *Client) LoadSession(ctx context.Context, sessionID, cwd string) (string
 	return resp.SessionID, nil
 }
 
-// Resume restores a session's live state without replaying its history.
-func (c *Client) Resume(ctx context.Context, sessionID, cwd string) error {
-	_, err := c.transport.SendRequest(ctx, MethodSessionResume, map[string]any{
-		"sessionId": sessionID,
-		"cwd":       cwd,
-	})
-	return err
-}
-
 // ListSessions returns the stored session summaries for a workspace. An empty
 // cwd asks the server to use the most recent session cwd, matching pi-acp.
 func (c *Client) ListSessions(ctx context.Context, cwd string) ([]map[string]any, error) {

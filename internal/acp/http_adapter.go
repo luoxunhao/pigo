@@ -65,8 +65,6 @@ func (a *HTTPAdapter) HandleRequest(ctx context.Context, id RequestID, method st
 		return a.sessionNew(ctx, params)
 	case MethodSessionLoad:
 		return a.sessionLoad(ctx, params)
-	case MethodSessionResume:
-		return a.sessionResume(ctx, params)
 	case MethodSessionList:
 		return a.sessionList(ctx, params)
 	case MethodSessionDelete:
@@ -177,32 +175,6 @@ func (a *HTTPAdapter) sessionLoad(ctx context.Context, params json.RawMessage) (
 	}
 	a.remember(req.SessionID, req.Cwd)
 	a.replayAll(ctx, req.SessionID, req.Cwd, resp.JSON200.Messages, resp.JSON200.NextCursor, resp.JSON200.HasMore)
-	go a.sendAvailableCommands(req.Cwd, req.SessionID)
-	return map[string]any{
-		"configOptions": resp.JSON200.ConfigOptions,
-		"modes":         a.modesState(),
-	}, nil
-}
-
-func (a *HTTPAdapter) sessionResume(ctx context.Context, params json.RawMessage) (any, *Error) {
-	var req struct {
-		SessionID             string          `json:"sessionId"`
-		Cwd                   string          `json:"cwd"`
-		AdditionalDirectories []string        `json:"additionalDirectories,omitempty"`
-		MCPServers            json.RawMessage `json:"mcpServers,omitempty"`
-	}
-	if err := json.Unmarshal(params, &req); err != nil || req.SessionID == "" || req.Cwd == "" {
-		return nil, NewError(CodeInvalidParams, "missing sessionId or cwd")
-	}
-	limit := 50
-	resp, err := a.client.LoadSessionWithResponse(ctx, req.SessionID, httpclient.LoadSessionJSONRequestBody{
-		Directory: req.Cwd,
-		Limit:     &limit,
-	})
-	if err != nil || resp.JSON200 == nil {
-		return nil, NewError(CodeInternalError, "session/resume failed")
-	}
-	a.remember(req.SessionID, req.Cwd)
 	go a.sendAvailableCommands(req.Cwd, req.SessionID)
 	return map[string]any{
 		"configOptions": resp.JSON200.ConfigOptions,
