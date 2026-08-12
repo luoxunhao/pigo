@@ -63,3 +63,6 @@ book/*.blg
 book/*.run.xml
 # Figures pre-rendered from SVG by build_pdf.sh (rsvg-convert); source is the .svg
 book/images/*.pdf
+
+# Scratch working notes and repro artifacts
+.scratch/
