@@ -592,9 +592,23 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "enter":
 			raw := strings.TrimSpace(m.input.Value())
 			if raw != "" {
-				m.pendingQueue = append(m.pendingQueue, raw)
-				m.transcript.addSystem("queued: " + raw)
 				m.input.Clear()
+				if strings.HasPrefix(raw, "/") {
+					name := strings.Fields(raw)[0]
+					switch name {
+					case "/session", "/status", "/memory", "/help":
+						next, cmd := m.runSlash(raw)
+						return next, cmd
+					case "/tree", "/label", "/resume", "/fork", "/clone", "/compact", "/rebuild", "/import", "/export", "/rewind":
+						m.transcript.addSystem("command rejected while compaction is in progress: " + name)
+					default:
+						m.pendingQueue = append(m.pendingQueue, raw)
+						m.transcript.addSystem("queued: " + raw)
+					}
+				} else {
+					m.pendingQueue = append(m.pendingQueue, raw)
+					m.transcript.addSystem("queued: " + raw)
+				}
 				m.relayout()
 			}
 			return m, nil

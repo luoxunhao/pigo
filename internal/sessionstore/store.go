@@ -1075,6 +1075,12 @@ func (s *Store) SetLabel(sessionID, targetID string, label string) error {
 
 func (s *Store) SetFact(sessionID, kind, key, value string) error {
 	return s.withLease(sessionID, func(tx *sql.Tx) error {
+		if value == "" {
+			if _, err := tx.Exec(`DELETE FROM facts WHERE session_id=? AND kind=? AND key IS ?`,
+				sessionID, kind, nullable(key)); err != nil {
+				return err
+			}
+		}
 		return s.insertFactTx(tx, sessionID, kind, key, value)
 	})
 }

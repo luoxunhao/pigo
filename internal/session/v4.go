@@ -222,9 +222,16 @@ func treeLineVisible(e V4Entry) bool {
 	switch e.Type {
 	case EntryTypeLabel, EntryTypeCustom, EntryTypeModelChange, EntryTypeThinkingChange, EntryTypeSessionInfo:
 		return false
+	case EntryTypeMessage:
+		if msg, err := e.MessageValue(); err == nil {
+			if a, ok := msg.(agentcore.AssistantMessage); ok {
+				return strings.TrimSpace(agentcore.ContentToText(a.Content)) != ""
+			}
+		}
 	default:
 		return true
 	}
+	return true
 }
 
 func v4TreeKind(e V4Entry) string {
@@ -307,7 +314,7 @@ func BuildProjection(entries []V4Entry, lanes []LaneState, leafID string, facts 
 	path := PathToLeafV4(entries, leafID)
 	labels := make(map[string]string)
 	for _, f := range facts {
-		if f.Kind == "label" && f.Key != "" {
+		if f.Kind == "label" && f.Key != "" && f.Value != "" {
 			labels[f.Key] = f.Value
 		}
 	}

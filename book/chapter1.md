@@ -327,7 +327,7 @@ return nil
 
 ### 会话回填与 session_id 的诞生
 
-无头运行也被一个会话文件"托底"，这正是 `session_id` 的来源。`openHeadlessSession` 在 `--resume` 时从项目作用域存储 `Load` 重建 prior messages 并重新锚定分支叶子，否则用 `session.NewID` 造一个新会话头。会话文件现在按工作区归类：`$PIGO_HOME/projects/<workspace-slug>/sessions/<id>.jsonl`（`PIGO_HOME` 缺省为 `~/.pigo`）；旧的扁平 `~/.pigo/sessions` 仍然可读，首次 resume 时迁移一次。这个 id 被写进 `runCfg.SessionID`，而循环在最开始就会发出一个 `agentcore.AgentStartEvent{SessionID: cfg.SessionID}`（`internal/runtime/loop.go` 的 `runLoop`）。在 stream-json 模式下，`eventEnvelope` 会把它序列化成第一行 JSON 里的 `sessionId` 字段（事件 `type` 为 `agent_start`）：
+无头运行也被一个会话文件"托底"，这正是 `session_id` 的来源。`openHeadlessSession` 在 `--resume` 时从项目作用域存储 `Load` 重建 prior messages 并重新锚定分支叶子，否则用 `session.NewID` 造一个新会话头。会话文件现在按工作区归类：`$PIGO_HOME/sessions.db`（`PIGO_HOME` 缺省为 `~/.pigo`）；旧 v1/v2/v3 JSONL 由 `scripts/quarantine-legacy-sessions.*` 隔离，运行时不再读取。这个 id 被写进 `runCfg.SessionID`，而循环在最开始就会发出一个 `agentcore.AgentStartEvent{SessionID: cfg.SessionID}`（`internal/runtime/loop.go` 的 `runLoop`）。在 stream-json 模式下，`eventEnvelope` 会把它序列化成第一行 JSON 里的 `sessionId` 字段（事件 `type` 为 `agent_start`）：
 
 ```go
 func eventEnvelope(ev agentcore.AgentEvent) map[string]any {
@@ -381,7 +381,7 @@ go run ./cmd/pigo -p "第二轮" --resume "$SID" --output-format stream-json --n
   | head -n 1
 ```
 
-**预期**：第二次运行的第一行 `agent_start` 事件里的 `sessionId` 与 `$SID` 一致，说明 `--resume` 命中了同一个会话文件（会话由 `openHeadlessSession` 在 `$PIGO_HOME/projects/<workspace-slug>/sessions/<id>.jsonl` 落地）。
+**预期**：第二次运行的第一行 `agent_start` 事件里的 `sessionId` 与 `$SID` 一致，说明 `--resume` 命中了同一个会话文件（会话由 `openHeadlessSession` 在 `$PIGO_HOME/sessions.db` 落地）。
 
 **观察点**：对照 `internal/cli/headless/session.go` 的 `openHeadlessSession`、`internal/cli/headless/headless.go` 里写进 `runCfg.SessionID` 的那一行、`internal/runtime/headless.go` 的 `eventEnvelope`（`agent_start` 分支填 `sessionId`）与 `internal/runtime/loop.go` 中 `runLoop` 开头的 `emit(agentcore.AgentStartEvent{SessionID: cfg.SessionID})`，你会看到这条完整链路：id 在装配期生成（`openHeadlessSession`）→ 写进 `RunConfig.SessionID` → 循环首个事件发出。这正是 1.3 与 1.4 两节装配逻辑的一次端到端印证。
 

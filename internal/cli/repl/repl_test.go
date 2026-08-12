@@ -656,3 +656,29 @@ func TestREPLCopyDegradesToPrint(t *testing.T) {
 		t.Errorf("/copy should print the reply when degrading, out=%q", s)
 	}
 }
+
+// TestREPLLabelSetsAndClearsFact verifies /label writes and clears a fact.
+func TestREPLLabelSetsAndClearsFact(t *testing.T) {
+	p := &replProvider{reply: "reply"}
+	deps, store := newTestDeps(t, p)
+	var out bytes.Buffer
+	in := strings.NewReader("hello\n/label 1 task\n/tree\n/label 1\n/exit\n")
+	if err := runREPL(in, &out, deps); err != nil {
+		t.Fatalf("runREPL: %v", err)
+	}
+	if !strings.Contains(out.String(), "set label on node 1: task") {
+		t.Errorf("label set message missing, out=%q", out.String())
+	}
+	if !strings.Contains(out.String(), "cleared label on node 1") {
+		t.Errorf("label clear message missing, out=%q", out.String())
+	}
+	facts, err := store.Facts(deps.header.ID)
+	if err != nil {
+		t.Fatalf("Facts: %v", err)
+	}
+	for _, f := range facts {
+		if f.Kind == "label" && f.Value != "" {
+			t.Fatalf("label fact should be cleared, got %+v", f)
+		}
+	}
+}
