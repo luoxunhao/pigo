@@ -199,3 +199,46 @@ func (s *SessionService) CopyLast(sessionID, directory string) (string, error) {
 	}
 	return "", fmt.Errorf("nothing to copy - no assistant reply yet")
 }
+
+// ResumeList renders the saved sessions for a workspace as a numbered list.
+func (s *SessionService) ResumeList(directory string) (string, error) {
+	store, err := s.storeFor(directory)
+	if err != nil {
+		return "", err
+	}
+	metas, err := store.List()
+	if err != nil {
+		return "", err
+	}
+	if len(metas) == 0 {
+		return "no saved sessions to resume", nil
+	}
+	var b strings.Builder
+	b.WriteString("saved sessions (run /resume <n> to switch):\n")
+	for i, meta := range metas {
+		title := meta.SessionName
+		if title == "" {
+			title = meta.SessionID
+		}
+		fmt.Fprintf(&b, "  %d. %s (%s, messages: %d)\n", i+1, title, meta.LastActiveAt.Format("2006-01-02 15:04"), meta.MessageCount)
+	}
+	return strings.TrimRight(b.String(), "\n"), nil
+}
+
+// ResumeSelect picks the n-th saved session for a workspace.
+func (s *SessionService) ResumeSelect(directory string, n int) (string, error) {
+	store, err := s.storeFor(directory)
+	if err != nil {
+		return "", err
+	}
+	metas, err := store.List()
+	if err != nil {
+		return "", err
+	}
+	if n < 1 || n > len(metas) {
+		return "", fmt.Errorf("invalid selection %d (1..%d)", n, len(metas))
+	}
+	meta := metas[n-1]
+	return fmt.Sprintf("selected session: %s (workspace: %s, model: %s, messages: %d)",
+		meta.SessionID, meta.WorkspacePath, meta.ModelName, meta.MessageCount), nil
+}

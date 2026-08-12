@@ -73,6 +73,7 @@ func TestCommandServiceListAndExecute(t *testing.T) {
 	sawSkill := false
 	sawSkillFallback := false
 	sawDirect := false
+	sawResume := false
 	for _, cmd := range list.Commands {
 		if cmd.Name == "skill:weather" {
 			sawSkill = true
@@ -89,8 +90,11 @@ func TestCommandServiceListAndExecute(t *testing.T) {
 		if cmd.Name == "skill:direct" {
 			sawDirect = true
 		}
+		if cmd.Name == "resume" {
+			sawResume = true
+		}
 	}
-	if !sawSkill || !sawSkillFallback || !sawDirect {
+	if !sawSkill || !sawSkillFallback || !sawDirect || !sawResume {
 		t.Fatalf("skills not advertised with skill: prefix: %+v", list.Commands)
 	}
 	name := "My Session"
@@ -124,5 +128,14 @@ func TestCommandServiceListAndExecute(t *testing.T) {
 	}
 	if directResp.Text == nil || !strings.Contains(*directResp.Text, "reply: direct") {
 		t.Fatalf("direct skill resp = %+v", directResp)
+	}
+	resumeList, apiErr := svc.Execute(context.Background(), created.SessionId, gen.CommandRequest{Directory: workspace, Command: "resume"})
+	if apiErr != nil || resumeList.Text == nil || !strings.Contains(*resumeList.Text, "saved sessions") {
+		t.Fatalf("resume list = %+v, err = %v", resumeList, apiErr)
+	}
+	resumePick := "1"
+	resumePickResp, apiErr := svc.Execute(context.Background(), created.SessionId, gen.CommandRequest{Directory: workspace, Command: "resume", Arguments: &resumePick})
+	if apiErr != nil || resumePickResp.Text == nil || !strings.Contains(*resumePickResp.Text, "selected session") {
+		t.Fatalf("resume pick = %+v, err = %v", resumePickResp, apiErr)
 	}
 }

@@ -41,6 +41,7 @@ import (
 	"github.com/smallnest/pigo/internal/provider"
 	"github.com/smallnest/pigo/internal/runtime"
 	"github.com/smallnest/pigo/internal/session"
+	"github.com/smallnest/pigo/internal/sessionstore"
 	"github.com/smallnest/pigo/internal/trust"
 )
 
@@ -413,6 +414,14 @@ func runREPL(in io.Reader, out io.Writer, deps replDeps) error {
 			runTree(out, &deps, line)
 			continue
 		}
+		if line == "/resume" || strings.HasPrefix(line, "/resume ") {
+			// /resume is intercepted here (like /tree) because "/resume <n>" swaps
+			// the active session in place, rebuilding the shared context from the
+			// selected session's entries.
+			cli.PersistTurn(out, &deps)
+			runResume(out, &deps, line)
+			continue
+		}
 		if line == "/rewind" || strings.HasPrefix(line, "/rewind ") {
 			// /rewind is intercepted here (like /tree) because "/rewind <n>" restores
 			// files on disk AND moves the active leaf, rebuilding the shared context in
@@ -601,8 +610,8 @@ func streamRun(ctx context.Context, out io.Writer, deps replDeps, prompt string)
 				BeforeToolCall: beforeToolCall(deps, out),
 			},
 		},
-		Reminders: deps.reminders,
-		SessionID: deps.header.ID,
+		Reminders:  deps.reminders,
+		SessionID:  deps.header.ID,
 		MemoryRoot: deps.memoryRoot,
 	}
 	// Per-turn wiring of the tool-execution + Stop seams (PreToolUse/PostToolUse/
@@ -885,6 +894,71 @@ func runTree(out io.Writer, deps *replDeps, line string) {
 	deps.curLeaf = target.ID
 	deps.persisted = len(msgs)
 	fmt.Fprintf(out, "switched to branch at node %d (%d messages) — next prompt continues from here\n", n, len(msgs))
+}
+
+// runResume handles /resume: with no argument it lists saved sessions for the
+// current workspace; with "/resume <n>" it loads that session's entries and
+// swaps the active header/context in place.
+func runResume(out io.Writer, deps *replDeps, line string) {
+	home, err := sessionstore.PigoHome()
+	if err != nil {
+		fmt.Fprintf(out, "pigo: %v\n", err)
+		return
+	}
+	store, err := sessionstore.OpenForWorkspace(home, deps.cwd)
+	if err != nil {
+		fmt.Fprintf(out, "pigo: resume failed: %v\n", err)
+		return
+	}
+	metas, err := store.List()
+	if err != nil {
+		fmt.Fprintf(out, "pigo: resume failed: %v\n", err)
+		return
+	}
+	fields := strings.Fields(line)
+	if len(fields) < 2 {
+		if len(metas) == 0 {
+			fmt.Fprintln(out, "no saved sessions to resume")
+			return
+		}
+		fmt.Fprintln(out, "saved sessions (run /resume <n> to switch):")
+		for i, meta := range metas {
+			title := meta.SessionName
+			if title == "" {
+				title = meta.SessionID
+			}
+			fmt.Fprintf(out, "  %d. %s (%s, messages: %d)\n", i+1, title, meta.LastActiveAt.Format("2006-01-02 15:04"), meta.MessageCount)
+		}
+		return
+	}
+	n, convErr := strconv.Atoi(fields[1])
+	if convErr != nil || n < 1 || n > len(metas) {
+		fmt.Fprintf(out, "invalid selection %q — run /resume to list sessions (1..%d)\n", fields[1], len(metas))
+		return
+	}
+	meta := metas[n-1]
+	header, entries, err := store.TranscriptStore().LoadEntries(meta.SessionID)
+	if err != nil {
+		fmt.Fprintf(out, "pigo: resume failed: %v\n", err)
+		return
+	}
+	msgs := make(agentcore.MessageList, len(entries))
+	for i, e := range entries {
+		msgs[i] = e.Message
+	}
+	deps.header = header
+	deps.agentCtx.Messages = msgs
+	deps.persisted = len(msgs)
+	deps.curLeaf = ""
+	if len(entries) > 0 {
+		deps.curLeaf = entries[len(entries)-1].ID
+	}
+	deps.lastBtw = nil
+	deps.lastBtwBase = 0
+	if deps.telemetry != nil {
+		deps.telemetry.Reset()
+	}
+	fmt.Fprintf(out, "resumed session %s (%d messages)\n", meta.SessionID, len(msgs))
 }
 
 // pathCommandArg extracts the path argument for a "/cmd <path>" line, enforcing a
