@@ -38,7 +38,7 @@ $configJson = @{
   agentBackend = "pigo"
   pigo = @{
     command = $PigoExe
-    args    = @("--acp")
+    args    = @("acp")
   }
 } | ConvertTo-Json -Depth 5
 [System.IO.File]::WriteAllText($ConfigFile, $configJson, (New-Object System.Text.UTF8Encoding($false)))

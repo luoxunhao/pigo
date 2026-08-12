@@ -1,6 +1,6 @@
 # ACP Zed 端到端验收记录
 
-目标：验证 pigo `--acp` 下工具级策略和命令级 hooks 在 Zed 中真实生效。
+目标：验证 pigo `acp` 下工具级策略和命令级 hooks 在 Zed 中真实生效。
 
 ## Zed 配置
 
@@ -9,7 +9,7 @@
   "pigo": {
     "type": "custom",
     "command": "E:/project/pigo/pigo.exe",
-    "args": ["--acp", "--allowed-tools", "read,grep", "--disallowed-tools", "bash"],
+    "args": ["acp", "--allowed-tools", "read,grep", "--disallowed-tools", "bash"],
     "env": {}
   }
 }

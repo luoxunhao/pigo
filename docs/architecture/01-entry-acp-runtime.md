@@ -18,7 +18,7 @@ cmd/pigo (CLI 入口)
 
 **职责**：解析 CLI 参数、叠加 config.toml 配置、分发到四种运行模式（TUI/REPL/headless/ACP）。
 
-- 通过 `flag` 包解析选项，支持 `--acp`（ACP stdio server）、`--subagent-rpc`（子 agent JSON-RPC）、`--dream`（记忆整合）、`-p`（headless print）、无 prompt 时的 TUI/REPL 交互。
+- 通过 `flag` 包解析选项，支持 `acp`（ACP stdio server）、`--subagent-rpc`（子 agent JSON-RPC）、`--dream`（记忆整合）、`-p`（headless print）、无 prompt 时的 TUI/REPL 交互。
 - `dispatch()` 是纯分发函数，根据选项分支；TUI/REPL 使用 Bubble Tea + 行式 REPL，headless 输出 text 或 stream-json。
 - `applyFileConfig()` 实现优先级：CLI flag > config.toml > 默认值；`--cwd`（`-C`）最先执行 `os.Chdir`，保证所有 cwd 相关路径一致。
 

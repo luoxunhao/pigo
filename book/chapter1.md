@@ -16,7 +16,7 @@
 
 ### 请求路径：从用户到 LLM
 
-最外层是用户输入。交互式 TUI 与行式 REPL 在本进程内启动一个 ACP 服务器（`acp.StartInProcess`），通过内存通道对谈；Zed 等外部客户端则用 `pigo --acp` 连接 stdio ACP 服务器。交互前端与外部客户端下一步都落在同一个 ACP 会话层：它把用户消息、系统提示、工具定义组织成一次请求，交给 Agent 循环；无头模式则绕过 ACP，直接走装配 + `runtime.RunHeadless`（1.4.2 会展开）。循环再把请求交给 Provider 层；Provider 层把统一的内部表示翻译成具体大模型网关（OpenAI 兼容或 Anthropic-Messages 协议）的线上格式，再通过 HTTP + SSE 把流式回复送回来。这条线对应引言里的"LLM + 上下文"，是每一次对话的主干。
+最外层是用户输入。交互式 TUI 与行式 REPL 在本进程内启动一个 ACP 服务器（`acp.StartInProcess`），通过内存通道对谈；Zed 等外部客户端则用 `pigo acp` 连接 stdio ACP 服务器。交互前端与外部客户端下一步都落在同一个 ACP 会话层：它把用户消息、系统提示、工具定义组织成一次请求，交给 Agent 循环；无头模式则绕过 ACP，直接走装配 + `runtime.RunHeadless`（1.4.2 会展开）。循环再把请求交给 Provider 层；Provider 层把统一的内部表示翻译成具体大模型网关（OpenAI 兼容或 Anthropic-Messages 协议）的线上格式，再通过 HTTP + SSE 把流式回复送回来。这条线对应引言里的"LLM + 上下文"，是每一次对话的主干。
 
 ### 工具路径：从循环到本地环境
 
@@ -58,7 +58,7 @@ if len(os.Args) > 1 && pkgcmd.Subcommands[os.Args[1]] {
 - `--base-url` / `--protocol` / `--api-key`：自定义端点、线上协议与密钥覆盖。
 - `-n/--no-tools`、`-a/--approve`、`--no-skills`、`--system-prompt`、`--append-system-prompt`、`--thinking-level` 等运行时开关。
 - `-r/--resume`、`-c/--continue`、`-l/--list-sessions`：会话复用与列举。
-- `--acp`：作为 ACP stdio 服务器运行（Zed 等外部客户端）；`--subagent-rpc`、`--dream` 是另两个内部服务模式。
+- `acp`：作为 ACP stdio 服务器运行（Zed 等外部客户端）；`--subagent-rpc`、`--dream` 是另两个内部服务模式。
 - `--cwd`：先切换工作目录再装配（等价 `git -C`）；`--no-tui`：强制行式 REPL 而不是全屏 TUI。
 
 `main()` 还重写了 `flag.Usage`，在标准用法后追加一段 "Supported providers" 列表（`cli.PrintProviderHelp`），这段列表由 Provider 注册表实时生成，所以永远不会和代码漂移。`flag.Parse()` 之后，`--cwd` 先 `os.Chdir` 到目标目录（失败是用法错误，退出码 2），再叠加 `~/.config/pigo/config.toml`（`config.LoadFileConfig` + `applyFileConfig`）。这里的优先级是 **CLI 标志 > 配置文件 > 默认值**：`flag.CommandLine.Changed` 记录了哪些标志是用户显式传的，配置文件只在用户没传时才覆盖；配置文件解析失败只警告不中止。`--version` 作为独立动作直接打印构建元信息并退出；否则把 `opts` 交给 `dispatch()`：
@@ -73,7 +73,7 @@ os.Exit(dispatch(context.Background(), opts, os.Stdout, os.Stderr))
 
 `dispatch()`（仍在 `cmd/pigo/main.go`）是"运行装配缝"（run-assembly seam）：所有运行路径都从这里出发。它按优先级依次判断，把请求引向多条岔路之一：
 
-1. `--acp`：进入 ACP stdio 服务模式（`acpcmd.Run`），对 Zed 这类外部客户端说话，直到 stdin 关闭。
+1. `acp`：进入 ACP stdio 服务模式（`acpcmd.Run`），对 Zed 这类外部客户端说话，直到 stdin 关闭。
 2. `--subagent-rpc`：进入进程隔离的子 Agent JSON-RPC 服务模式（`headless.RunSubAgentRPC`），是子 Agent 的子进程端（详见第 9 章）。
 3. `--dream`：跑一次记忆整合子进程（`runDream`），把单行 Report JSON 写到 stdout 后退出。
 4. `--list-sessions`：打印已存会话并退出；`--continue` 则在前面把 `resumeID` 解析成最近一次会话 id。
@@ -130,7 +130,7 @@ func dispatch(ctx context.Context, opts cliOptions, out, errOut io.Writer) int {
 }
 ```
 
-这六条岔路里，第 5、6 条是本章的主角，但注意第 1 条并不孤立：交互式 TUI/REPL 内部其实也各起了一个进程内 ACP 服务器，只是 transport 换成内存通道；`--acp` 与它们共享同一套 ACP 会话层。每条岔路都以一个整数退出码收尾——`dispatch` 把"该退出还是继续"和"退出码是多少"两件事捏在一起，`main()` 只负责把这个返回值透传给 `os.Exit`。
+这六条岔路里，第 5、6 条是本章的主角，但注意第 1 条并不孤立：交互式 TUI/REPL 内部其实也各起了一个进程内 ACP 服务器，只是 transport 换成内存通道；`acp` 与它们共享同一套 ACP 会话层。每条岔路都以一个整数退出码收尾——`dispatch` 把"该退出还是继续"和"退出码是多少"两件事捏在一起，`main()` 只负责把这个返回值透传给 `os.Exit`。
 
 ![图1-2 dispatch：一个进来，多条岔路出去](images/fig1-2.png){#fig:1-2 width=100%}
 

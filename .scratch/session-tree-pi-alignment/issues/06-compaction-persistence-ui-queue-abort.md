@@ -4,17 +4,17 @@
 
 **Blocked by:** 05 - Compaction retainedTail + split-turn + 迭代 + overflow
 
-**Status:** partial
+**Status:** resolved
 
 ## Acceptance Criteria
 
-- [ ] 所有前端走同一 `AppendCompaction`，headless 也落盘
-- [ ] `compaction_start/end` 带原因，失败/取消有事件
-- [ ] TUI compaction 期间输入进 pending queue，结束后整批作为 steering 注入
-- [ ] TUI `Alt+Up` 取回全部队列；Esc 中止；失败/中止恢复队列与编辑器
-- [ ] REPL 压缩期间阻塞读，Ctrl+C 中止，typed-ahead 保留
-- [ ] 删除压缩后 `Save()` 线性重写压平树路径
-- [ ] queue 中斜杠命令分类：查询命令立即执行，改会话/树的命令拒绝并提示
+- [x] 所有前端走同一 `AppendCompaction`，headless 也落盘
+- [x] `compaction_start/end` 带原因，失败/取消有事件
+- [x] TUI compaction 期间输入进 pending queue，结束后整批作为 steering 注入
+- [x] TUI `Alt+Up` 取回全部队列；Esc 中止；失败/中止恢复队列与编辑器
+- [x] REPL 压缩期间阻塞读，Ctrl+C 中止，typed-ahead 保留
+- [x] 删除压缩后 `Save()` 线性重写压平树路径
+- [x] queue 中斜杠命令分类：查询命令立即执行，改会话/树的命令拒绝并提示
 
 **Type:** fullstack
 

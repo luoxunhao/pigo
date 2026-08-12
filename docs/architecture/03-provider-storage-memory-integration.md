@@ -89,13 +89,13 @@
 **职责**：为 pi-web 提供 TypeScript ACP 协议客户端，通过 stdio JSON-RPC 与 pigo 进程通信。
 
 - `package.json`：`name=pigo-acp@0.1.0`，ESM，Node ≥22.19，依赖 `@types/node` + `typescript`。
-- `client.ts`：`PigoAcpClient` 封装 `spawn(pigo --acp)` stdio 管道；`request`/`notify`/`handleLine` 实现 JSON-RPC 2.0；`respondPermission` 处理工具权限请求；事件回调 `onUpdate/onEvent/onPermission/onStderr/onExit`。
+- `client.ts`：`PigoAcpClient` 封装 `spawn(pigo acp)` stdio 管道；`request`/`notify`/`handleLine` 实现 JSON-RPC 2.0；`respondPermission` 处理工具权限请求；事件回调 `onUpdate/onEvent/onPermission/onStderr/onExit`。
 - `types.ts`：`AcpMessage/AcpContentBlock/AcpPermissionRequest/InitializeResult/ListSessionsResult/PigoConfigResult/PigoConfigUpdate` 等；`PigoConfigResult.apiKeyConfigured` 安全暴露密钥状态。
 - ACP 方法：`initialize/session/new·load·list·close·delete·prompt/cancel/model/set/pigo/models·config·messages/command`。
 
 ## 9. scripts — pi-web 启动/停止
 
-`scripts/start-pigo-web.ps1`：PowerShell 脚本启动三进程（sessiond:8599 / web:8504 / vite:8505），写 PID 到 `$TEMP/pi-web-pigo/pids.txt`；`--Stop` 参数 kill 所有子进程；生成 `pi-web-config.json` 指向 `pigo --acp`。
+`scripts/start-pigo-web.ps1`：PowerShell 脚本启动三进程（sessiond:8599 / web:8504 / vite:8505），写 PID 到 `$TEMP/pi-web-pigo/pids.txt`；`--Stop` 参数 kill 所有子进程；生成 `pi-web-config.json` 指向 `pigo acp`。
 
 ## 10. go.mod — 依赖清单
 
@@ -143,7 +143,7 @@ cmd/pigo
   │     └── modernc.org/sqlite
   │
   └── sdk/node/pigo-acp (独立 npm 包)
-        └── pigo.exe --acp (stdio JSON-RPC)
+        └── pigo.exe acp (stdio JSON-RPC)
 ```
 
 **数据流**：`agent loop` → `provider.StreamFn` → `transport.StreamRequest` → 各 `Decoder`；`compaction` 在 `ShouldCompact` 触发时调用 `provider` 生成 summary，写入 `sessionstore` 为 `CompactionMessage`；`dream` 在 `Scheduler.Due` 判定后异步子进程运行，从 `sessionstore` 读取转录，经 `consolidator` LLM 决策后写入 `memory`；`plugin` 发现后可执行文件，通过 `jsonrpc.Client` 与子进程双向通信，暴露 `AgentTool`。

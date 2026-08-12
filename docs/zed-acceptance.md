@@ -49,3 +49,5 @@
 - [ ] v1/v2/v3 import 明确拒绝；旧 id 返回 not found
 - [ ] scripts/quarantine-legacy-sessions.* 隔离旧目录
 
+
+> 2026-08-12：session-tree-pi-alignment 手动验收通过（历史 thinking/工具调用/bash 参数/curLeaf/新旧会话继续）。

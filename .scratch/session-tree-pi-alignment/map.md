@@ -1,7 +1,7 @@
 # Wayfinder Map: pigo 会话树对齐 pi
 
 > Local-markdown tracker。Effort：pigo 会话树迁移设计与实现。
-> Status: implementation complete（2026-08-12）：SQLite canonical、v4 codec、ProjectLeaf、compaction 落盘、ACP/HTTP tree surface、子 agent SQLite 图、TUI/REPL 树交互与 SDK tree v1 已实现；遗留 TUI compaction queue 与 Zed 手动验收待补。
+> Status: complete（2026-08-12）：issue 01-16 全部 resolved，Zed 手动验收通过。
 
 ## Destination
 
