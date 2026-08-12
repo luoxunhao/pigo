@@ -6,7 +6,7 @@
 
 **Status:** ready-for-agent
 
-- [ ] Zed 配置改为 `["acp"]`
+- [x] Zed 配置改为 `["acp"]`
 - [ ] 手动验证对话、工具调用、权限确认、取消和历史恢复
 - [ ] 确认 ACP 方法面只包含标准方法
 - [ ] 确认 ACP 通知只包含标准 `session/update` 和 `session/request_permission`
