@@ -643,7 +643,7 @@ func (a *HTTPAdapter) sendAvailableCommands(directory, sessionID string) {
 
 func (a *HTTPAdapter) replayAll(ctx context.Context, sessionID, directory string, messages []httpclient.Message, nextCursor *string, hasMore bool) {
 	for {
-		a.replayMessages(sessionID, messages)
+		a.replayMessages(sessionID, directory, messages)
 		if !hasMore || nextCursor == nil {
 			return
 		}
@@ -669,7 +669,7 @@ type pendingToolCall struct {
 	assistantMsg httpclient.Message
 }
 
-func (a *HTTPAdapter) replayMessages(sessionID string, messages []httpclient.Message) {
+func (a *HTTPAdapter) replayMessages(sessionID, directory string, messages []httpclient.Message) {
 	var pending []pendingToolCall
 	for _, msg := range messages {
 		if msg.Role == "compaction" || msg.Role == "branch_summary" {
@@ -680,8 +680,7 @@ func (a *HTTPAdapter) replayMessages(sessionID string, messages []httpclient.Mes
 				p := pending[0]
 				pending = pending[1:]
 				output := messageText(msg)
-				a.sendReplayUpdate(sessionID, p.assistantMsg, toolCallStart(p.id, p.name, p.rawInput))
-				a.sendReplayUpdate(sessionID, p.assistantMsg, toolCallEnd(p.id, p.name, false, output, p.rawInput))
+				a.sendReplayToolCall(sessionID, directory, p, output)
 			}
 			continue
 		}
@@ -725,9 +724,20 @@ func (a *HTTPAdapter) replayMessages(sessionID string, messages []httpclient.Mes
 		}
 	}
 	for _, p := range pending {
-		a.sendReplayUpdate(sessionID, p.assistantMsg, toolCallStart(p.id, p.name, p.rawInput))
-		a.sendReplayUpdate(sessionID, p.assistantMsg, toolCallEnd(p.id, p.name, false, "", p.rawInput))
+		a.sendReplayToolCall(sessionID, directory, p, "")
 	}
+}
+
+func (a *HTTPAdapter) sendReplayToolCall(sessionID, directory string, p pendingToolCall, output string) {
+	if isBashTool(p.name) {
+		command := bashCommandFromArgs(p.rawInput)
+		a.sendReplayUpdate(sessionID, p.assistantMsg, bashToolCallStart(p.id, p.name, p.rawInput, directory, command))
+		result := agentcore.AgentToolResult{Content: agentcore.ContentList{agentcore.NewTextContent(output)}}
+		a.sendReplayUpdate(sessionID, p.assistantMsg, bashToolCallEnd(p.id, p.name, false, result, directory, command, p.rawInput))
+		return
+	}
+	a.sendReplayUpdate(sessionID, p.assistantMsg, toolCallStart(p.id, p.name, p.rawInput))
+	a.sendReplayUpdate(sessionID, p.assistantMsg, toolCallEnd(p.id, p.name, false, output, p.rawInput))
 }
 
 func (a *HTTPAdapter) sendReplayUpdate(sessionID string, msg httpclient.Message, update map[string]any) {

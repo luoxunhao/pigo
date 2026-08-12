@@ -53,7 +53,7 @@ func TestReplayMessagesCarriesThinkingAndToolCalls(t *testing.T) {
 			Content:   []map[string]any{{"type": "text", "text": "# README"}},
 		},
 	}
-	adapter.replayMessages("s1", messages)
+	adapter.replayMessages("s1", `E:\ws`, messages)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -91,5 +91,56 @@ func TestReplayMessagesCarriesThinkingAndToolCalls(t *testing.T) {
 	}
 	if updates[3]["messageId"] != "a1" {
 		t.Fatalf("update[3] messageId = %v, want a1", updates[3]["messageId"])
+	}
+}
+
+func TestReplayBashToolIncludesCommand(t *testing.T) {
+	clientTransport, serverTransport := NewChannelPair()
+	adapter := NewHTTPAdapter(nil, serverTransport, "test")
+	messages := []httpclient.Message{
+		{
+			Id:      "a1",
+			Role:    "assistant",
+			Content: []map[string]any{{"type": "toolCall", "id": "call-bash", "name": "bash", "arguments": map[string]any{"command": "ls E:/ws"}}},
+		},
+		{
+			Id:      "r1",
+			Role:    "toolResult",
+			Content: []map[string]any{{"type": "text", "text": "src\ntests\n"}},
+		},
+	}
+	adapter.replayMessages("s1", `E:\ws`, messages)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var updates []map[string]any
+	for i := 0; i < 2; i++ {
+		msg, err := clientTransport.Recv(ctx)
+		if err != nil {
+			t.Fatalf("recv %d: %v", i, err)
+		}
+		var payload struct {
+			Update map[string]any `json:"update"`
+		}
+		if err := json.Unmarshal(msg.Notification.Params, &payload); err != nil {
+			t.Fatal(err)
+		}
+		updates = append(updates, payload.Update)
+	}
+	if updates[0]["sessionUpdate"] != "tool_call" || updates[0]["title"] != "ls E:/ws" {
+		t.Fatalf("update[0] = %+v, want bash tool_call with command title", updates[0])
+	}
+	meta, _ := updates[0]["_meta"].(map[string]any)
+	info, _ := meta["terminal_info"].(map[string]any)
+	if info["command"] != "ls E:/ws" || info["cwd"] != `E:\ws` {
+		t.Fatalf("terminal_info = %+v", info)
+	}
+	if updates[1]["sessionUpdate"] != "tool_call_update" || updates[1]["status"] != "completed" {
+		t.Fatalf("update[1] = %+v, want completed tool_call_update", updates[1])
+	}
+	endMeta, _ := updates[1]["_meta"].(map[string]any)
+	out, _ := endMeta["terminal_output"].(map[string]any)
+	if out["data"] != "src\ntests\n" {
+		t.Fatalf("terminal_output = %+v", out)
 	}
 }
