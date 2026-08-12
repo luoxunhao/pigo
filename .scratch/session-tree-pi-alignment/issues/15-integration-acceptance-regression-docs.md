@@ -24,3 +24,5 @@
 
 **Spec Reference:** `tasks/spec-session-tree-pi-alignment.md` §15, §16
 
+
+> 阻塞：Zed 手动验收需要用户在真实客户端执行（本机 Zed 已安装，CLI 只能打开项目，不能代替 agent 面板交互）。
