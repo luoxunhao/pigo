@@ -3,13 +3,16 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/httpapi/gen"
 )
@@ -171,6 +174,95 @@ func TestSessionLoadCloseDeleteStatus(t *testing.T) {
 	}
 	if apiErr := svc.Delete(created.SessionId, workspace); apiErr != nil {
 		t.Fatalf("Delete again should be idempotent: %v", apiErr)
+	}
+}
+
+func TestSessionMessagePaginationCoversAllEntries(t *testing.T) {
+	cleanupStores(t)
+	pigoHome := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "ws")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.SaveFileConfig(cfgPath, config.FileConfig{
+		Model: "test/provider",
+		Models: []config.ModelConfig{{
+			Provider: "test", ModelID: "provider", Name: "Provider",
+			BaseURL: "http://localhost", Protocol: "openai",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewSessionServiceWithConfig(pigoHome, cfgPath)
+	created, apiErr := svc.Create(gen.NewSessionRequest{Directory: workspace})
+	if apiErr != nil {
+		t.Fatalf("Create: %v", apiErr)
+	}
+	store, err := svc.storeFor(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var msgs agentcore.MessageList
+	for i := 0; i < 125; i++ {
+		msgs = append(msgs, agentcore.UserMessage{
+			RoleField: agentcore.RoleUser,
+			Content:   agentcore.ContentList{agentcore.NewTextContent(fmt.Sprintf("msg-%03d", i))},
+		})
+	}
+	if err := store.Append(created.SessionId, time.Now().UTC(), msgs); err != nil {
+		t.Fatal(err)
+	}
+
+	limit := 50
+	loaded, apiErr := svc.Load(created.SessionId, gen.LoadSessionRequest{
+		Directory: workspace,
+		Limit:     &limit,
+	})
+	if apiErr != nil {
+		t.Fatalf("Load: %v", apiErr)
+	}
+	seen := make([]bool, len(msgs))
+	mark := func(msgs []gen.Message) {
+		for _, m := range msgs {
+			if m.Seq != nil && *m.Seq >= 0 && *m.Seq < len(seen) {
+				seen[*m.Seq] = true
+			}
+		}
+	}
+	mark(loaded.Messages)
+
+	if loaded.NextCursor != nil {
+		before := *loaded.NextCursor
+		prev, apiErr := svc.Load(created.SessionId, gen.LoadSessionRequest{
+			Directory: workspace,
+			Before:    &before,
+			Limit:     &limit,
+		})
+		if apiErr != nil {
+			t.Fatalf("Load(before=%s): %v", before, apiErr)
+		}
+		mark(prev.Messages)
+		if prev.NextCursor == nil || prev.HasMore != true {
+			t.Fatalf("second page = %+v, want more pages", prev)
+		}
+	}
+
+	cursor := loaded.NextCursor
+	for cursor != nil {
+		page, apiErr := svc.Messages(created.SessionId, workspace, *cursor, limit)
+		if apiErr != nil {
+			t.Fatalf("Messages(%s): %v", *cursor, apiErr)
+		}
+		mark(page.Messages)
+		cursor = page.NextCursor
+	}
+
+	for i, ok := range seen {
+		if !ok {
+			t.Fatalf("entry %d was not returned by pagination", i)
+		}
 	}
 }
 

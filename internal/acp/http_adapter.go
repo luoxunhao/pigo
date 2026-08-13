@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -20,10 +21,10 @@ type HTTPAdapter struct {
 	transport Transport
 	version   string
 
-	mu      sync.Mutex
-	dirs    map[string]string
-	cursors map[string]int64
-	tree    map[string]sessionTreeState
+	mu          sync.Mutex
+	dirs        map[string]string
+	cursors     map[string]int64
+	tree        map[string]sessionTreeState
 	treeEnabled bool
 }
 
@@ -646,10 +647,10 @@ func (a *HTTPAdapter) sendAvailableCommands(directory, sessionID string) {
 }
 
 func (a *HTTPAdapter) replayAll(ctx context.Context, sessionID, directory string, messages []httpclient.Message, nextCursor *string, hasMore bool) {
+	pages := [][]httpclient.Message{messages}
 	for {
-		a.replayMessages(sessionID, directory, messages)
 		if !hasMore || nextCursor == nil {
-			return
+			break
 		}
 		limit := 50
 		resp, err := a.client.GetSessionMessagesWithResponse(ctx, sessionID, &httpclient.GetSessionMessagesParams{
@@ -658,12 +659,18 @@ func (a *HTTPAdapter) replayAll(ctx context.Context, sessionID, directory string
 			Limit:     &limit,
 		})
 		if err != nil || resp.JSON200 == nil {
-			return
+			break
 		}
-		messages = resp.JSON200.Messages
+		pages = append(pages, resp.JSON200.Messages)
 		nextCursor = resp.JSON200.NextCursor
 		hasMore = resp.JSON200.HasMore
 	}
+	slices.Reverse(pages)
+	all := make([]httpclient.Message, 0, len(pages)*50)
+	for _, page := range pages {
+		all = append(all, page...)
+	}
+	a.replayMessages(sessionID, directory, all)
 }
 
 type pendingToolCall struct {
@@ -907,10 +914,10 @@ func (a *HTTPAdapter) refreshTree(ctx context.Context, sessionID, directory stri
 	a.tree[sessionID] = st
 	a.mu.Unlock()
 	update := map[string]any{
-		"sessionUpdate":  "session_info_update",
-		"currentLeafId":  st.CurrentLeafID,
-		"currentLane":    st.CurrentLane,
-		"lanes":          st.Lanes,
+		"sessionUpdate": "session_info_update",
+		"currentLeafId": st.CurrentLeafID,
+		"currentLane":   st.CurrentLane,
+		"lanes":         st.Lanes,
 	}
 	payload := sessionUpdatePayload(sessionID, update)
 	a.attachTreeMeta(sessionID, payload, nil)

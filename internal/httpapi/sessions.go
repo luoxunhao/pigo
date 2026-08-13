@@ -151,10 +151,10 @@ func (s *SessionService) List(directory, before string, limit int, includeSubage
 		title := m.SessionName
 		updatedAt := m.LastActiveAt.Format(time.RFC3339)
 		sessions = append(sessions, gen.SessionSummary{
-			SessionId: m.SessionID,
-			Directory: m.WorkspacePath,
-			Title:     &title,
-			UpdatedAt: &updatedAt,
+			SessionId:        m.SessionID,
+			Directory:        m.WorkspacePath,
+			Title:            &title,
+			UpdatedAt:        &updatedAt,
 			ParentSessionId:  optString(m.ParentSessionID),
 			ParentToolCallId: optString(m.ParentToolCallID),
 			SubagentType:     optString(m.SubagentType),
@@ -198,15 +198,11 @@ func (s *SessionService) Load(sessionID string, req gen.LoadSessionRequest) (gen
 	if limit > 200 {
 		limit = 200
 	}
-	offset := 0
+	end := len(proj.Entries)
 	if req.Before != nil && *req.Before != "" {
-		if n, convErr := strconv.Atoi(*req.Before); convErr == nil && n > 0 {
-			offset = n
+		if n, convErr := strconv.Atoi(*req.Before); convErr == nil && n >= 0 && n <= len(proj.Entries) {
+			end = n
 		}
-	}
-	end := len(proj.Entries) - offset
-	if end < 0 {
-		end = 0
 	}
 	start := end - limit
 	if start < 0 {
@@ -257,15 +253,11 @@ func (s *SessionService) Messages(sessionID, directory, before string, limit int
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	offset := 0
+	end := len(proj.Entries)
 	if before != "" {
-		if n, convErr := strconv.Atoi(before); convErr == nil && n > 0 {
-			offset = n
+		if n, convErr := strconv.Atoi(before); convErr == nil && n >= 0 && n <= len(proj.Entries) {
+			end = n
 		}
-	}
-	end := len(proj.Entries) - offset
-	if end < 0 {
-		end = 0
 	}
 	start := end - limit
 	if start < 0 {
@@ -493,10 +485,10 @@ func defaultModes() []gen.Mode {
 
 func (s *SessionService) sessionResponse(id, directory, model, mode string, cfg config.FileConfig) gen.Session {
 	return gen.Session{
-		SessionId:       id,
-		Directory:       directory,
-		ConfigOptions:   sessionConfigOptions(cfg, model, mode),
-		AvailableModes:  []gen.Mode{{Id: "build", Name: "Build", Description: "Default mode"}},
+		SessionId:         id,
+		Directory:         directory,
+		ConfigOptions:     sessionConfigOptions(cfg, model, mode),
+		AvailableModes:    []gen.Mode{{Id: "build", Name: "Build", Description: "Default mode"}},
 		AvailableCommands: []gen.AvailableCommand{},
 	}
 }
