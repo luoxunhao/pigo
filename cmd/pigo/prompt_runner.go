@@ -156,15 +156,21 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 
 		var history agentcore.MessageList
 		store, storeErr := sessionstore.OpenForWorkspace(pigoHome, run.Directory)
+		if storeErr != nil {
+			return gen.PromptResponse{}, fmt.Errorf("open session store: %w", storeErr)
+		}
 		var header session.SessionHeader
 		curLeaf := ""
-		if storeErr == nil {
-			header, _ = store.Header(run.SessionID)
-			if proj, projErr := store.Projection(run.SessionID, ""); projErr == nil {
-				history = proj.Messages
-				curLeaf = proj.LeafID
-			}
+		header, headerErr := store.Header(run.SessionID)
+		if headerErr != nil {
+			return gen.PromptResponse{}, fmt.Errorf("session %q not found: %w", run.SessionID, headerErr)
 		}
+		proj, projErr := store.Projection(run.SessionID, "")
+		if projErr != nil {
+			return gen.PromptResponse{}, fmt.Errorf("load session %q: %w", run.SessionID, projErr)
+		}
+		history = proj.Messages
+		curLeaf = proj.LeafID
 		isFirstPrompt := len(history) == 0
 
 		var partialText, partialThought string

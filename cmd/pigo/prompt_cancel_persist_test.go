@@ -225,6 +225,73 @@ func TestInterruptedTurnMessagesDropsDanglingToolCalls(t *testing.T) {
 	}
 }
 
+func TestPromptUnknownSessionReturnsErrorWithoutProviderCall(t *testing.T) {
+	t.Setenv("PIGO_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	cleanupStores(t)
+
+	called := make(chan struct{}, 1)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case called <- struct{}{}:
+		default:
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `data: {"id":"c1","model":"fake","choices":[{"delta":{"content":"fake"}}]}`+"\n\n")
+	}))
+	defer provider.Close()
+
+	cfgPath := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "pigo", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveFileConfig(cfgPath, config.FileConfig{
+		Model: "test/fake",
+		Models: []config.ModelConfig{{
+			Provider: "test", ModelID: "fake", Name: "Fake",
+			BaseURL: provider.URL, APIKey: "sk-fake", Protocol: "openai",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	httpCfg, err := httpServeConfig(cliOptions{
+		model:         "test/fake",
+		noTools:       true,
+		noSkills:      true,
+		thinkingLevel: "off",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := httpapi.NewRouter(httpCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	body, _ := json.Marshal(map[string]any{
+		"directory": t.TempDir(),
+		"prompt":    []map[string]any{{"type": "text", "text": "hi"}},
+	})
+	resp, err := http.Post(ts.URL+"/api/v1/session/unknown-session/prompt", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 400 {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("unknown session prompt status = %d, want error; body=%s", resp.StatusCode, data)
+	}
+	select {
+	case <-called:
+		t.Fatal("provider must not be called for an unknown session")
+	default:
+	}
+}
+
 func postJSON(t *testing.T, url string, body any) map[string]any {
 	t.Helper()
 	raw, err := json.Marshal(body)
