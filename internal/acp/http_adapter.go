@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -439,6 +440,9 @@ func (a *HTTPAdapter) streamEvents(ctx context.Context, sessionID string) {
 		if ctx.Err() != nil {
 			return
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "pigo: stream events: %v\n", err)
 	}
 }
 

@@ -258,6 +258,9 @@ func (s *runSession) drainEventStream(ctx context.Context, resp *http.Response, 
 			return false
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "pigo: stream drain: %v\n", err)
+	}
 	return false
 }
 
