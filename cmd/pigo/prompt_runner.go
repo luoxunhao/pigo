@@ -167,7 +167,16 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 		}
 		isFirstPrompt := len(history) == 0
 
+		var partialText, partialThought string
 		onEvent := func(ev agentcore.AgentEvent) {
+			if me, ok := ev.(agentcore.MessageUpdateEvent); ok {
+				switch se := me.AssistantMessageEvent.(type) {
+				case provider.StreamTextEvent:
+					partialText = agentcore.ContentToText(se.Partial.Content)
+				case provider.StreamThinkingEvent:
+					partialThought = thinkingText(se.Partial.Content)
+				}
+			}
 			mapper.publish(run.SessionID, run.MessageID, run.Publish, ev)
 		}
 		onCompaction := func(ctx context.Context, res *compaction.CompactionResult) error {
@@ -178,10 +187,7 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 			return err
 		}
 		msgs, last, err := runner.RunWithTools(ctx, run.Text, nil, history, env.SysPrompt, env.Tools, model, thinking, run.BeforeToolCall, onEvent, acp.TurnHooks{OnCompaction: onCompaction})
-		if err != nil {
-			return gen.PromptResponse{}, err
-		}
-		if store != nil && len(msgs) > 0 {
+		if store != nil && (len(msgs) > 0 || err != nil) {
 			tail := msgs
 			if len(history) > 0 && len(msgs) >= len(history) {
 				tail = msgs[len(history):]
@@ -192,30 +198,60 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 			header.SystemPrompt = env.SysPrompt
 			header.Cwd = run.Directory
 			header.UpdatedAt = time.Now().UTC()
-			if len(msgs) < len(history) {
-				_ = store.Save(header, msgs)
-				curLeaf = ""
-			} else {
-				_, _ = store.AppendBranch(run.SessionID, header, curLeaf, tail)
-			}
-			if meta, metaErr := store.LoadMetadata(run.SessionID); metaErr == nil {
-				meta.ModelName = model
-				meta.LastActiveAt = header.UpdatedAt
-				_ = store.SaveMetadata(meta)
-			}
-			if isFirstPrompt {
-				if prov, provName, apiKey, wireModel, resolveErr := runner.ResolveForModel(model); resolveErr == nil {
-					_ = sessiontitle.AutoTitle(ctx, store, run.SessionID, run.Text,
-						provider.StreamFnFromProvider(prov),
-						provider.Model{Provider: provName, ID: wireModel},
-						provider.StreamConfig{APIKey: apiKey, ThinkingLevel: agentcore.ThinkingLevel(thinking)},
-						func(title string) {
-							run.Publish("session.updated", map[string]any{
-								"title":     title,
-								"updatedAt": time.Now().UTC().Format(time.RFC3339),
-							})
-						})
+			if err != nil {
+				// A cancelled/aborted/failed run must not erase the user's
+				// prompt and partial answer from the conversation: persist them
+				// so the next turn still has the context it was asked about.
+				turn := interruptedTurnMessages(run.Text, tail)
+				if len(turn) == 1 && (partialText != "" || partialThought != "") {
+					content := agentcore.ContentList{}
+					if partialThought != "" {
+						content = append(content, agentcore.NewThinkingContent(partialThought))
+					}
+					if partialText != "" {
+						content = append(content, agentcore.NewTextContent(partialText))
+					}
+					turn = append(turn, agentcore.AssistantMessage{
+						RoleField:  agentcore.RoleAssistant,
+						Content:    content,
+						StopReason: agentcore.StopReasonAborted,
+					})
 				}
+				if len(turn) > 0 {
+					if _, appendErr := store.AppendBranch(run.SessionID, header, curLeaf, turn); appendErr != nil {
+						return gen.PromptResponse{}, appendErr
+					}
+					updateSessionMeta(store, run.SessionID, model, header.UpdatedAt)
+				}
+			} else if len(msgs) > 0 {
+				if len(msgs) < len(history) {
+					if saveErr := store.Save(header, msgs); saveErr != nil {
+						return gen.PromptResponse{}, saveErr
+					}
+					curLeaf = ""
+				} else {
+					if _, appendErr := store.AppendBranch(run.SessionID, header, curLeaf, tail); appendErr != nil {
+						return gen.PromptResponse{}, appendErr
+					}
+				}
+				updateSessionMeta(store, run.SessionID, model, header.UpdatedAt)
+			}
+		}
+		if err != nil {
+			return gen.PromptResponse{}, err
+		}
+		if store != nil && len(msgs) > 0 && isFirstPrompt {
+			if prov, provName, apiKey, wireModel, resolveErr := runner.ResolveForModel(model); resolveErr == nil {
+				_ = sessiontitle.AutoTitle(ctx, store, run.SessionID, run.Text,
+					provider.StreamFnFromProvider(prov),
+					provider.Model{Provider: provName, ID: wireModel},
+					provider.StreamConfig{APIKey: apiKey, ThinkingLevel: agentcore.ThinkingLevel(thinking)},
+					func(title string) {
+						run.Publish("session.updated", map[string]any{
+							"title":     title,
+							"updatedAt": time.Now().UTC().Format(time.RFC3339),
+						})
+					})
 			}
 		}
 		reply := ""
@@ -404,6 +440,56 @@ func (m *serveEventMapper) publish(sessionID, messageID string, publish func(str
 				"size": e.ContextWindow,
 			},
 		})
+	}
+}
+
+func interruptedTurnMessages(text string, msgs agentcore.MessageList) agentcore.MessageList {
+	var out agentcore.MessageList
+	if text != "" {
+		out = append(out, agentcore.UserMessage{
+			RoleField: agentcore.RoleUser,
+			Content:   agentcore.ContentList{agentcore.NewTextContent(text)},
+		})
+	} else {
+		for _, m := range msgs {
+			if u, ok := m.(agentcore.UserMessage); ok {
+				out = append(out, u)
+				break
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+
+	var content agentcore.ContentList
+	for _, m := range msgs {
+		a, ok := m.(agentcore.AssistantMessage)
+		if !ok {
+			continue
+		}
+		for _, c := range a.Content {
+			switch c.(type) {
+			case agentcore.TextContent, agentcore.ThinkingContent:
+				content = append(content, c)
+			}
+		}
+	}
+	if len(content) > 0 {
+		out = append(out, agentcore.AssistantMessage{
+			RoleField:  agentcore.RoleAssistant,
+			Content:    content,
+			StopReason: agentcore.StopReasonAborted,
+		})
+	}
+	return out
+}
+
+func updateSessionMeta(store *sessionstore.Store, sessionID, model string, updatedAt time.Time) {
+	if meta, err := store.LoadMetadata(sessionID); err == nil {
+		meta.ModelName = model
+		meta.LastActiveAt = updatedAt
+		_ = store.SaveMetadata(meta)
 	}
 }
 
