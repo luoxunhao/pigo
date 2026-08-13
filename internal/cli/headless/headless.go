@@ -21,6 +21,7 @@ import (
 	"github.com/smallnest/pigo/internal/plugin"
 	"github.com/smallnest/pigo/internal/provider"
 	"github.com/smallnest/pigo/internal/runtime"
+	"github.com/smallnest/pigo/internal/sessiontitle"
 )
 
 // RunParams carries the resolved inputs for one headless run. Mode and Env are
@@ -66,6 +67,7 @@ func Run(ctx context.Context, p RunParams, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "pigo: %v\n", err)
 		return 1
 	}
+	isFirstPrompt := len(priorMsgs) == 0
 	messages := append(priorMsgs, agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: promptContent})
 	agentCtx := &agentcore.AgentContext{
 		SystemPrompt: hs.header.SystemPrompt,
@@ -142,6 +144,16 @@ func Run(ctx context.Context, p RunParams, out, errOut io.Writer) int {
 	// error.
 	if perr := hs.persist(agentCtx); perr != nil {
 		fmt.Fprintf(errOut, "pigo: warning: could not persist session %s: %v\n", hs.header.ID, perr)
+	} else if isFirstPrompt {
+		apiKey := ""
+		if creds != nil {
+			apiKey = creds.GetAPIKey(context.Background(), env.ProviderName)
+		}
+		_ = sessiontitle.AutoTitle(context.Background(), hs.store, hs.header.ID, headlessPrompt,
+			provider.StreamFnFromProvider(env.Provider),
+			provider.Model{Provider: env.ProviderName, ID: run.WireModel(p.Model)},
+			provider.StreamConfig{APIKey: apiKey, ThinkingLevel: thinking},
+			nil)
 	}
 	if runErr != nil {
 		fmt.Fprintf(errOut, "pigo: %v\n", runErr)

@@ -3,6 +3,9 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -142,5 +145,156 @@ func TestReplayBashToolIncludesCommand(t *testing.T) {
 	out, _ := endMeta["terminal_output"].(map[string]any)
 	if out["data"] != "src\ntests\n" {
 		t.Fatalf("terminal_output = %+v", out)
+	}
+}
+
+func TestReplayAllFollowsServerCursorContract(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		before := r.URL.Query().Get("before")
+		var msgs []httpclient.Message
+		hasMore := false
+		next := ""
+		switch before {
+		case "50":
+			for i := 25; i < 50; i++ {
+				msgs = append(msgs, replayCursorMessage(i))
+			}
+			hasMore = true
+			next = "25"
+		case "25":
+			for i := 0; i < 25; i++ {
+				msgs = append(msgs, replayCursorMessage(i))
+			}
+		default:
+			t.Errorf("unexpected before cursor %q", before)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		body := map[string]any{"messages": msgs, "hasMore": hasMore}
+		if next != "" {
+			body["nextCursor"] = next
+		}
+		_ = json.NewEncoder(w).Encode(body)
+	}))
+	defer server.Close()
+
+	client, err := httpclient.NewClientWithResponses(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientTransport, serverTransport := NewChannelPair()
+	adapter := NewHTTPAdapter(client, serverTransport, "test")
+
+	var latest []httpclient.Message
+	for i := 50; i < 100; i++ {
+		latest = append(latest, replayCursorMessage(i))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	next := "50"
+	adapter.replayAll(ctx, "s1", `E:\ws`, latest, &next, true)
+
+	var texts []string
+	for len(texts) < 100 {
+		msg, err := clientTransport.Recv(ctx)
+		if err != nil {
+			t.Fatalf("recv: %v (got %d texts)", err, len(texts))
+		}
+		if msg.Notification == nil || msg.Notification.Method != NotificationSessionUpdate {
+			continue
+		}
+		var payload struct {
+			Update map[string]any `json:"update"`
+		}
+		if err := json.Unmarshal(msg.Notification.Params, &payload); err != nil {
+			continue
+		}
+		if payload.Update["sessionUpdate"] != "user_message_chunk" {
+			continue
+		}
+		content, _ := payload.Update["content"].(map[string]any)
+		text, _ := content["text"].(string)
+		texts = append(texts, text)
+	}
+	if len(texts) != 100 {
+		t.Fatalf("replayed %d messages, want 100", len(texts))
+	}
+	for i, text := range texts {
+		if want := fmt.Sprintf("msg-%03d", i); text != want {
+			t.Fatalf("replayed[%d] = %q, want %q", i, text, want)
+		}
+	}
+}
+
+func TestReplayAllPairsToolCallAcrossPages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"messages": []httpclient.Message{{
+				Id:      "older-assistant",
+				Role:    "assistant",
+				Content: []map[string]any{{"type": "toolCall", "id": "call-1", "name": "bash", "arguments": map[string]any{"command": "ls"}}},
+			}},
+			"hasMore": false,
+		})
+	}))
+	defer server.Close()
+
+	client, err := httpclient.NewClientWithResponses(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientTransport, serverTransport := NewChannelPair()
+	adapter := NewHTTPAdapter(client, serverTransport, "test")
+	latest := []httpclient.Message{{
+		Id:      "newer-result",
+		Role:    "toolResult",
+		Content: []map[string]any{{"type": "text", "text": "OK"}},
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	next := "50"
+	adapter.replayAll(ctx, "s1", `E:\ws`, latest, &next, true)
+
+	var sawStart, sawEnd bool
+	for !sawStart || !sawEnd {
+		msg, err := clientTransport.Recv(ctx)
+		if err != nil {
+			t.Fatalf("recv: %v (start=%v end=%v)", err, sawStart, sawEnd)
+		}
+		if msg.Notification == nil || msg.Notification.Method != NotificationSessionUpdate {
+			continue
+		}
+		var payload struct {
+			Update map[string]any `json:"update"`
+		}
+		if err := json.Unmarshal(msg.Notification.Params, &payload); err != nil {
+			continue
+		}
+		u := payload.Update
+		switch u["sessionUpdate"] {
+		case "tool_call":
+			if u["toolCallId"] == "call-1" {
+				sawStart = true
+			}
+		case "tool_call_update":
+			if u["toolCallId"] == "call-1" && u["status"] == "completed" {
+				meta, _ := u["_meta"].(map[string]any)
+				out, _ := meta["terminal_output"].(map[string]any)
+				if out["data"] == "OK" {
+					sawEnd = true
+				}
+			}
+		}
+	}
+}
+
+func replayCursorMessage(i int) httpclient.Message {
+	return httpclient.Message{
+		Id:   fmt.Sprintf("m%d", i),
+		Role: "user",
+		Seq:  &i,
+		Content: []map[string]any{
+			{"type": "text", "text": fmt.Sprintf("msg-%03d", i)},
+		},
 	}
 }

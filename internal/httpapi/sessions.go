@@ -187,10 +187,6 @@ func (s *SessionService) Load(sessionID string, req gen.LoadSessionRequest) (gen
 			return gen.SessionLoadResult{}, apiErr
 		}
 	}
-	proj, err := store.Projection(sessionID, "")
-	if err != nil {
-		return gen.SessionLoadResult{}, Internal(err.Error())
-	}
 	limit := 50
 	if req.Limit != nil && *req.Limit > 0 {
 		limit = *req.Limit
@@ -198,25 +194,22 @@ func (s *SessionService) Load(sessionID string, req gen.LoadSessionRequest) (gen
 	if limit > 200 {
 		limit = 200
 	}
-	end := len(proj.Entries)
+	end := 0
 	if req.Before != nil && *req.Before != "" {
-		if n, convErr := strconv.Atoi(*req.Before); convErr == nil && n >= 0 && n <= len(proj.Entries) {
+		if n, convErr := strconv.Atoi(*req.Before); convErr == nil && n >= 0 {
 			end = n
 		}
 	}
-	start := end - limit
-	if start < 0 {
-		start = 0
+	var win *sessionstore.ProjectionWindow
+	if req.FullHistory != nil && *req.FullHistory {
+		win, err = store.HistoryWindow(sessionID, end, limit)
+	} else {
+		win, err = store.ProjectionWindow(sessionID, end, limit)
 	}
-	messages := make([]gen.Message, 0, end-start)
-	for i, e := range proj.Entries[start:end] {
-		messages = append(messages, v4EntryToDomainMessage(e, start+i, proj.Lane))
+	if err != nil {
+		return gen.SessionLoadResult{}, Internal(err.Error())
 	}
-	var next *string
-	if start > 0 && len(messages) > 0 {
-		v := strconv.Itoa(start)
-		next = &v
-	}
+	messages, next := messagesFromWindow(win)
 	cfg, cfgErr := config.LoadFileConfig(s.configPath)
 	if cfgErr != nil {
 		return gen.SessionLoadResult{}, Internal(cfgErr.Error())
@@ -226,16 +219,16 @@ func (s *SessionService) Load(sessionID string, req gen.LoadSessionRequest) (gen
 		Directory:     req.Directory,
 		ConfigOptions: sessionConfigOptions(cfg, meta.ModelName, "build"),
 		Messages:      messages,
-		HasMore:       start > 0,
+		HasMore:       win.Start > 0,
 		NextCursor:    next,
-		CurrentLeafId: optString(proj.LeafID),
-		CurrentLane:   optString(proj.Lane),
-		Lanes:         lanesToGen(proj.Lanes),
+		CurrentLeafId: optString(win.LeafID),
+		CurrentLane:   optString(win.Lane),
+		Lanes:         lanesToGen(win.Lanes),
 	}, nil
 }
 
 // Messages returns a paginated message window.
-func (s *SessionService) Messages(sessionID, directory, before string, limit int) (gen.MessageListResult, *APIError) {
+func (s *SessionService) Messages(sessionID, directory, before string, limit int, fullHistory bool) (gen.MessageListResult, *APIError) {
 	if directory == "" || !filepath.IsAbs(directory) {
 		return gen.MessageListResult{}, InvalidParams("directory must be an absolute path")
 	}
@@ -246,33 +239,39 @@ func (s *SessionService) Messages(sessionID, directory, before string, limit int
 	if _, err := store.LoadMetadata(sessionID); err != nil {
 		return gen.MessageListResult{}, NotFound(CodeSessionNotFound, "session not found: "+sessionID)
 	}
-	proj, err := store.Projection(sessionID, "")
-	if err != nil {
-		return gen.MessageListResult{}, Internal(err.Error())
-	}
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	end := len(proj.Entries)
+	end := 0
 	if before != "" {
-		if n, convErr := strconv.Atoi(before); convErr == nil && n >= 0 && n <= len(proj.Entries) {
+		if n, convErr := strconv.Atoi(before); convErr == nil && n >= 0 {
 			end = n
 		}
 	}
-	start := end - limit
-	if start < 0 {
-		start = 0
+	var win *sessionstore.ProjectionWindow
+	if fullHistory {
+		win, err = store.HistoryWindow(sessionID, end, limit)
+	} else {
+		win, err = store.ProjectionWindow(sessionID, end, limit)
 	}
-	messages := make([]gen.Message, 0, end-start)
-	for i, e := range proj.Entries[start:end] {
-		messages = append(messages, v4EntryToDomainMessage(e, start+i, proj.Lane))
+	if err != nil {
+		return gen.MessageListResult{}, Internal(err.Error())
+	}
+	messages, next := messagesFromWindow(win)
+	return gen.MessageListResult{Messages: messages, HasMore: win.Start > 0, NextCursor: next}, nil
+}
+
+func messagesFromWindow(win *sessionstore.ProjectionWindow) ([]gen.Message, *string) {
+	messages := make([]gen.Message, 0, len(win.Entries))
+	for i, e := range win.Entries {
+		messages = append(messages, v4EntryToDomainMessage(e, win.Start+i, win.Lane))
 	}
 	var next *string
-	if start > 0 && len(messages) > 0 {
-		v := strconv.Itoa(start)
+	if win.Start > 0 && len(messages) > 0 {
+		v := strconv.Itoa(win.Start)
 		next = &v
 	}
-	return gen.MessageListResult{Messages: messages, HasMore: start > 0, NextCursor: next}, nil
+	return messages, next
 }
 
 // Delete removes a session idempotently.

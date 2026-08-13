@@ -26,6 +26,8 @@ type HTTPAdapter struct {
 	cursors     map[string]int64
 	tree        map[string]sessionTreeState
 	treeEnabled bool
+	afterMu     sync.Mutex
+	after       map[string][]func()
 }
 
 type sessionTreeState struct {
@@ -36,7 +38,7 @@ type sessionTreeState struct {
 
 // NewHTTPAdapter builds an adapter over a serve HTTP client.
 func NewHTTPAdapter(client *httpclient.ClientWithResponses, transport Transport, version string) *HTTPAdapter {
-	return &HTTPAdapter{client: client, transport: transport, version: version, dirs: make(map[string]string), cursors: make(map[string]int64), tree: make(map[string]sessionTreeState)}
+	return &HTTPAdapter{client: client, transport: transport, version: version, dirs: make(map[string]string), cursors: make(map[string]int64), tree: make(map[string]sessionTreeState), after: make(map[string][]func())}
 }
 
 func (a *HTTPAdapter) directory(sessionID string) (string, bool) {
@@ -113,6 +115,25 @@ func (a *HTTPAdapter) HandleNotification(ctx context.Context, method string, par
 	_, _ = a.client.CancelSessionPromptWithResponse(ctx, req.SessionID)
 }
 
+// AfterResponse runs side effects deferred until the current response has been
+// delivered, so clients never receive session notifications before they know
+// the session id.
+func (a *HTTPAdapter) AfterResponse(method string) {
+	a.afterMu.Lock()
+	fns := a.after[method]
+	delete(a.after, method)
+	a.afterMu.Unlock()
+	for _, fn := range fns {
+		fn()
+	}
+}
+
+func (a *HTTPAdapter) deferAfterResponse(method string, fn func()) {
+	a.afterMu.Lock()
+	a.after[method] = append(a.after[method], fn)
+	a.afterMu.Unlock()
+}
+
 func (a *HTTPAdapter) initialize(params json.RawMessage) map[string]any {
 	var req struct {
 		ClientCapabilities struct {
@@ -179,7 +200,9 @@ func (a *HTTPAdapter) sessionNew(ctx context.Context, params json.RawMessage) (a
 		return nil, NewError(CodeInternalError, "session/new failed")
 	}
 	a.remember(resp.JSON200.SessionId, req.Cwd)
-	go a.sendAvailableCommands(req.Cwd, resp.JSON200.SessionId)
+	a.deferAfterResponse(MethodSessionNew, func() {
+		a.sendAvailableCommands(req.Cwd, resp.JSON200.SessionId)
+	})
 	modes := a.modesState()
 	return map[string]any{
 		"sessionId":     resp.JSON200.SessionId,
@@ -200,18 +223,22 @@ func (a *HTTPAdapter) sessionLoad(ctx context.Context, params json.RawMessage) (
 		return nil, NewError(CodeInvalidParams, "missing sessionId or cwd")
 	}
 	limit := 50
+	fullHistory := true
 	resp, err := a.client.LoadSessionWithResponse(ctx, req.SessionID, httpclient.LoadSessionJSONRequestBody{
-		Directory: req.Cwd,
-		Limit:     &limit,
-		LeafId:    req.LeafID,
+		Directory:   req.Cwd,
+		Limit:       &limit,
+		LeafId:      req.LeafID,
+		FullHistory: &fullHistory,
 	})
 	if err != nil || resp.JSON200 == nil {
 		return nil, NewError(CodeInternalError, "session/load failed")
 	}
 	a.remember(req.SessionID, req.Cwd)
 	a.replayAll(ctx, req.SessionID, req.Cwd, resp.JSON200.Messages, resp.JSON200.NextCursor, resp.JSON200.HasMore)
-	go a.sendAvailableCommands(req.Cwd, req.SessionID)
-	a.refreshTree(ctx, req.SessionID, req.Cwd)
+	a.deferAfterResponse(MethodSessionLoad, func() {
+		a.sendAvailableCommands(req.Cwd, req.SessionID)
+		a.refreshTree(context.Background(), req.SessionID, req.Cwd)
+	})
 	return map[string]any{
 		"sessionId":     req.SessionID,
 		"configOptions": resp.JSON200.ConfigOptions,
@@ -647,30 +674,50 @@ func (a *HTTPAdapter) sendAvailableCommands(directory, sessionID string) {
 }
 
 func (a *HTTPAdapter) replayAll(ctx context.Context, sessionID, directory string, messages []httpclient.Message, nextCursor *string, hasMore bool) {
-	pages := [][]httpclient.Message{messages}
-	for {
-		if !hasMore || nextCursor == nil {
-			break
+	state := &replayState{}
+	defer state.flush(sessionID, directory, a)
+
+	if hasMore && nextCursor != nil {
+		var cursors []string
+		cur := *nextCursor
+		for {
+			cursors = append(cursors, cur)
+			limit := replayPageSize
+			resp, err := a.client.GetSessionMessagesWithResponse(ctx, sessionID, &httpclient.GetSessionMessagesParams{
+				Directory:   directory,
+				Before:      &cur,
+				Limit:       &limit,
+				FullHistory: boolPtr(true),
+			})
+			if err != nil || resp.JSON200 == nil || resp.JSON200.NextCursor == nil || !resp.JSON200.HasMore {
+				break
+			}
+			next := *resp.JSON200.NextCursor
+			if next == cur {
+				break
+			}
+			cur = next
 		}
-		limit := 50
-		resp, err := a.client.GetSessionMessagesWithResponse(ctx, sessionID, &httpclient.GetSessionMessagesParams{
-			Directory: directory,
-			Before:    nextCursor,
-			Limit:     &limit,
-		})
-		if err != nil || resp.JSON200 == nil {
-			break
+		slices.Reverse(cursors)
+		for _, before := range cursors {
+			limit := replayPageSize
+			resp, err := a.client.GetSessionMessagesWithResponse(ctx, sessionID, &httpclient.GetSessionMessagesParams{
+				Directory:   directory,
+				Before:      &before,
+				Limit:       &limit,
+				FullHistory: boolPtr(true),
+			})
+			if err != nil || resp.JSON200 == nil {
+				break
+			}
+			a.replayMessagesInto(state, sessionID, directory, resp.JSON200.Messages)
 		}
-		pages = append(pages, resp.JSON200.Messages)
-		nextCursor = resp.JSON200.NextCursor
-		hasMore = resp.JSON200.HasMore
 	}
-	slices.Reverse(pages)
-	all := make([]httpclient.Message, 0, len(pages)*50)
-	for _, page := range pages {
-		all = append(all, page...)
-	}
-	a.replayMessages(sessionID, directory, all)
+	a.replayMessagesInto(state, sessionID, directory, messages)
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }
 
 type pendingToolCall struct {
@@ -680,16 +727,34 @@ type pendingToolCall struct {
 	assistantMsg httpclient.Message
 }
 
+const replayPageSize = 50
+
+type replayState struct {
+	pending []pendingToolCall
+}
+
+func (s *replayState) flush(sessionID, directory string, a *HTTPAdapter) {
+	for _, p := range s.pending {
+		a.sendReplayToolCall(sessionID, directory, p, "")
+	}
+	s.pending = nil
+}
+
 func (a *HTTPAdapter) replayMessages(sessionID, directory string, messages []httpclient.Message) {
-	var pending []pendingToolCall
+	state := &replayState{}
+	a.replayMessagesInto(state, sessionID, directory, messages)
+	state.flush(sessionID, directory, a)
+}
+
+func (a *HTTPAdapter) replayMessagesInto(state *replayState, sessionID, directory string, messages []httpclient.Message) {
 	for _, msg := range messages {
 		if msg.Role == "compaction" || msg.Role == "branch_summary" {
 			continue
 		}
 		if msg.Role == "toolResult" {
-			if len(pending) > 0 {
-				p := pending[0]
-				pending = pending[1:]
+			if len(state.pending) > 0 {
+				p := state.pending[0]
+				state.pending = state.pending[1:]
 				output := messageText(msg)
 				a.sendReplayToolCall(sessionID, directory, p, output)
 			}
@@ -725,7 +790,7 @@ func (a *HTTPAdapter) replayMessages(sessionID, directory string, messages []htt
 				if id == "" || name == "" {
 					continue
 				}
-				pending = append(pending, pendingToolCall{
+				state.pending = append(state.pending, pendingToolCall{
 					id:           id,
 					name:         name,
 					rawInput:     block["arguments"],
@@ -733,9 +798,6 @@ func (a *HTTPAdapter) replayMessages(sessionID, directory string, messages []htt
 				})
 			}
 		}
-	}
-	for _, p := range pending {
-		a.sendReplayToolCall(sessionID, directory, p, "")
 	}
 }
 

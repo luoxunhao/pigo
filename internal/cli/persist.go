@@ -5,9 +5,16 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
+
+	"github.com/smallnest/pigo/internal/agentcore"
+	"github.com/smallnest/pigo/internal/cli/run"
+	"github.com/smallnest/pigo/internal/provider"
+	"github.com/smallnest/pigo/internal/sessiontitle"
 )
 
 // PersistTurn appends the messages produced since the last persist as a new
@@ -41,6 +48,7 @@ func PersistTurn(out io.Writer, h Host) {
 	if len(tail) == 0 {
 		return
 	}
+	firstPersist := h.Persisted() == 0
 	header := h.Header()
 	header.UpdatedAt = time.Now().UTC()
 	leaf, err := h.Store().AppendBranch(header.ID, header, h.CurLeaf(), tail)
@@ -50,4 +58,33 @@ func PersistTurn(out io.Writer, h Host) {
 	}
 	h.SetCurLeaf(leaf)
 	h.SetPersisted(len(agentCtx.Messages))
+	if firstPersist {
+		for _, m := range tail {
+			if u, ok := m.(agentcore.UserMessage); ok {
+				if text := strings.TrimSpace(agentcore.ContentToText(u.Content)); text != "" {
+					maybeAutoTitle(h, text)
+				}
+				break
+			}
+		}
+	}
+}
+
+// maybeAutoTitle persists an LLM-generated title for a session that was just
+// created with its first turn. It is best-effort: failures keep the default
+// session name.
+func maybeAutoTitle(h Host, firstUserText string) {
+	live := h.Live()
+	if live == nil || live.Provider == nil || h.Store() == nil {
+		return
+	}
+	apiKey := ""
+	if creds := h.Creds(); creds != nil {
+		apiKey = creds.GetAPIKey(context.Background(), live.ProviderName)
+	}
+	_ = sessiontitle.AutoTitle(context.Background(), h.Store(), h.Header().ID, firstUserText,
+		provider.StreamFnFromProvider(live.Provider),
+		provider.Model{Provider: live.ProviderName, ID: run.WireModel(live.Model), ContextWindow: live.ContextWindow},
+		provider.StreamConfig{APIKey: apiKey, ThinkingLevel: live.ThinkingLevel},
+		nil)
 }

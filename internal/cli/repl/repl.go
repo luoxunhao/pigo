@@ -609,8 +609,8 @@ func streamRun(ctx context.Context, out io.Writer, deps *replDeps, prompt string
 				BeforeToolCall: beforeToolCall(deps, out),
 			},
 		},
-		Reminders:  deps.reminders,
-		SessionID:  deps.header.ID,
+		Reminders: deps.reminders,
+		SessionID: deps.header.ID,
 		OnCompaction: func(ctx context.Context, res *compaction.CompactionResult) error {
 			if res == nil || deps.store == nil {
 				return nil
@@ -1074,9 +1074,9 @@ func runResume(out io.Writer, deps *replDeps, line string) {
 		for i, meta := range metas {
 			title := meta.SessionName
 			if title == "" {
-				title = meta.SessionID
+				title = "(untitled)"
 			}
-			fmt.Fprintf(out, "  %d. %s (%s, messages: %d)\n", i+1, title, meta.LastActiveAt.Format("2006-01-02 15:04"), meta.MessageCount)
+			fmt.Fprintf(out, "  %d. %s [%s] (%s, messages: %d)\n", i+1, title, meta.SessionID, meta.LastActiveAt.Format("2006-01-02 15:04"), meta.MessageCount)
 		}
 		return
 	}
@@ -1337,6 +1337,7 @@ func runManualRebuild(out io.Writer, deps *replDeps) {
 	deps.persisted = len(rebuilt)
 	fmt.Fprintf(out, "rebuilt from sqlite projection: %d -> %d tokens, %d messages\n", before, after, len(rebuilt))
 }
+
 // replayTranscript prints a resumed session's prior messages to out so the user
 // sees the conversation so far before the first new prompt.
 func replayTranscript(out io.Writer, messages []agentcore.AgentMessage) {

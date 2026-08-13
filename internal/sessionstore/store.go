@@ -75,7 +75,6 @@ const SessionKindSubagent = "subagent"
 // DefaultWorkspaceHost is the hostname recorded for local workspaces.
 const DefaultWorkspaceHost = "localhost"
 
-
 //go:embed migrations/001_initial.sql
 var migration001 string
 
@@ -95,7 +94,6 @@ func PigoHome() (string, error) {
 	}
 	return filepath.Join(home, ".pigo"), nil
 }
-
 
 // WorkspaceSlug derives a stable directory-safe slug from a workspace path.
 func WorkspaceSlug(workspacePath string) string {
@@ -133,7 +131,6 @@ func WorkspaceSlug(workspacePath string) string {
 	return prefix + "-" + suffix
 }
 
-
 // DatabasePath returns the canonical SQLite database path.
 func DatabasePath(pigoHome string) string {
 	return filepath.Join(pigoHome, "sessions.db")
@@ -158,10 +155,10 @@ func NewMetadata(sessionID, sessionName, agentType, modelName, workspacePath str
 
 // Store is a project-scoped view over the canonical SQLite database.
 type Store struct {
-	db        *sql.DB
-	pigoHome  string
-	cwd       string
-	mu        sync.Mutex
+	db       *sql.DB
+	pigoHome string
+	cwd      string
+	mu       sync.Mutex
 }
 
 // Open opens the canonical store for a pigo home.
@@ -488,6 +485,21 @@ func countMessages(msgs agentcore.MessageList) (turns, toolCalls int) {
 		}
 	}
 	return turns, toolCalls
+}
+
+// titleFromUserText derives a compact display title from a user message.
+// It uses the first non-empty line, trimmed and capped to 60 runes.
+func titleFromUserText(text string) string {
+	text = strings.TrimSpace(text)
+	if i := strings.IndexByte(text, '\n'); i >= 0 {
+		text = strings.TrimSpace(text[:i])
+	}
+	const maxTitleRunes = 60
+	r := []rune(text)
+	if len(r) > maxTitleRunes {
+		text = string(r[:maxTitleRunes]) + "..."
+	}
+	return text
 }
 
 // ImportV4Entries materializes v4 typed entries and facts into SQLite.
@@ -857,6 +869,7 @@ func (s *Store) List() ([]Metadata, error) {
 		out = append(out, m)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].LastActiveAt.After(out[j].LastActiveAt) })
+	s.enrichDefaultTitles(out)
 	return out, rows.Err()
 }
 
@@ -884,7 +897,50 @@ func ListAll(pigoHome string) ([]Metadata, error) {
 		out = append(out, m)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].LastActiveAt.After(out[j].LastActiveAt) })
+	st.enrichDefaultTitles(out)
 	return out, rows.Err()
+}
+
+// enrichDefaultTitles replaces the placeholder "Session" title with the first
+// user message when available, so session lists show a useful title without
+// requiring an explicit /name. It only changes the in-memory metadata returned
+// by List/ListAll; the persisted sessionName is updated on the next append.
+func (s *Store) enrichDefaultTitles(metas []Metadata) {
+	for i := range metas {
+		if metas[i].SessionName != "Session" && metas[i].SessionName != "" {
+			continue
+		}
+		title, err := s.firstUserTitle(metas[i].SessionID)
+		if err == nil && title != "" {
+			metas[i].SessionName = title
+		}
+	}
+}
+
+func (s *Store) firstUserTitle(sessionID string) (string, error) {
+	var payload string
+	err := s.db.QueryRow(`SELECT payload FROM entries
+		WHERE session_id=? AND type='message' AND json_extract(payload,'$.message.role')='user'
+		ORDER BY seq LIMIT 1`, sessionID).Scan(&payload)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", err
+	}
+	var e session.V4Entry
+	if err := json.Unmarshal([]byte(payload), &e); err != nil {
+		return "", err
+	}
+	msg, err := e.MessageValue()
+	if err != nil {
+		return "", err
+	}
+	u, ok := msg.(agentcore.UserMessage)
+	if !ok {
+		return "", nil
+	}
+	return titleFromUserText(agentcore.ContentToText(u.Content)), nil
 }
 
 // Touch refreshes last-active.
@@ -904,23 +960,7 @@ func (s *Store) Entries(sessionID string) ([]session.V4Entry, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []session.V4Entry
-	for rows.Next() {
-		var id, typ, timestamp, payload string
-		var parent sql.NullString
-		if err := rows.Scan(&id, &parent, &typ, &timestamp, &payload); err != nil {
-			return nil, err
-		}
-		var e session.V4Entry
-		if err := json.Unmarshal([]byte(payload), &e); err != nil {
-			return nil, err
-		}
-		e.ID = id
-		e.Type = typ
-		e.ParentID = parent.String
-		out = append(out, e)
-	}
-	return out, rows.Err()
+	return scanEntryRows(rows)
 }
 
 // Facts returns name/label facts.
@@ -987,6 +1027,207 @@ func (s *Store) Header(sessionID string) (session.SessionHeader, error) {
 		return *meta.Header, nil
 	}
 	return session.SessionHeader{ID: sessionID, CreatedAt: meta.CreatedAt, UpdatedAt: meta.LastActiveAt, Model: meta.ModelName, Cwd: meta.WorkspacePath}, nil
+}
+
+// ProjectionWindow is a bounded slice of the main-lane projection. Total and
+// Start let callers build cursors without materializing the full session.
+type ProjectionWindow struct {
+	Entries []session.V4Entry
+	Total   int
+	Start   int
+	Lane    string
+	LeafID  string
+	Lanes   []session.LaneState
+}
+
+// branchWindow returns a page from the branch cache for the current main leaf.
+// It reports whether the fast path was used.
+func (s *Store) branchWindow(sessionID, leafID string, end, limit int) (*ProjectionWindow, bool, error) {
+	branchID, err := s.branchIDForTip(sessionID, leafID)
+	if err != nil {
+		return nil, false, err
+	}
+	if branchID == "" {
+		return nil, false, nil
+	}
+	total := 0
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM branch_entries WHERE session_id=? AND branch_id=?`, sessionID, branchID).Scan(&total); err != nil {
+		return nil, false, err
+	}
+	start, end := windowBounds(total, end, limit)
+	entries, err := s.queryBranchEntries(sessionID, branchID, start, end)
+	if err != nil {
+		return nil, false, err
+	}
+	lanes, err := s.Lanes(sessionID)
+	if err != nil {
+		return nil, false, err
+	}
+	return &ProjectionWindow{
+		Entries: entries,
+		Total:   total,
+		Start:   start,
+		Lane:    "main",
+		LeafID:  leafID,
+		Lanes:   lanes,
+	}, true, nil
+}
+
+func (s *Store) branchIDForTip(sessionID, leafID string) (string, error) {
+	var branchID string
+	err := s.db.QueryRow(`SELECT branch_id FROM branch_tips WHERE session_id=? AND tip_id=?`, sessionID, leafID).Scan(&branchID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return branchID, err
+}
+
+// ProjectionWindow returns the main-lane projection window ending at end
+// (entry index, inclusive-exclusive) with at most limit entries. end <= 0 means
+// the end of the projection. The branch cache is used when safe so a long
+// session is never fully loaded for one page; sessions with compaction fall
+// back to the full projection path.
+func (s *Store) ProjectionWindow(sessionID string, end, limit int) (*ProjectionWindow, error) {
+	lanes, err := s.Lanes(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	var leafID string
+	for _, l := range lanes {
+		if l.Lane == "main" && l.LeafID != nil {
+			leafID = *l.LeafID
+			break
+		}
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+
+	if leafID != "" {
+		branchID, err := s.branchIDForTip(sessionID, leafID)
+		if err != nil {
+			return nil, err
+		}
+		if branchID != "" {
+			var hasCompaction int
+			if err := s.db.QueryRow(`SELECT COUNT(*) FROM branch_entries b
+				JOIN entries e ON e.session_id=b.session_id AND e.id=b.entry_id
+				WHERE b.session_id=? AND b.branch_id=? AND e.type='compaction'`, sessionID, branchID).Scan(&hasCompaction); err != nil {
+				return nil, err
+			}
+			if hasCompaction == 0 {
+				win, ok, err := s.branchWindow(sessionID, leafID, end, limit)
+				if err != nil {
+					return nil, err
+				}
+				if ok {
+					return win, nil
+				}
+			}
+		}
+	}
+
+	proj, err := s.Projection(sessionID, "")
+	if err != nil {
+		return nil, err
+	}
+	start, end := windowBounds(len(proj.Entries), end, limit)
+	return &ProjectionWindow{
+		Entries: proj.Entries[start:end],
+		Total:   len(proj.Entries),
+		Start:   start,
+		Lane:    proj.Lane,
+		LeafID:  proj.LeafID,
+		Lanes:   proj.Lanes,
+	}, nil
+}
+
+// HistoryWindow returns a page of the full raw main-lane path, ignoring
+// compaction projection. This is the client-facing history used by ACP replay:
+// compaction may shorten the LLM context, but the UI must not lose earlier
+// messages. The branch cache keeps the page bounded to O(limit).
+func (s *Store) HistoryWindow(sessionID string, end, limit int) (*ProjectionWindow, error) {
+	lanes, err := s.Lanes(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	var leafID string
+	for _, l := range lanes {
+		if l.Lane == "main" && l.LeafID != nil {
+			leafID = *l.LeafID
+			break
+		}
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if leafID != "" {
+		win, ok, err := s.branchWindow(sessionID, leafID, end, limit)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			return win, nil
+		}
+	}
+
+	entries, err := s.Entries(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	path := session.PathToLeafV4(entries, leafID)
+	start, end := windowBounds(len(path), end, limit)
+	return &ProjectionWindow{
+		Entries: path[start:end],
+		Total:   len(path),
+		Start:   start,
+		Lane:    "main",
+		LeafID:  leafID,
+		Lanes:   lanes,
+	}, nil
+}
+
+func windowBounds(total, end, limit int) (start, endOut int) {
+	if end <= 0 || end > total {
+		end = total
+	}
+	start = end - limit
+	if start < 0 {
+		start = 0
+	}
+	return start, end
+}
+
+func (s *Store) queryBranchEntries(sessionID, branchID string, start, end int) ([]session.V4Entry, error) {
+	rows, err := s.db.Query(`SELECT e.id, e.parent_id, e.type, e.timestamp, e.payload
+		FROM branch_entries b JOIN entries e ON e.session_id=b.session_id AND e.id=b.entry_id
+		WHERE b.session_id=? AND b.branch_id=? AND b.entry_seq>=? AND b.entry_seq<?
+		ORDER BY b.entry_seq`, sessionID, branchID, start, end)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanEntryRows(rows)
+}
+
+func scanEntryRows(rows *sql.Rows) ([]session.V4Entry, error) {
+	var out []session.V4Entry
+	for rows.Next() {
+		var id, typ, timestamp, payload string
+		var parent sql.NullString
+		if err := rows.Scan(&id, &parent, &typ, &timestamp, &payload); err != nil {
+			return nil, err
+		}
+		var e session.V4Entry
+		if err := json.Unmarshal([]byte(payload), &e); err != nil {
+			return nil, err
+		}
+		e.ID = id
+		e.Type = typ
+		e.ParentID = parent.String
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 // Projection builds the unified root-to-leaf projection.
@@ -1244,15 +1485,15 @@ func (s *Store) Export(id, outPath string) (int, error) {
 	}
 	leaf, _ := s.MainLeaf(id)
 	v4Header := session.V4Header{
-		Type:          "session",
-		Version:       session.V4SchemaVersion,
-		ID:            id,
-		CreatedAt:     header.CreatedAt,
-		UpdatedAt:     header.UpdatedAt,
-		Cwd:           header.Cwd,
-		Model:         header.Model,
-		Provider:      header.Provider,
-		SystemPrompt:  header.SystemPrompt,
+		Type:            "session",
+		Version:         session.V4SchemaVersion,
+		ID:              id,
+		CreatedAt:       header.CreatedAt,
+		UpdatedAt:       header.UpdatedAt,
+		Cwd:             header.Cwd,
+		Model:           header.Model,
+		Provider:        header.Provider,
+		SystemPrompt:    header.SystemPrompt,
 		ParentSessionID: header.ParentSession,
 	}
 	if leaf != "" {

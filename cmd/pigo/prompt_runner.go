@@ -24,6 +24,7 @@ import (
 	"github.com/smallnest/pigo/internal/runtime"
 	"github.com/smallnest/pigo/internal/session"
 	"github.com/smallnest/pigo/internal/sessionstore"
+	"github.com/smallnest/pigo/internal/sessiontitle"
 	"github.com/smallnest/pigo/internal/trust"
 )
 
@@ -164,6 +165,7 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 				curLeaf = proj.LeafID
 			}
 		}
+		isFirstPrompt := len(history) == 0
 
 		onEvent := func(ev agentcore.AgentEvent) {
 			mapper.publish(run.SessionID, run.MessageID, run.Publish, ev)
@@ -200,6 +202,20 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 				meta.ModelName = model
 				meta.LastActiveAt = header.UpdatedAt
 				_ = store.SaveMetadata(meta)
+			}
+			if isFirstPrompt {
+				if prov, provName, apiKey, wireModel, resolveErr := runner.ResolveForModel(model); resolveErr == nil {
+					_ = sessiontitle.AutoTitle(ctx, store, run.SessionID, run.Text,
+						provider.StreamFnFromProvider(prov),
+						provider.Model{Provider: provName, ID: wireModel},
+						provider.StreamConfig{APIKey: apiKey, ThinkingLevel: agentcore.ThinkingLevel(thinking)},
+						func(title string) {
+							run.Publish("session.updated", map[string]any{
+								"title":     title,
+								"updatedAt": time.Now().UTC().Format(time.RFC3339),
+							})
+						})
+				}
 			}
 		}
 		reply := ""

@@ -26,6 +26,14 @@ type DeferredHandler interface {
 	HandleDeferredRequest(ctx context.Context, id RequestID, method string, params json.RawMessage) bool
 }
 
+// postResponseHandler is implemented by handlers that need to run side effects
+// only after the current request response has been delivered. Some clients
+// (e.g. Zed) ignore notifications whose sessionId is not yet known, so
+// session-scoped notifications must wait until the creating response lands.
+type postResponseHandler interface {
+	AfterResponse(method string)
+}
+
 // HandlerFunc adapts a function to the Handler interface.
 type HandlerFunc func(ctx context.Context, id RequestID, method string, params json.RawMessage) (any, *Error)
 
@@ -71,6 +79,9 @@ func (s *Server) Serve(ctx context.Context) error {
 			result, rpcErr := s.dispatch(ctx, msg.Request.ID, msg.Request.Method, msg.Request.Params)
 			if err := s.transport.SendResponse(ctx, msg.Request.ID, result, rpcErr); err != nil {
 				return err
+			}
+			if h, ok := s.handler.(postResponseHandler); ok {
+				h.AfterResponse(msg.Request.Method)
 			}
 		case msg.Notification != nil:
 			s.dispatchNotification(ctx, msg.Notification.Method, msg.Notification.Params)

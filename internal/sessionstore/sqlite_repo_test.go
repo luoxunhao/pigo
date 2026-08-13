@@ -115,6 +115,26 @@ func TestSetLabelAndProjection(t *testing.T) {
 	}
 }
 
+func TestListDerivesTitleFromFirstUserMessage(t *testing.T) {
+	st, ws := openTestStore(t)
+	now := time.Now().UTC()
+	header := session.SessionHeader{ID: "title-sess", CreatedAt: now, UpdatedAt: now, Cwd: ws}
+	meta := NewMetadata(header.ID, "Session", "pigo", "m", ws)
+	if err := st.Create(meta, header, agentcore.MessageList{
+		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("Fix lint warnings\nsecond line")}},
+		agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant, Content: agentcore.ContentList{agentcore.NewTextContent("done")}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	metas, err := st.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metas) != 1 || metas[0].SessionName != "Fix lint warnings" {
+		t.Fatalf("list titles = %+v, want derived first user message", metas)
+	}
+}
+
 func TestFTSSearchScopedByCwd(t *testing.T) {
 	home := t.TempDir()
 	wsA := filepath.Join(home, "a")

@@ -32,8 +32,9 @@ import (
 // StreamCompletion call and records how many times it was called, so a test can
 // assert whether a run was launched.
 type replProvider struct {
-	reply string
-	calls int
+	reply      string
+	calls      int
+	titleCalls int
 }
 
 func (p *replProvider) Name() string { return "faux" }
@@ -42,6 +43,10 @@ func (p *replProvider) Models() []provider.Model {
 }
 
 func (p *replProvider) StreamCompletion(ctx context.Context, req provider.CompletionRequest) (*provider.AssistantMessageEventStream, error) {
+	if titleStream, ok := titleReplyStream(ctx, req); ok {
+		p.titleCalls++
+		return titleStream, nil
+	}
 	p.calls++
 	partial := agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant}
 	withText := partial
@@ -115,6 +120,66 @@ func TestREPLQuitCommand(t *testing.T) {
 	}
 	if p.calls != 0 {
 		t.Errorf("/quit must not launch a run, got %d calls", p.calls)
+	}
+}
+
+// TestRunResumeListsSessionID verifies the /resume list shows both the session
+// title and the stable session id, not just an opaque timestamp line.
+func TestRunResumeListsSessionID(t *testing.T) {
+	cleanupStores(t)
+	home := t.TempDir()
+	t.Setenv("PIGO_HOME", home)
+	ws := filepath.Join(home, "ws")
+	store, err := sessionstore.OpenForWorkspace(home, ws)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC()
+	header := session.SessionHeader{ID: session.NewID(now), CreatedAt: now, UpdatedAt: now, Model: "faux", Provider: "faux", Cwd: ws}
+	meta := sessionstore.NewMetadata(header.ID, "My Task", "pigo", "faux", ws)
+	if err := store.Create(meta, header, agentcore.MessageList{
+		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("hi")}},
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	deps := replDeps{cwd: ws}
+	var out bytes.Buffer
+	runResume(&out, &deps, "/resume")
+	got := out.String()
+	if !strings.Contains(got, "My Task") || !strings.Contains(got, "["+header.ID+"]") {
+		t.Fatalf("resume list = %q, want title and session id", got)
+	}
+}
+
+// TestRunResumeDerivesDefaultTitle verifies a session created with the default
+// "Session" name is listed using its first user message as the display title.
+func TestRunResumeDerivesDefaultTitle(t *testing.T) {
+	cleanupStores(t)
+	home := t.TempDir()
+	t.Setenv("PIGO_HOME", home)
+	ws := filepath.Join(home, "ws")
+	store, err := sessionstore.OpenForWorkspace(home, ws)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC()
+	header := session.SessionHeader{ID: session.NewID(now), CreatedAt: now, UpdatedAt: now, Model: "faux", Provider: "faux", Cwd: ws}
+	meta := sessionstore.NewMetadata(header.ID, "Session", "pigo", "faux", ws)
+	if err := store.Create(meta, header, agentcore.MessageList{
+		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("Inefficient string concatenation in call to WriteString" +
+			"\nsecond line")}},
+		agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant, Content: agentcore.ContentList{agentcore.NewTextContent("done")}},
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	deps := replDeps{cwd: ws}
+	var out bytes.Buffer
+	runResume(&out, &deps, "/resume")
+	got := out.String()
+	if !strings.Contains(got, "Inefficient string concatenation") || !strings.Contains(got, "["+header.ID+"]") {
+		t.Fatalf("resume list = %q, want derived first-user title and session id", got)
 	}
 }
 
@@ -492,6 +557,9 @@ func (p *errProvider) Models() []provider.Model {
 }
 
 func (p *errProvider) StreamCompletion(ctx context.Context, req provider.CompletionRequest) (*provider.AssistantMessageEventStream, error) {
+	if titleStream, ok := titleReplyStream(ctx, req); ok {
+		return titleStream, nil
+	}
 	p.calls++
 	partial := agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant}
 	final := partial
@@ -538,6 +606,9 @@ func (p *emptyProvider) Models() []provider.Model {
 }
 
 func (p *emptyProvider) StreamCompletion(ctx context.Context, req provider.CompletionRequest) (*provider.AssistantMessageEventStream, error) {
+	if titleStream, ok := titleReplyStream(ctx, req); ok {
+		return titleStream, nil
+	}
 	p.calls++
 	partial := agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant}
 	final := partial
@@ -549,6 +620,28 @@ func (p *emptyProvider) StreamCompletion(ctx context.Context, req provider.Compl
 		s.Close()
 	}()
 	return s, nil
+}
+
+func titleReplyStream(ctx context.Context, req provider.CompletionRequest) (*provider.AssistantMessageEventStream, bool) {
+	if len(req.Context.Messages) == 0 {
+		return nil, false
+	}
+	u, ok := req.Context.Messages[0].(agentcore.UserMessage)
+	if !ok || !strings.Contains(agentcore.ContentToText(u.Content), "Summarize this task in one short title:") {
+		return nil, false
+	}
+	msg := agentcore.AssistantMessage{
+		RoleField:  agentcore.RoleAssistant,
+		Content:    agentcore.ContentList{agentcore.NewTextContent("Generated Title")},
+		StopReason: agentcore.StopReasonEndTurn,
+	}
+	s := provider.NewAssistantMessageEventStream(0)
+	go func() {
+		defer s.Close()
+		_ = s.Emit(ctx, provider.StreamStartEvent{Partial: msg})
+		_ = s.Emit(ctx, provider.StreamDoneEvent{Message: msg})
+	}()
+	return s, true
 }
 
 // TestREPLNotesEmptyResponse verifies a clean turn that produced no output at

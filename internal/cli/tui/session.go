@@ -16,6 +16,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -35,6 +36,7 @@ import (
 	"github.com/smallnest/pigo/internal/runtime"
 	"github.com/smallnest/pigo/internal/session"
 	"github.com/smallnest/pigo/internal/sessionstore"
+	"github.com/smallnest/pigo/internal/sessiontitle"
 	"github.com/smallnest/pigo/internal/trust"
 )
 
@@ -316,8 +318,8 @@ func (s *runSession) buildConfig() runtime.RunConfig {
 				Registry: s.reg,
 			},
 		},
-		Reminders:  s.reminders,
-		SessionID:  s.header.ID,
+		Reminders: s.reminders,
+		SessionID: s.header.ID,
 		OnCompaction: func(ctx context.Context, res *compaction.CompactionResult) error {
 			if res == nil || s.store == nil {
 				return nil
@@ -509,6 +511,7 @@ func (s *runSession) persist() error {
 	if len(tail) == 0 {
 		return nil
 	}
+	firstPersist := s.persisted == 0
 	s.header.UpdatedAt = time.Now().UTC()
 	s.header.Model = s.live.Model
 	s.header.Provider = s.live.ProviderName
@@ -518,7 +521,32 @@ func (s *runSession) persist() error {
 	}
 	s.curLeaf = leaf
 	s.persisted = len(s.agentCtx.Messages)
+	if firstPersist {
+		for _, m := range tail {
+			if u, ok := m.(agentcore.UserMessage); ok {
+				if text := strings.TrimSpace(agentcore.ContentToText(u.Content)); text != "" {
+					s.maybeAutoTitle(text)
+				}
+				break
+			}
+		}
+	}
 	return nil
+}
+
+func (s *runSession) maybeAutoTitle(firstUserText string) {
+	if s.live == nil || s.live.Provider == nil || s.store == nil {
+		return
+	}
+	apiKey := ""
+	if s.creds != nil {
+		apiKey = s.creds.GetAPIKey(context.Background(), s.live.ProviderName)
+	}
+	_ = sessiontitle.AutoTitle(context.Background(), s.store, s.header.ID, firstUserText,
+		provider.StreamFnFromProvider(s.live.Provider),
+		provider.Model{Provider: s.live.ProviderName, ID: run.WireModel(s.live.Model), ContextWindow: s.live.ContextWindow},
+		provider.StreamConfig{APIKey: apiKey, ThinkingLevel: s.live.ThinkingLevel},
+		nil)
 }
 
 // seedTranscript replays a resumed session's prior messages into the transcript

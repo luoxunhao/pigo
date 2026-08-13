@@ -285,7 +285,8 @@ func (s *Server) GetSessionMessages(w http.ResponseWriter, r *http.Request, sess
 	if params.Limit != nil {
 		limit = *params.Limit
 	}
-	resp, apiErr := s.sessions.Messages(sessionId, directory, before, limit)
+	fullHistory := params.FullHistory != nil && *params.FullHistory
+	resp, apiErr := s.sessions.Messages(sessionId, directory, before, limit, fullHistory)
 	if apiErr != nil {
 		WriteError(w, r, apiErr)
 		return

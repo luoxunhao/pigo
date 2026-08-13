@@ -120,8 +120,11 @@ type LoadSessionRequest struct {
 	AdditionalDirectories *[]string `json:"additionalDirectories,omitempty"`
 	Before                *string   `json:"before,omitempty"`
 	Directory             string    `json:"directory"`
-	LeafId                *string   `json:"leafId,omitempty"`
-	Limit                 *int      `json:"limit,omitempty"`
+
+	// FullHistory Return the full raw main-lane history instead of the compaction projection.
+	FullHistory *bool   `json:"fullHistory,omitempty"`
+	LeafId      *string `json:"leafId,omitempty"`
+	Limit       *int    `json:"limit,omitempty"`
 }
 
 // Message defines model for Message.
@@ -404,6 +407,9 @@ type GetSessionMessagesParams struct {
 	Directory string  `form:"directory" json:"directory"`
 	Before    *string `form:"before,omitempty" json:"before,omitempty"`
 	Limit     *int    `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// FullHistory Return the full raw main-lane history instead of the compaction projection.
+	FullHistory *bool `form:"fullHistory,omitempty" json:"fullHistory,omitempty"`
 }
 
 // GetSessionStatusParams defines parameters for GetSessionStatus.
@@ -2393,6 +2399,18 @@ func NewGetSessionMessagesRequest(server string, sessionId string, params *GetSe
 		if params.Limit != nil {
 
 			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.FullHistory != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "fullHistory", *params.FullHistory, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "boolean", Format: ""}); err != nil {
 				return nil, err
 			} else {
 				for _, qp := range strings.Split(queryFrag, "&") {

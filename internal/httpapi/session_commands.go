@@ -217,12 +217,12 @@ func (s *SessionService) treeSnapshot(store *sessionstore.Store, sessionID, leaf
 		lanes = append(lanes, item)
 	}
 	data := map[string]any{
-		"nodes":          nodes,
-		"currentLeafId":  leafID,
-		"currentLane":    proj.Lane,
-		"activePathIds":  activePath,
-		"labels":         proj.Labels,
-		"lanes":          lanes,
+		"nodes":         nodes,
+		"currentLeafId": leafID,
+		"currentLane":   proj.Lane,
+		"activePathIds": activePath,
+		"labels":        proj.Labels,
+		"lanes":         lanes,
 	}
 	if leafID == "" {
 		data["currentLeafId"] = nil
@@ -358,9 +358,9 @@ func (s *SessionService) ResumeList(directory string) (string, error) {
 	for i, meta := range metas {
 		title := meta.SessionName
 		if title == "" {
-			title = meta.SessionID
+			title = "(untitled)"
 		}
-		fmt.Fprintf(&b, "  %d. %s (%s, messages: %d)\n", i+1, title, meta.LastActiveAt.Format("2006-01-02 15:04"), meta.MessageCount)
+		fmt.Fprintf(&b, "  %d. %s [%s] (%s, messages: %d)\n", i+1, title, meta.SessionID, meta.LastActiveAt.Format("2006-01-02 15:04"), meta.MessageCount)
 	}
 	return strings.TrimRight(b.String(), "\n"), nil
 }

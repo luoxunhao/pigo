@@ -81,6 +81,12 @@ func TestCommandServiceCoreSessionCommands(t *testing.T) {
 	if apiErr != nil || resumeList.Text == nil || strings.Contains(*resumeList.Text, subID) {
 		t.Fatalf("resume list = %+v, err = %v", resumeList, apiErr)
 	}
+	if resumeList.Text == nil || !strings.Contains(*resumeList.Text, "["+created.SessionId+"]") {
+		t.Fatalf("resume list = %+v, want session id shown", resumeList)
+	}
+	if resumeList.Text == nil || !strings.Contains(*resumeList.Text, "hello") {
+		t.Fatalf("resume list = %+v, want derived first-user title", resumeList)
+	}
 	pick := "1"
 	resumePick, apiErr := svc.Execute(ctx, created.SessionId, gen.CommandRequest{Directory: workspace, Command: "resume", Arguments: &pick})
 	if apiErr != nil || resumePick.Text == nil || !strings.Contains(*resumePick.Text, "selected session") {

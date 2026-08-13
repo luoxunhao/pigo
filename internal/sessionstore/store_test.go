@@ -2,6 +2,7 @@ package sessionstore
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/smallnest/pigo/internal/agentcore"
+	"github.com/smallnest/pigo/internal/compaction"
 	"github.com/smallnest/pigo/internal/session"
 )
 
@@ -129,6 +131,148 @@ func TestCreateLoadListAppendDelete(t *testing.T) {
 	}
 	if _, err := store.LoadMetadata("sess-1"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("metadata still readable after delete: %v", err)
+	}
+}
+
+func TestProjectionWindowMatchesFullProjection(t *testing.T) {
+	home := t.TempDir()
+	ws := filepath.Join(home, "ws")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenForWorkspace(home, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	header := session.SessionHeader{ID: "win-sess", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), Model: "m", Cwd: ws}
+	if err := store.Create(NewMetadata("win-sess", "Window", "agentic", "m", ws), header, nil); err != nil {
+		t.Fatal(err)
+	}
+	var msgs agentcore.MessageList
+	for i := 0; i < 125; i++ {
+		msgs = append(msgs, agentcore.UserMessage{
+			RoleField: agentcore.RoleUser,
+			Content:   agentcore.ContentList{agentcore.NewTextContent(fmt.Sprintf("msg-%03d", i))},
+		})
+	}
+	if err := store.Append("win-sess", time.Now().UTC(), msgs); err != nil {
+		t.Fatal(err)
+	}
+
+	proj, err := store.Projection("win-sess", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		end   int
+		limit int
+	}{
+		{end: 0, limit: 50},
+		{end: 125, limit: 50},
+		{end: 100, limit: 50},
+		{end: 50, limit: 50},
+		{end: 125, limit: 10},
+	}
+	for _, tc := range tests {
+		win, err := store.ProjectionWindow("win-sess", tc.end, tc.limit)
+		if err != nil {
+			t.Fatalf("ProjectionWindow(end=%d,limit=%d): %v", tc.end, tc.limit, err)
+		}
+		end := tc.end
+		if end <= 0 || end > len(proj.Entries) {
+			end = len(proj.Entries)
+		}
+		start := end - tc.limit
+		if start < 0 {
+			start = 0
+		}
+		if win.Total != len(proj.Entries) || win.Start != start {
+			t.Fatalf("window(end=%d,limit=%d) total/start = %d/%d, want %d/%d", tc.end, tc.limit, win.Total, win.Start, len(proj.Entries), start)
+		}
+		if len(win.Entries) != len(proj.Entries[start:end]) {
+			t.Fatalf("window(end=%d,limit=%d) has %d entries, want %d", tc.end, tc.limit, len(win.Entries), len(proj.Entries[start:end]))
+		}
+		for i := range win.Entries {
+			if win.Entries[i].ID != proj.Entries[start+i].ID {
+				t.Fatalf("window(end=%d,limit=%d)[%d] = %s, want %s", tc.end, tc.limit, i, win.Entries[i].ID, proj.Entries[start+i].ID)
+			}
+		}
+	}
+}
+
+func TestHistoryWindowKeepsPreCompactionEntries(t *testing.T) {
+	home := t.TempDir()
+	ws := filepath.Join(home, "ws")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenForWorkspace(home, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	header := session.SessionHeader{ID: "hist-sess", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), Model: "m", Cwd: ws}
+	if err := store.Create(NewMetadata("hist-sess", "History", "agentic", "m", ws), header, nil); err != nil {
+		t.Fatal(err)
+	}
+	var msgs agentcore.MessageList
+	for i := 0; i < 6; i++ {
+		msgs = append(msgs, agentcore.UserMessage{
+			RoleField: agentcore.RoleUser,
+			Content:   agentcore.ContentList{agentcore.NewTextContent(fmt.Sprintf("msg-%d", i))},
+		})
+	}
+	if err := store.Append("hist-sess", time.Now().UTC(), msgs); err != nil {
+		t.Fatal(err)
+	}
+	header, err = store.Header("hist-sess")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := &compaction.CompactionResult{
+		Summary:        "summarized",
+		FirstKeptIndex: 4,
+		RetainedTail:   []agentcore.Message{msgs[4], msgs[5]},
+		TokensBefore:   10,
+	}
+	if _, err := store.AppendCompaction("hist-sess", header, res); err != nil {
+		t.Fatal(err)
+	}
+
+	proj, err := store.Projection("hist-sess", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(proj.Entries) != 3 {
+		t.Fatalf("compacted projection has %d entries, want 3", len(proj.Entries))
+	}
+
+	win, err := store.HistoryWindow("hist-sess", 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := store.MainLeaf("hist-sess")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := store.Entries("hist-sess")
+	if err != nil {
+		t.Fatal(err)
+	}
+	full := session.PathToLeafV4(entries, leaf)
+	if win.Total != len(full) {
+		t.Fatalf("history window total = %d, want %d", win.Total, len(full))
+	}
+	if len(win.Entries) != len(full) {
+		t.Fatalf("history window has %d entries, want %d", len(win.Entries), len(full))
+	}
+	for i := range win.Entries {
+		if win.Entries[i].ID != full[i].ID {
+			t.Fatalf("history window[%d] = %s, want %s", i, win.Entries[i].ID, full[i].ID)
+		}
 	}
 }
 
