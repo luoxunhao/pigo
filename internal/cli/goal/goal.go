@@ -258,6 +258,15 @@ func runGoalLoop(setCancel func(context.CancelFunc), out io.Writer, host cli.Hos
 			},
 		},
 		Reminders: reminders,
+		OnCompaction: func(ctx context.Context, res *compaction.CompactionResult) error {
+			if res == nil || host.Store() == nil {
+				return nil
+			}
+			header := host.Header()
+			header.UpdatedAt = time.Now().UTC()
+			_, err := host.Store().AppendCompaction(header.ID, header, res)
+			return err
+		},
 		GetFollowUpMessages: func(ctx context.Context, agentCtx *agentcore.AgentContext) []agentcore.AgentMessage {
 			// Account for the turns produced since the last settle. Auto-compaction
 			// can shrink agentCtx.Messages in place (summary + tail) between settles,

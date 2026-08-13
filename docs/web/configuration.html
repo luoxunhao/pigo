@@ -78,18 +78,16 @@
       </table>
 
       <h2 data-en="Providers" data-zh="Provider"></h2>
-      <p data-en="pigo ships with a registry of ~38 built-in providers spanning two wire protocols — <strong>OpenAI-compatible</strong> and <strong>Anthropic</strong>. You rarely name a provider explicitly: pigo infers it from the model name and resolves the API key from that provider's environment variable at request time."
-         data-zh="pigo 内置约 38 个 provider 的注册表，覆盖两种通信协议 —— <strong>OpenAI 兼容</strong>与 <strong>Anthropic</strong>。你很少需要显式指定 provider：pigo 会根据模型名推断，并在请求时从该 provider 对应的环境变量解析 API Key。"></p>
+      <p data-en="pigo ships with a registry of built-in providers spanning two wire protocols — <strong>OpenAI-compatible</strong> and <strong>Anthropic</strong>. A model id must be a configured [[models]] entry, or be paired with an explicit --provider/--base-url/--protocol."
+         data-zh="pigo 内置了覆盖两种通信协议 —— <strong>OpenAI 兼容</strong>与 <strong>Anthropic</strong> —— 的 provider 注册表。模型 id 必须是 config.toml `[[models]]` 中已配置的条目，或与显式 `--provider` / `--base-url` / `--protocol` 配对。"></p>
 
       <h3 data-en="How a model routes to a provider" data-zh="模型如何路由到 Provider"></h3>
       <p data-en="Resolution runs top to bottom; the first match wins:"
          data-zh="解析自上而下，命中即止："></p>
       <pre><code>1. --provider &lt;name&gt;      # 显式指定，最高优先级
 2. --protocol openai|openai/chat|openai/resp_api|anthropic
-3. 预置目录 (preset catalog) 中的已知模型 id
-4. ollama/ 或 nvidia/ 前缀，或端口 11434 → 本地 / NVIDIA
-5. 按模型名前缀推断 (claude-* → anthropic, gpt-* → openai …)
-6. 兜底 → OpenRouter</code></pre>
+3. config.toml 中已配置的 [[models]] 条目
+否则 → 报错 model "..." is not configured</code></pre>
 
       <h3 data-en="Base-URL precedence" data-zh="Base-URL 优先级"></h3>
       <pre><code>--base-url  &gt;  &lt;provider&gt; 专属 env  &gt;  &lt;PROVIDER&gt;_BASE_URL  &gt;  内置默认值</code></pre>

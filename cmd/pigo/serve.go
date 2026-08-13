@@ -48,7 +48,7 @@ func runServe(args []string, version string, out, errOut io.Writer) int {
 	}
 	defer pluginMgr.Close()
 
-	serveOpts := cliOptions{model: "openrouter/free"}
+	serveOpts := cliOptions{}
 	if cfg, cfgErr := config.LoadFileConfig(config.FileConfigPath()); cfgErr == nil {
 		applyFileConfig(&serveOpts, cfg, func(string) bool { return false })
 	}

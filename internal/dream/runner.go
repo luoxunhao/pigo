@@ -96,8 +96,8 @@ type Runner struct {
 	// dir; production leaves it empty.
 	MemoryRoot string
 	// Sessions is the source of recent session transcripts for the distillation
-	// pass (SPEC §5.3). nil resolves the default store at $PIGO_HOME/sessions (or
-	// ~/.pigo/sessions); tests inject a stub. If it cannot be resolved,
+	// pass (SPEC §5.3). nil resolves the default store at $PIGO_HOME/sessions.db (or
+	// ~/.pigo/sessions.db); tests inject a stub. If it cannot be resolved,
 	// distillation degrades to a no-op rather than failing the run.
 	Sessions SessionSource
 }

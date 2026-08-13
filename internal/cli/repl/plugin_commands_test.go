@@ -25,6 +25,7 @@ import (
 	"github.com/smallnest/pigo/internal/provider"
 	rt "github.com/smallnest/pigo/internal/runtime"
 	"github.com/smallnest/pigo/internal/session"
+	"github.com/smallnest/pigo/internal/sessionstore"
 )
 
 // cmdPluginMain is a standalone plugin that declares one "hello" slash command
@@ -214,10 +215,11 @@ func TestREPLPluginCommandInjectsPrompt(t *testing.T) {
 		t.Fatalf("buildSlashRegistry: %v", err)
 	}
 
-	store, err := session.NewStore(t.TempDir())
+	store, err := sessionstore.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
 	p := &replProvider{reply: "hi there"}
 	live := &cli.LiveConfig{Model: "faux", ProviderName: "faux", Provider: p}
 	deps := replDeps{

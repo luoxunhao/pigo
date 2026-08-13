@@ -3,19 +3,24 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/cli/config"
+	"github.com/smallnest/pigo/internal/compaction"
 	"github.com/smallnest/pigo/internal/httpapi/gen"
 )
 
 func TestSessionCreateAndList(t *testing.T) {
 	pigoHome := t.TempDir()
+	cleanupStores(t)
 	workspace := filepath.Join(t.TempDir(), "ws")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatal(err)
@@ -38,7 +43,7 @@ func TestSessionCreateAndList(t *testing.T) {
 	if created.SessionId == "" || created.Directory != workspace {
 		t.Fatalf("created = %+v", created)
 	}
-	list, apiErr := svc.List(workspace, "", 50)
+	list, apiErr := svc.List(workspace, "", 50, false)
 	if apiErr != nil {
 		t.Fatalf("List: %v", apiErr)
 	}
@@ -49,6 +54,7 @@ func TestSessionCreateAndList(t *testing.T) {
 
 func TestSessionCreateMissingDefaultModel(t *testing.T) {
 	pigoHome := t.TempDir()
+	cleanupStores(t)
 	cfgPath := filepath.Join(t.TempDir(), "config.toml")
 	if err := config.SaveFileConfig(cfgPath, config.FileConfig{}); err != nil {
 		t.Fatal(err)
@@ -61,6 +67,7 @@ func TestSessionCreateMissingDefaultModel(t *testing.T) {
 }
 
 func TestSessionCreateRejectsRelativeDirectory(t *testing.T) {
+	cleanupStores(t)
 	svc := NewSessionService(t.TempDir())
 	_, apiErr := svc.Create(gen.NewSessionRequest{Directory: "relative"})
 	if apiErr == nil || apiErr.Code != CodeInvalidParams {
@@ -70,6 +77,7 @@ func TestSessionCreateRejectsRelativeDirectory(t *testing.T) {
 
 func TestSessionHTTPCreateAndList(t *testing.T) {
 	pigoHome := t.TempDir()
+	cleanupStores(t)
 	workspace := filepath.Join(t.TempDir(), "ws")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatal(err)
@@ -119,6 +127,7 @@ func TestSessionHTTPCreateAndList(t *testing.T) {
 
 func TestSessionLoadCloseDeleteStatus(t *testing.T) {
 	pigoHome := t.TempDir()
+	cleanupStores(t)
 	workspace := filepath.Join(t.TempDir(), "ws")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatal(err)
@@ -169,8 +178,176 @@ func TestSessionLoadCloseDeleteStatus(t *testing.T) {
 	}
 }
 
+func TestSessionMessagePaginationCoversAllEntries(t *testing.T) {
+	cleanupStores(t)
+	pigoHome := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "ws")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.SaveFileConfig(cfgPath, config.FileConfig{
+		Model: "test/provider",
+		Models: []config.ModelConfig{{
+			Provider: "test", ModelID: "provider", Name: "Provider",
+			BaseURL: "http://localhost", Protocol: "openai",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewSessionServiceWithConfig(pigoHome, cfgPath)
+	created, apiErr := svc.Create(gen.NewSessionRequest{Directory: workspace})
+	if apiErr != nil {
+		t.Fatalf("Create: %v", apiErr)
+	}
+	store, err := svc.storeFor(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var msgs agentcore.MessageList
+	for i := 0; i < 125; i++ {
+		msgs = append(msgs, agentcore.UserMessage{
+			RoleField: agentcore.RoleUser,
+			Content:   agentcore.ContentList{agentcore.NewTextContent(fmt.Sprintf("msg-%03d", i))},
+		})
+	}
+	if err := store.Append(created.SessionId, time.Now().UTC(), msgs); err != nil {
+		t.Fatal(err)
+	}
+
+	limit := 50
+	loaded, apiErr := svc.Load(created.SessionId, gen.LoadSessionRequest{
+		Directory: workspace,
+		Limit:     &limit,
+	})
+	if apiErr != nil {
+		t.Fatalf("Load: %v", apiErr)
+	}
+	seen := make([]bool, len(msgs))
+	mark := func(msgs []gen.Message) {
+		for _, m := range msgs {
+			if m.Seq != nil && *m.Seq >= 0 && *m.Seq < len(seen) {
+				seen[*m.Seq] = true
+			}
+		}
+	}
+	mark(loaded.Messages)
+
+	if loaded.NextCursor != nil {
+		before := *loaded.NextCursor
+		prev, apiErr := svc.Load(created.SessionId, gen.LoadSessionRequest{
+			Directory: workspace,
+			Before:    &before,
+			Limit:     &limit,
+		})
+		if apiErr != nil {
+			t.Fatalf("Load(before=%s): %v", before, apiErr)
+		}
+		mark(prev.Messages)
+		if prev.NextCursor == nil || prev.HasMore != true {
+			t.Fatalf("second page = %+v, want more pages", prev)
+		}
+	}
+
+	cursor := loaded.NextCursor
+	for cursor != nil {
+		page, apiErr := svc.Messages(created.SessionId, workspace, *cursor, limit, false)
+		if apiErr != nil {
+			t.Fatalf("Messages(%s): %v", *cursor, apiErr)
+		}
+		mark(page.Messages)
+		cursor = page.NextCursor
+	}
+
+	for i, ok := range seen {
+		if !ok {
+			t.Fatalf("entry %d was not returned by pagination", i)
+		}
+	}
+}
+
+func TestSessionLoadFullHistoryKeepsPreCompactionEntries(t *testing.T) {
+	cleanupStores(t)
+	pigoHome := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "ws")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.SaveFileConfig(cfgPath, config.FileConfig{
+		Model: "test/provider",
+		Models: []config.ModelConfig{{
+			Provider: "test", ModelID: "provider", Name: "Provider",
+			BaseURL: "http://localhost", Protocol: "openai",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewSessionServiceWithConfig(pigoHome, cfgPath)
+	created, apiErr := svc.Create(gen.NewSessionRequest{Directory: workspace})
+	if apiErr != nil {
+		t.Fatalf("Create: %v", apiErr)
+	}
+	store, err := svc.storeFor(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	var msgs agentcore.MessageList
+	for i := 0; i < 6; i++ {
+		msgs = append(msgs, agentcore.UserMessage{
+			RoleField: agentcore.RoleUser,
+			Content:   agentcore.ContentList{agentcore.NewTextContent(fmt.Sprintf("msg-%d", i))},
+		})
+	}
+	if err := store.Append(created.SessionId, time.Now().UTC(), msgs); err != nil {
+		t.Fatal(err)
+	}
+	header, err := store.Header(created.SessionId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := &compaction.CompactionResult{
+		Summary:        "summarized",
+		FirstKeptIndex: 4,
+		RetainedTail:   []agentcore.Message{msgs[4], msgs[5]},
+		TokensBefore:   10,
+	}
+	if _, err := store.AppendCompaction(created.SessionId, header, res); err != nil {
+		t.Fatal(err)
+	}
+
+	limit := 50
+	full := true
+	loaded, apiErr := svc.Load(created.SessionId, gen.LoadSessionRequest{
+		Directory:   workspace,
+		Limit:       &limit,
+		FullHistory: &full,
+	})
+	if apiErr != nil {
+		t.Fatalf("Load(fullHistory): %v", apiErr)
+	}
+	if len(loaded.Messages) != 7 {
+		t.Fatalf("full history returned %d messages, want 7", len(loaded.Messages))
+	}
+
+	compacted, apiErr := svc.Load(created.SessionId, gen.LoadSessionRequest{
+		Directory: workspace,
+		Limit:     &limit,
+	})
+	if apiErr != nil {
+		t.Fatalf("Load(compacted): %v", apiErr)
+	}
+	if len(compacted.Messages) != 3 {
+		t.Fatalf("compacted projection returned %d messages, want 3", len(compacted.Messages))
+	}
+}
+
 func TestSessionUpdateConfigAndMode(t *testing.T) {
 	pigoHome := t.TempDir()
+	cleanupStores(t)
 	workspace := filepath.Join(t.TempDir(), "ws")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatal(err)

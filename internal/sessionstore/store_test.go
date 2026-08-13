@@ -1,6 +1,8 @@
 package sessionstore
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +10,7 @@ import (
 	"time"
 
 	"github.com/smallnest/pigo/internal/agentcore"
+	"github.com/smallnest/pigo/internal/compaction"
 	"github.com/smallnest/pigo/internal/session"
 )
 
@@ -55,6 +58,7 @@ func TestCreateLoadListAppendDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
 
 	meta := NewMetadata("sess-1", "Fix bug", "agentic", "openrouter/free", ws)
 	header := session.SessionHeader{
@@ -81,8 +85,8 @@ func TestCreateLoadListAppendDelete(t *testing.T) {
 	if len(list) != 1 || list[0].SessionID != "sess-1" {
 		t.Fatalf("list = %+v, want one sess-1", list)
 	}
-	if list[0].MessageCount != 0 {
-		t.Fatalf("fresh session message count = %d, want 0", list[0].MessageCount)
+	if list[0].MessageCount != 2 {
+		t.Fatalf("fresh session message count = %d, want 2", list[0].MessageCount)
 	}
 
 	loadedMeta, loadedHeader, loadedMsgs, err := store.Load("sess-1")
@@ -111,7 +115,7 @@ func TestCreateLoadListAppendDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.MessageCount != 2 || after.TurnCount != 1 || after.ToolCallCount != 1 {
+	if after.MessageCount != 4 || after.TurnCount != 2 || after.ToolCallCount != 1 {
 		t.Fatalf("counts after append = %+v", after)
 	}
 
@@ -125,12 +129,12 @@ func TestCreateLoadListAppendDelete(t *testing.T) {
 	if len(list) != 0 {
 		t.Fatalf("list after delete = %+v, want empty", list)
 	}
-	if _, err := store.LoadMetadata("sess-1"); !os.IsNotExist(err) {
+	if _, err := store.LoadMetadata("sess-1"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("metadata still readable after delete: %v", err)
 	}
 }
 
-func TestIndexRebuildAfterStaleEntry(t *testing.T) {
+func TestProjectionWindowMatchesFullProjection(t *testing.T) {
 	home := t.TempDir()
 	ws := filepath.Join(home, "ws")
 	if err := os.MkdirAll(ws, 0o755); err != nil {
@@ -140,6 +144,149 @@ func TestIndexRebuildAfterStaleEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	header := session.SessionHeader{ID: "win-sess", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), Model: "m", Cwd: ws}
+	if err := store.Create(NewMetadata("win-sess", "Window", "agentic", "m", ws), header, nil); err != nil {
+		t.Fatal(err)
+	}
+	var msgs agentcore.MessageList
+	for i := 0; i < 125; i++ {
+		msgs = append(msgs, agentcore.UserMessage{
+			RoleField: agentcore.RoleUser,
+			Content:   agentcore.ContentList{agentcore.NewTextContent(fmt.Sprintf("msg-%03d", i))},
+		})
+	}
+	if err := store.Append("win-sess", time.Now().UTC(), msgs); err != nil {
+		t.Fatal(err)
+	}
+
+	proj, err := store.Projection("win-sess", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		end   int
+		limit int
+	}{
+		{end: 0, limit: 50},
+		{end: 125, limit: 50},
+		{end: 100, limit: 50},
+		{end: 50, limit: 50},
+		{end: 125, limit: 10},
+	}
+	for _, tc := range tests {
+		win, err := store.ProjectionWindow("win-sess", tc.end, tc.limit)
+		if err != nil {
+			t.Fatalf("ProjectionWindow(end=%d,limit=%d): %v", tc.end, tc.limit, err)
+		}
+		end := tc.end
+		if end <= 0 || end > len(proj.Entries) {
+			end = len(proj.Entries)
+		}
+		start := end - tc.limit
+		if start < 0 {
+			start = 0
+		}
+		if win.Total != len(proj.Entries) || win.Start != start {
+			t.Fatalf("window(end=%d,limit=%d) total/start = %d/%d, want %d/%d", tc.end, tc.limit, win.Total, win.Start, len(proj.Entries), start)
+		}
+		if len(win.Entries) != len(proj.Entries[start:end]) {
+			t.Fatalf("window(end=%d,limit=%d) has %d entries, want %d", tc.end, tc.limit, len(win.Entries), len(proj.Entries[start:end]))
+		}
+		for i := range win.Entries {
+			if win.Entries[i].ID != proj.Entries[start+i].ID {
+				t.Fatalf("window(end=%d,limit=%d)[%d] = %s, want %s", tc.end, tc.limit, i, win.Entries[i].ID, proj.Entries[start+i].ID)
+			}
+		}
+	}
+}
+
+func TestHistoryWindowKeepsPreCompactionEntries(t *testing.T) {
+	home := t.TempDir()
+	ws := filepath.Join(home, "ws")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenForWorkspace(home, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	header := session.SessionHeader{ID: "hist-sess", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), Model: "m", Cwd: ws}
+	if err := store.Create(NewMetadata("hist-sess", "History", "agentic", "m", ws), header, nil); err != nil {
+		t.Fatal(err)
+	}
+	var msgs agentcore.MessageList
+	for i := 0; i < 6; i++ {
+		msgs = append(msgs, agentcore.UserMessage{
+			RoleField: agentcore.RoleUser,
+			Content:   agentcore.ContentList{agentcore.NewTextContent(fmt.Sprintf("msg-%d", i))},
+		})
+	}
+	if err := store.Append("hist-sess", time.Now().UTC(), msgs); err != nil {
+		t.Fatal(err)
+	}
+	header, err = store.Header("hist-sess")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := &compaction.CompactionResult{
+		Summary:        "summarized",
+		FirstKeptIndex: 4,
+		RetainedTail:   []agentcore.Message{msgs[4], msgs[5]},
+		TokensBefore:   10,
+	}
+	if _, err := store.AppendCompaction("hist-sess", header, res); err != nil {
+		t.Fatal(err)
+	}
+
+	proj, err := store.Projection("hist-sess", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(proj.Entries) != 3 {
+		t.Fatalf("compacted projection has %d entries, want 3", len(proj.Entries))
+	}
+
+	win, err := store.HistoryWindow("hist-sess", 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := store.MainLeaf("hist-sess")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := store.Entries("hist-sess")
+	if err != nil {
+		t.Fatal(err)
+	}
+	full := session.PathToLeafV4(entries, leaf)
+	if win.Total != len(full) {
+		t.Fatalf("history window total = %d, want %d", win.Total, len(full))
+	}
+	if len(win.Entries) != len(full) {
+		t.Fatalf("history window has %d entries, want %d", len(win.Entries), len(full))
+	}
+	for i := range win.Entries {
+		if win.Entries[i].ID != full[i].ID {
+			t.Fatalf("history window[%d] = %s, want %s", i, win.Entries[i].ID, full[i].ID)
+		}
+	}
+}
+
+func TestDeleteRemovesSession(t *testing.T) {
+	home := t.TempDir()
+	ws := filepath.Join(home, "ws")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenForWorkspace(home, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
 	header := session.SessionHeader{ID: "a", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	if err := store.Create(NewMetadata("a", "A", "agentic", "m", ws), header, nil); err != nil {
 		t.Fatal(err)
@@ -147,7 +294,7 @@ func TestIndexRebuildAfterStaleEntry(t *testing.T) {
 	if err := store.Create(NewMetadata("b", "B", "agentic", "m", ws), session.SessionHeader{ID: "b", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(store.metadataPath("a")); err != nil {
+	if err := store.Delete("a"); err != nil {
 		t.Fatal(err)
 	}
 	list, err := store.List()
@@ -169,6 +316,7 @@ func TestCreateRejectsDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
 	header := session.SessionHeader{ID: "x", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	if err := store.Create(NewMetadata("x", "X", "agentic", "m", ws), header, nil); err != nil {
 		t.Fatal(err)
@@ -191,10 +339,12 @@ func TestSeparateProjectsIsolateSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = storeA.Close() })
 	storeB, err := OpenForWorkspace(home, wsB)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = storeB.Close() })
 	headerA := session.SessionHeader{ID: "s", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	if err := storeA.Create(NewMetadata("s", "S", "agentic", "m", wsA), headerA, nil); err != nil {
 		t.Fatal(err)
@@ -218,6 +368,7 @@ func TestAppendBranchUpdatesMetadataAndPreservesTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
 	now := time.Now().UTC()
 	meta := NewMetadata("sess-branch", "Branch", "pigo", "m", ws)
 	header := session.SessionHeader{ID: "sess-branch", CreatedAt: now, UpdatedAt: now, Model: "m", Provider: "p", Cwd: ws}
@@ -228,7 +379,7 @@ func TestAppendBranchUpdatesMetadataAndPreservesTree(t *testing.T) {
 	if err := store.Create(meta, header, first); err != nil {
 		t.Fatal(err)
 	}
-	_, entries, err := store.TranscriptStore().LoadEntries("sess-branch")
+	entries, err := store.Entries("sess-branch")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,20 +401,19 @@ func TestAppendBranchUpdatesMetadataAndPreservesTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Create seeds zero counts; AppendBranch counts only the appended batch, so
-	// the metadata reflects the branch write (2 messages, 1 user turn).
-	if meta2.MessageCount != 2 {
-		t.Errorf("MessageCount = %d, want 2", meta2.MessageCount)
+	// Create seeds the initial two messages; AppendBranch adds the second batch.
+	if meta2.MessageCount != 4 {
+		t.Errorf("MessageCount = %d, want 4", meta2.MessageCount)
 	}
-	if meta2.TurnCount != 1 {
-		t.Errorf("TurnCount = %d, want 1", meta2.TurnCount)
+	if meta2.TurnCount != 2 {
+		t.Errorf("TurnCount = %d, want 2", meta2.TurnCount)
 	}
 	if !meta2.LastActiveAt.Equal(header.UpdatedAt) {
 		t.Errorf("LastActiveAt = %v, want %v", meta2.LastActiveAt, header.UpdatedAt)
 	}
 	// The tree survives: the second chain descends from the first leaf, so both
 	// branches are still present in the single transcript file.
-	_, all, err := store.TranscriptStore().LoadEntries("sess-branch")
+	all, err := store.Entries("sess-branch")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,21 +435,20 @@ func TestImportEntriesRoundTripsTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
 
-	src, err := session.NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
 	now := time.Now().UTC()
-	header := session.SessionHeader{ID: "legacy-sess", CreatedAt: now, UpdatedAt: now, Model: "m", Provider: "p", Cwd: ws}
+	header := session.SessionHeader{ID: "imported-sess", CreatedAt: now, UpdatedAt: now, Model: "m", Provider: "p", Cwd: ws}
+	srcMeta := NewMetadata("src-sess", "Source", "pigo", "m", ws)
+	srcHeader := session.SessionHeader{ID: "src-sess", CreatedAt: now, UpdatedAt: now, Model: "m", Provider: "p", Cwd: ws}
 	msgs := agentcore.MessageList{
 		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("q")}},
 		agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant, Content: agentcore.ContentList{agentcore.NewTextContent("a")}},
 	}
-	if err := src.Save(header, msgs); err != nil {
+	if err := store.Create(srcMeta, srcHeader, msgs); err != nil {
 		t.Fatal(err)
 	}
-	_, entries, err := src.LoadEntries(header.ID)
+	entries, err := store.Entries("src-sess")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +457,7 @@ func TestImportEntriesRoundTripsTree(t *testing.T) {
 	meta.CreatedAt = header.CreatedAt
 	meta.LastActiveAt = header.UpdatedAt
 	meta.MessageCount = len(entries)
-	if err := store.ImportEntries(meta, header, entries); err != nil {
+	if err := store.ImportV4Entries(meta, header, entries, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -319,7 +468,7 @@ func TestImportEntriesRoundTripsTree(t *testing.T) {
 	if h2.ID != header.ID || len(msgs2) != 2 {
 		t.Fatalf("imported session mismatch: id=%q msgs=%d", h2.ID, len(msgs2))
 	}
-	_, imported, err := store.TranscriptStore().LoadEntries(header.ID)
+	imported, err := store.Entries(header.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +478,7 @@ func TestImportEntriesRoundTripsTree(t *testing.T) {
 				i, e.ID, e.ParentID, entries[i].ID, entries[i].ParentID)
 		}
 	}
-	if err := store.ImportEntries(meta, header, entries); err == nil {
+	if err := store.ImportV4Entries(meta, header, entries, nil); err == nil {
 		t.Fatal("ImportEntries must reject an existing session id")
 	}
 }
@@ -348,10 +497,12 @@ func TestListAllScansProjects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = storeA.Close() })
 	storeB, err := OpenForWorkspace(home, wsB)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = storeB.Close() })
 	older := time.Now().UTC().Add(-2 * time.Hour)
 	newer := time.Now().UTC()
 	metaA := NewMetadata("sess-a", "A", "pigo", "m", wsA)
@@ -387,4 +538,9 @@ func TestListAllScansProjects(t *testing.T) {
 	if len(empty) != 0 {
 		t.Fatalf("ListAll on empty home returned %d sessions, want 0", len(empty))
 	}
+	emptyStore, err := Open(filepath.Join(home, "empty"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = emptyStore.Close() })
 }

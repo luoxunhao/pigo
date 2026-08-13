@@ -40,12 +40,12 @@ func NewLLMConsolidator(model, baseURL, protocol, providerName, apiKey string, t
 // error event whose message we convert to an error (so the Runner marks the run
 // failed rather than silently deleting nothing, SPEC §5.5).
 func newModelCompleter(model, baseURL, protocol, providerName, apiKey string, thinking agentcore.ThinkingLevel) (completeFn, error) {
-	prov, resolvedName, err := provider.ResolveProvider(model, baseURL, protocol, providerName, os.Getenv)
+	prov, resolvedName, resolvedKey, wireModel, err := provider.ResolveConfiguredModel(model, baseURL, protocol, providerName, apiKey, os.Getenv)
 	if err != nil {
 		return nil, fmt.Errorf("dream: resolve provider: %w", err)
 	}
 	creds := provider.NewCredentialStore(nil)
-	creds.SetOverride(resolvedName, apiKey)
+	creds.SetOverride(resolvedName, resolvedKey)
 
 	return func(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
 		key := creds.GetAPIKey(ctx, resolvedName)
@@ -59,7 +59,7 @@ func newModelCompleter(model, baseURL, protocol, providerName, apiKey string, th
 			},
 		}
 		stream, err := prov.StreamCompletion(ctx, provider.CompletionRequest{
-			Model:   model,
+			Model:   wireModel,
 			Context: llm,
 			Config:  provider.StreamConfig{APIKey: key, ThinkingLevel: thinking},
 		})

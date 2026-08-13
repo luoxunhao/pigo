@@ -15,6 +15,7 @@ import (
 
 func TestRunHTTPStream(t *testing.T) {
 	pigoHome := t.TempDir()
+	cleanupStores(t)
 	t.Setenv("PIGO_HOME", pigoHome)
 	cfgPath := filepath.Join(t.TempDir(), "config.toml")
 	if err := config.SaveFileConfig(cfgPath, config.FileConfig{

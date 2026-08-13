@@ -24,14 +24,15 @@ import (
 	"github.com/smallnest/pigo/internal/provider"
 	"github.com/smallnest/pigo/internal/runtime"
 	"github.com/smallnest/pigo/internal/session"
+	"github.com/smallnest/pigo/internal/sessionstore"
 	"github.com/smallnest/pigo/internal/trust"
 )
 
 // sessionStore returns the session store for the interactive REPL. It is a thin
 // alias for headless.SessionStore so the REPL and headless runs share one store
-// rooted at ~/.pigo/sessions (or PIGO_HOME).
-func sessionStore() (*session.Store, error) {
-	return headless.SessionStore()
+// rooted at $PIGO_HOME/sessions.db (or PIGO_HOME).
+func sessionStore() (*sessionstore.Store, error) {
+	return headless.ProjectStore()
 }
 
 // Options carries the resolved run configuration plus optional
@@ -117,16 +118,12 @@ func Run(opts Options) error {
 		// Interactive resume always appends a fresh user message before running,
 		// so a session that ended normally (trailing assistant reply) is resumable
 		// here. Load the raw session and rebuild the context directly.
-		h, entries, err := store.LoadEntries(opts.ResumeID)
+		_, h, msgs, err := store.Load(opts.ResumeID)
 		if err != nil {
 			return err
 		}
-		msgs := make(agentcore.MessageList, len(entries))
-		for i, e := range entries {
-			msgs[i] = e.Message
-		}
-		if len(entries) > 0 {
-			curLeaf = entries[len(entries)-1].ID
+		if proj, projErr := store.Projection(opts.ResumeID, ""); projErr == nil {
+			curLeaf = proj.LeafID
 		}
 		header = h
 		agentCtx = &agentcore.AgentContext{SystemPrompt: h.SystemPrompt, Messages: msgs, Tools: opts.Tools}
@@ -157,6 +154,7 @@ func Run(opts Options) error {
 		Provider:      opts.Provider,
 		BaseURL:       opts.BaseURL,
 		Protocol:      opts.Protocol,
+		Creds:         creds,
 		ThinkingLevel: opts.ThinkingLevel,
 		ContextWindow: cli.DefaultContextWindow,
 	}

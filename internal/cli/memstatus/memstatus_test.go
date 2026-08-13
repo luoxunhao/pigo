@@ -12,12 +12,12 @@ import (
 )
 
 // TestRunMemoryDisabled renders the disabled state when the store is nil and
-// still prints the context and checkpoint sections.
+// still prints the context section.
 func TestRunMemoryDisabled(t *testing.T) {
 	var buf bytes.Buffer
 	RunMemory(&buf, nil, "", "", nil, 0)
 	out := buf.String()
-	for _, want := range []string{"persistent memory:", "disabled", "context:", "checkpoint:"} {
+	for _, want := range []string{"persistent memory:", "disabled", "context:"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %q:\n%s", want, out)
 		}
@@ -45,7 +45,7 @@ func TestRunMemoryEnabledCounts(t *testing.T) {
 	msgs := agentcore.MessageList{agentcore.UserMessage{Content: agentcore.ContentList{agentcore.NewTextContent("hi")}}}
 	RunMemory(&buf, st, root, "sess-1", msgs, 200000)
 	out := buf.String()
-	for _, want := range []string{"enabled", "entries:", "global:", "context:", "checkpoint:", "none yet"} {
+	for _, want := range []string{"enabled", "entries:", "global:", "context:"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %q:\n%s", want, out)
 		}

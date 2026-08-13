@@ -127,12 +127,15 @@ func TestHTTPAdapterRejectsNonStandardMethods(t *testing.T) {
 	}
 }
 
-func TestHTTPAdapterInitializeHasNoPigoMeta(t *testing.T) {
+func TestHTTPAdapterInitializeDeclaresSessionTree(t *testing.T) {
 	adapter := NewHTTPAdapter(nil, nil, "test")
-	resp := adapter.initialize()
+	resp := adapter.initialize(nil)
 	capabilities, _ := resp["agentCapabilities"].(map[string]any)
-	if _, ok := capabilities["_meta"]; ok {
-		t.Fatalf("initialize still advertises _meta: %+v", capabilities)
+	meta, _ := capabilities["_meta"].(map[string]any)
+	pigo, _ := meta["pigo"].(map[string]any)
+	tree, _ := pigo["sessionTree"].(map[string]any)
+	if tree["version"] != 1 {
+		t.Fatalf("initialize sessionTree version = %v, want 1", tree["version"])
 	}
 }
 

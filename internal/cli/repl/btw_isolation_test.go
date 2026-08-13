@@ -86,7 +86,7 @@ func TestBtwNoStoreWrites(t *testing.T) {
 	// The main loop persists only on a real turn; /btw must trigger none. Since
 	// the seeded messages were never run through streamRun, the store should hold
 	// no entries for this session at all.
-	if _, entries, err := store.LoadEntries(deps.header.ID); err == nil && len(entries) != 0 {
+	if entries, err := store.Entries(deps.header.ID); err == nil && len(entries) != 0 {
 		t.Fatalf("/btw must not write to the store, got %d entries", len(entries))
 	}
 }

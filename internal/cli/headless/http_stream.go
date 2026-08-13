@@ -153,6 +153,10 @@ func drainHTTPEvents(ctx context.Context, client *httpclient.ClientWithResponses
 			return false, 0
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(out, "{\"type\":\"agent_end\",\"error\":%q}\n", err.Error())
+		return false, 1
+	}
 	return false, 0
 }
 

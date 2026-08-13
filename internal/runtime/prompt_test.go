@@ -42,11 +42,9 @@ func TestBuildSystemPromptBaseAndEnv(t *testing.T) {
 	}
 }
 
-// TestBuildSystemPromptAdvertisesTaskFanout verifies the base instruction tells
-// the model about the generic task tool: that it dispatches an independent
-// sub-agent (delegation) and that multiple task calls in one message run in
-// parallel (fan-out, US-008/#458).
-func TestBuildSystemPromptAdvertisesTaskFanout(t *testing.T) {
+// TestBuildSystemPromptDoesNotAdvertiseBuiltinTask verifies the built-in task
+// tool was removed from the base instruction; sub-agents are plugin-declared.
+func TestBuildSystemPromptDoesNotAdvertiseBuiltinTask(t *testing.T) {
 	got, err := BuildSystemPrompt(PromptConfig{
 		WorkingDir: "/work/proj",
 		Now:        fixedTime,
@@ -56,14 +54,11 @@ func TestBuildSystemPromptAdvertisesTaskFanout(t *testing.T) {
 		t.Fatalf("BuildSystemPrompt: %v", err)
 	}
 	lower := strings.ToLower(got)
-	if !strings.Contains(lower, "task tool") {
-		t.Errorf("prompt should advertise the task tool:\n%s", got)
+	if strings.Contains(lower, "task tool") {
+		t.Errorf("prompt should not advertise the built-in task tool:\n%s", got)
 	}
-	if !strings.Contains(lower, "sub-agent") || !strings.Contains(lower, "independent") {
-		t.Errorf("prompt should describe the task tool as an independent sub-agent (delegation):\n%s", got)
-	}
-	if !strings.Contains(lower, "parallel") {
-		t.Errorf("prompt should state that multiple task calls run in parallel (fan-out):\n%s", got)
+	if strings.Contains(lower, "sub-agent") {
+		t.Errorf("prompt should not advertise sub-agent delegation by default:\n%s", got)
 	}
 }
 

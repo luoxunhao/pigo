@@ -18,12 +18,13 @@ import (
 	"github.com/smallnest/pigo/internal/provider"
 	"github.com/smallnest/pigo/internal/runtime"
 	"github.com/smallnest/pigo/internal/session"
+	"github.com/smallnest/pigo/internal/sessionstore"
 	"github.com/smallnest/pigo/internal/trust"
 )
 
 var _ cli.Host = (*replDeps)(nil)
 
-func (d *replDeps) Store() *session.Store                      { return d.store }
+func (d *replDeps) Store() *sessionstore.Store                 { return d.store }
 func (d *replDeps) Header() session.SessionHeader              { return d.header }
 func (d *replDeps) AgentCtx() *agentcore.AgentContext          { return d.agentCtx }
 func (d *replDeps) Live() *cli.LiveConfig                      { return d.live }

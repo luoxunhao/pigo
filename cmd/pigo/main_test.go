@@ -26,6 +26,7 @@ import (
 // PIGO_HOME so it never touches the real session store.
 func TestDispatchListSessionsEmpty(t *testing.T) {
 	t.Setenv("PIGO_HOME", t.TempDir())
+	cleanupStores(t)
 	var out, errOut bytes.Buffer
 	code := dispatch(context.Background(), cliOptions{listSessions: true}, &out, &errOut)
 	if code != 0 {
@@ -41,6 +42,7 @@ func TestDispatchListSessionsEmpty(t *testing.T) {
 // blank REPL.
 func TestDispatchContinueNoSessions(t *testing.T) {
 	t.Setenv("PIGO_HOME", t.TempDir())
+	cleanupStores(t)
 	// Ensure a non-terminal path is not taken before the continue guard: continue
 	// resolves the id first and errors when the store is empty.
 	var out, errOut bytes.Buffer
@@ -133,7 +135,7 @@ func TestCwdChdirRootsEnv(t *testing.T) {
 		t.Fatalf("EvalSymlinks: %v", err)
 	}
 
-	env, err := run.SetupEnv("openrouter/free", "", "", "", "", true /*noTools*/, true /*noSkills*/, "", nil, false /*memEnabled*/, run.ToolPolicy{})
+	env, err := run.SetupEnv("", "", "", "", "", true /*noTools*/, true /*noSkills*/, "", nil, false /*memEnabled*/, run.ToolPolicy{})
 	if err != nil {
 		t.Fatalf("SetupEnv: %v", err)
 	}
@@ -182,7 +184,7 @@ func changedSet(names ...string) func(string) bool {
 }
 
 func TestApplyFileConfig_FillsUnsetFlags(t *testing.T) {
-	opts := cliOptions{model: "openrouter/free", outputFmt: "text"}
+	opts := cliOptions{outputFmt: "text"}
 	cfg := config.FileConfig{
 		Model: "opencode-go/deepseek-v4-flash",
 		Models: []config.ModelConfig{{
@@ -229,9 +231,9 @@ func TestApplyFileConfig_CLIWins(t *testing.T) {
 }
 
 func TestApplyFileConfig_EmptyConfigNoChange(t *testing.T) {
-	opts := cliOptions{model: "openrouter/free", outputFmt: "text"}
+	opts := cliOptions{outputFmt: "text"}
 	applyFileConfig(&opts, config.FileConfig{}, changedSet())
-	if opts.model != "openrouter/free" || opts.outputFmt != "text" {
+	if opts.model != "" || opts.outputFmt != "text" {
 		t.Fatalf("empty config should not change opts, got %+v", opts)
 	}
 	if opts.baseURL != "" || opts.provider != "" || opts.noTools {

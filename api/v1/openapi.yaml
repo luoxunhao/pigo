@@ -84,6 +84,10 @@ paths:
             type: integer
             default: 50
             maximum: 200
+        - name: includeSubagents
+          in: query
+          schema:
+            type: boolean
       responses:
         "200":
           description: Session list.
@@ -264,6 +268,11 @@ paths:
             type: integer
             default: 50
             maximum: 200
+        - name: fullHistory
+          in: query
+          schema:
+            type: boolean
+          description: Return the full raw main-lane history instead of the compaction projection.
       responses:
         "200":
           description: Message page.
@@ -697,6 +706,14 @@ components:
           type: string
         updatedAt:
           type: string
+        parentSessionId:
+          type: string
+        parentToolCallId:
+          type: string
+        subagentType:
+          type: string
+        sessionKind:
+          type: string
         additionalDirectories:
           type: array
           items:
@@ -728,6 +745,11 @@ components:
           maximum: 200
         before:
           type: string
+        leafId:
+          type: string
+        fullHistory:
+          type: boolean
+          description: Return the full raw main-lane history instead of the compaction projection.
     SessionLoadResult:
       type: object
       required: [sessionId, directory, configOptions, messages, hasMore]
@@ -749,6 +771,15 @@ components:
         nextCursor:
           type: string
           nullable: true
+        currentLeafId:
+          type: string
+          nullable: true
+        currentLane:
+          type: string
+        lanes:
+          type: array
+          items:
+            $ref: "#/components/schemas/LaneState"
     SessionStatusResult:
       type: object
       required: [sessionId, status]
@@ -767,6 +798,24 @@ components:
           type: integer
         contextUsage:
           $ref: "#/components/schemas/ContextUsage"
+        currentLeafId:
+          type: string
+          nullable: true
+        currentLane:
+          type: string
+        lanes:
+          type: array
+          items:
+            $ref: "#/components/schemas/LaneState"
+    LaneState:
+      type: object
+      required: [lane]
+      properties:
+        lane:
+          type: string
+        leafId:
+          type: string
+          nullable: true
     UpdateSessionRequest:
       type: object
       required: [directory]
@@ -818,6 +867,16 @@ components:
       properties:
         id:
           type: string
+        entryId:
+          type: string
+        parentId:
+          type: string
+        entryType:
+          type: string
+        seq:
+          type: integer
+        lane:
+          type: string
         role:
           type: string
         timestamp:
@@ -832,6 +891,11 @@ components:
         usage:
           type: object
           nullable: true
+        rawInput:
+          type: object
+          nullable: true
+        rawOutput:
+          type: string
     MessageListResult:
       type: object
       required: [messages, hasMore]
@@ -874,6 +938,19 @@ components:
         usage:
           type: object
           nullable: true
+        structured:
+          $ref: "#/components/schemas/StructuredResult"
+    StructuredResult:
+      type: object
+      required: [version, kind, data]
+      properties:
+        version:
+          type: integer
+        kind:
+          type: string
+        data:
+          type: object
+          additionalProperties: true
     PromptAsyncResponse:
       type: object
       required: [messageId, accepted]
@@ -1130,3 +1207,7 @@ components:
           properties:
             hint:
               type: string
+        structuredKinds:
+          type: array
+          items:
+            type: string

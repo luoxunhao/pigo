@@ -43,6 +43,7 @@ type BtwRunSettings struct {
 	Model         string
 	ProviderName  string
 	Provider      provider.Provider
+	APIKey        string
 	ThinkingLevel agentcore.ThinkingLevel
 }
 
@@ -113,13 +114,14 @@ func ResolveBtwSettings(out io.Writer, host cli.Host) BtwRunSettings {
 	}
 
 	if model := strings.TrimSpace(cfg.Model); model != "" && model != s.Model {
-		prov, providerName, perr := provider.ResolveProvider(model, live.BaseURL, live.Protocol, "", os.Getenv)
+		prov, providerName, apiKey, _, perr := provider.ResolveConfiguredModel(model, live.BaseURL, live.Protocol, "", "", os.Getenv)
 		if perr != nil {
 			fmt.Fprintf(out, "%s\n", ui.Colorize(ui.Enabled(), ui.Dim, fmt.Sprintf("btw: cannot use model %q (%v), falling back to %q", model, perr, s.Model)))
 		} else {
 			s.Model = model
 			s.ProviderName = providerName
 			s.Provider = prov
+			s.APIKey = apiKey
 		}
 	}
 

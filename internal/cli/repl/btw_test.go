@@ -55,7 +55,7 @@ func TestBtwDoesNotPersist(t *testing.T) {
 	if deps.curLeaf != "" {
 		t.Fatalf("deps.curLeaf must stay empty after /btw, got %q", deps.curLeaf)
 	}
-	if _, entries, err := store.LoadEntries(deps.header.ID); err == nil && len(entries) != 0 {
+	if entries, err := store.Entries(deps.header.ID); err == nil && len(entries) != 0 {
 		t.Fatalf("no session entries should be persisted by /btw, got %d", len(entries))
 	}
 }

@@ -73,7 +73,7 @@ func TestTaskEmitsSubAgentProgress(t *testing.T) {
 			Batch:      agenttool.BatchConfig{ToolExecutorConfig: agenttool.ToolExecutorConfig{Registry: reg}},
 		}
 	}
-	tool := NewTaskTool(factory, nil)
+	tool := NewSubAgentTool(SubAgentSpec{Name: "task", NewRunConfig: factory})
 
 	var mu sync.Mutex
 	var progress []agentcore.SubAgentProgressEvent
@@ -136,7 +136,7 @@ func TestTaskNilEmitterNoPanic(t *testing.T) {
 			Batch:      agenttool.BatchConfig{ToolExecutorConfig: agenttool.ToolExecutorConfig{Registry: agenttool.NewToolRegistry()}},
 		}
 	}
-	tool := NewTaskTool(factory, nil)
+	tool := NewSubAgentTool(SubAgentSpec{Name: "task", NewRunConfig: factory})
 
 	// Plain ctx: no WithProgressEmitter, so ProgressEmitterFromContext is nil.
 	res, err := tool.Execute(context.Background(), "id", json.RawMessage(`{"prompt":"go"}`), nil)

@@ -18,6 +18,7 @@ import (
 	"github.com/smallnest/pigo/internal/provider"
 	"github.com/smallnest/pigo/internal/runtime"
 	"github.com/smallnest/pigo/internal/session"
+	"github.com/smallnest/pigo/internal/sessionstore"
 	"github.com/smallnest/pigo/internal/trust"
 )
 
@@ -37,7 +38,7 @@ var ErrLineInterrupted = errors.New("line input interrupted")
 // session leaf, the persisted-message count, and the last /btw side thread.
 type Host interface {
 	// Session collaborators.
-	Store() *session.Store
+	Store() *sessionstore.Store
 	Header() session.SessionHeader
 	AgentCtx() *agentcore.AgentContext
 	Live() *LiveConfig

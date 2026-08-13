@@ -76,7 +76,6 @@ func TestResolveConfigInvalidValues(t *testing.T) {
 	}{
 		{"bad mode", &ConfigLayer{ToolExecutionMode: ptr("concurrent")}},
 		{"bad thinking", &ConfigLayer{ThinkingLevel: ptr("ultra")}},
-		{"empty model", &ConfigLayer{Model: ptr("")}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -153,7 +152,10 @@ func TestResolveConfigDefaultsAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("default-only config must be valid: %v", err)
 	}
-	if cfg.Model == "" || cfg.ToolExecutionMode == "" || cfg.ThinkingLevel == "" {
+	if cfg.Model != "" {
+		t.Errorf("default model should be empty, got %q", cfg.Model)
+	}
+	if cfg.ToolExecutionMode == "" || cfg.ThinkingLevel == "" {
 		t.Errorf("default config incomplete: %+v", cfg)
 	}
 }

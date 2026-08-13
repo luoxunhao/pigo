@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/smallnest/pigo/internal/agentcore"
+	"github.com/smallnest/pigo/internal/httpapi/gen"
 	"github.com/smallnest/pigo/internal/session"
 	"github.com/smallnest/pigo/internal/sessionstore"
 )
@@ -16,14 +17,21 @@ func (s *SessionService) ForkChoices(sessionID, directory string) (string, error
 	if err != nil {
 		return "", err
 	}
-	_, entries, err := store.TranscriptStore().LoadEntries(sessionID)
+	entries, err := store.Entries(sessionID)
 	if err != nil {
 		return "", err
 	}
 	var b strings.Builder
 	n := 0
 	for _, e := range entries {
-		u, ok := e.Message.(agentcore.UserMessage)
+		if e.Type != session.EntryTypeMessage {
+			continue
+		}
+		msg, err := e.MessageValue()
+		if err != nil {
+			continue
+		}
+		u, ok := msg.(agentcore.UserMessage)
 		if !ok {
 			continue
 		}
@@ -43,14 +51,21 @@ func (s *SessionService) Fork(sessionID, directory string, n int) (string, error
 	if err != nil {
 		return "", err
 	}
-	_, entries, err := store.TranscriptStore().LoadEntries(sessionID)
+	entries, err := store.Entries(sessionID)
 	if err != nil {
 		return "", err
 	}
 	users := 0
 	leafID := ""
 	for _, e := range entries {
-		if _, ok := e.Message.(agentcore.UserMessage); ok {
+		if e.Type == session.EntryTypeMessage {
+			msg, err := e.MessageValue()
+			if err != nil {
+				continue
+			}
+			if _, ok := msg.(agentcore.UserMessage); !ok {
+				continue
+			}
 			users++
 			if users == n {
 				leafID = e.ParentID
@@ -70,14 +85,14 @@ func (s *SessionService) Clone(sessionID, directory string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	_, entries, err := store.TranscriptStore().LoadEntries(sessionID)
+	leaf, err := store.MainLeaf(sessionID)
 	if err != nil {
 		return "", err
 	}
-	if len(entries) == 0 {
+	if leaf == "" {
 		return "", fmt.Errorf("nothing to clone yet - send a message first")
 	}
-	return s.forkFrom(sessionID, directory, entries[len(entries)-1].ID)
+	return s.forkFrom(sessionID, directory, leaf)
 }
 
 func (s *SessionService) forkFrom(sourceID, directory, leafID string) (string, error) {
@@ -85,7 +100,7 @@ func (s *SessionService) forkFrom(sourceID, directory, leafID string) (string, e
 	if err != nil {
 		return "", err
 	}
-	newHeader, path, err := store.TranscriptStore().Fork(sourceID, leafID, time.Now().UTC())
+	newHeader, path, err := store.ForkV4(sourceID, leafID, time.Now().UTC())
 	if err != nil {
 		return "", err
 	}
@@ -93,7 +108,7 @@ func (s *SessionService) forkFrom(sourceID, directory, leafID string) (string, e
 	meta.ParentSessionID = sourceID
 	meta.MessageCount = len(path)
 	meta.LastActiveAt = newHeader.UpdatedAt
-	if err := store.ImportEntries(meta, newHeader, path); err != nil {
+	if err := store.ImportV4Entries(meta, newHeader, path, nil); err != nil {
 		return "", err
 	}
 	return newHeader.ID, nil
@@ -101,46 +116,171 @@ func (s *SessionService) forkFrom(sourceID, directory, leafID string) (string, e
 
 // Tree renders the session branch tree, optionally switching the active leaf.
 func (s *SessionService) Tree(sessionID, directory string, n int) (string, error) {
+	text, _, err := s.TreeStructured(sessionID, directory, n)
+	return text, err
+}
+
+// TreeStructured renders the tree and returns the structured sessionTree
+// snapshot when the request is valid.
+func (s *SessionService) TreeStructured(sessionID, directory string, n int) (string, *gen.StructuredResult, error) {
 	store, err := s.storeFor(directory)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	meta, err := store.LoadMetadata(sessionID)
+	entries, err := store.Entries(sessionID)
 	if err != nil {
-		return "", err
-	}
-	_, entries, err := store.TranscriptStore().LoadEntries(sessionID)
-	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if len(entries) == 0 {
-		return "session tree is empty - send a message first", nil
+		return "session tree is empty - send a message first", nil, nil
 	}
-	custom := readSessionCustom(meta)
-	curLeaf, _ := custom["curLeaf"].(string)
-	if curLeaf == "" {
-		curLeaf = entries[len(entries)-1].ID
+	leaf, err := store.MainLeaf(sessionID)
+	if err != nil {
+		return "", nil, err
 	}
-	lines := session.RenderTreeLines(entries, curLeaf)
+	lines := session.RenderTreeLinesV4(entries, leaf)
 	if n == 0 {
 		var b strings.Builder
 		b.WriteString("session tree (run /tree <n> to switch the active branch):\n")
 		for i, l := range lines {
 			fmt.Fprintf(&b, "  %d. %s\n", i+1, l.Text)
 		}
-		return b.String(), nil
+		snapshot, err := s.treeSnapshot(store, sessionID, leaf)
+		if err != nil {
+			return "", nil, err
+		}
+		return b.String(), snapshot, nil
 	}
+	if n < 1 || n > len(lines) {
+		return "", nil, fmt.Errorf("invalid selection %d (1..%d)", n, len(lines))
+	}
+	target := lines[n-1].Entry
+	if target.ID == leaf {
+		return "Already at this point", nil, nil
+	}
+	targetID := target.ID
+	if err := store.MoveLane(sessionID, "main", &targetID); err != nil {
+		return "", nil, err
+	}
+	path := session.PathToLeafV4(entries, target.ID)
+	snapshot, err := s.treeSnapshot(store, sessionID, target.ID)
+	if err != nil {
+		return "", nil, err
+	}
+	return fmt.Sprintf("switched to branch at node %d (%d messages) - next prompt continues from here", n, len(path)), snapshot, nil
+}
+
+func (s *SessionService) treeSnapshot(store *sessionstore.Store, sessionID, leafID string) (*gen.StructuredResult, error) {
+	proj, err := store.Projection(sessionID, leafID)
+	if err != nil {
+		return nil, err
+	}
+	nodes := make([]map[string]any, 0, len(proj.Entries))
+	active := map[string]bool{}
+	for _, e := range session.PathToLeafV4(proj.Entries, leafID) {
+		active[e.ID] = true
+	}
+	for _, e := range proj.Entries {
+		kind := treeNodeKind(e)
+		if kind == "" {
+			continue
+		}
+		node := map[string]any{
+			"id":        e.ID,
+			"parentId":  nil,
+			"kind":      kind,
+			"summary":   session.SummaryV4(e),
+			"timestamp": e.Timestamp.Format(time.RFC3339),
+		}
+		if e.ParentID != "" {
+			node["parentId"] = e.ParentID
+		}
+		if label, ok := proj.Labels[e.ID]; ok {
+			node["label"] = label
+		}
+		nodes = append(nodes, node)
+	}
+	var activePath []string
+	for _, e := range proj.Entries {
+		if active[e.ID] {
+			activePath = append(activePath, e.ID)
+		}
+	}
+	lanes := make([]map[string]any, 0, len(proj.Lanes))
+	for _, l := range proj.Lanes {
+		item := map[string]any{"lane": l.Lane}
+		if l.LeafID != nil {
+			item["leafId"] = *l.LeafID
+		} else {
+			item["leafId"] = nil
+		}
+		lanes = append(lanes, item)
+	}
+	data := map[string]any{
+		"nodes":         nodes,
+		"currentLeafId": leafID,
+		"currentLane":   proj.Lane,
+		"activePathIds": activePath,
+		"labels":        proj.Labels,
+		"lanes":         lanes,
+	}
+	if leafID == "" {
+		data["currentLeafId"] = nil
+		data["activePathIds"] = []string{}
+	}
+	return &gen.StructuredResult{Version: 1, Kind: "sessionTree", Data: data}, nil
+}
+
+// Label sets or clears a label fact for a tree line.
+func (s *SessionService) Label(sessionID, directory string, n int, label string) (string, error) {
+	store, err := s.storeFor(directory)
+	if err != nil {
+		return "", err
+	}
+	entries, err := store.Entries(sessionID)
+	if err != nil {
+		return "", err
+	}
+	leaf, err := store.MainLeaf(sessionID)
+	if err != nil {
+		return "", err
+	}
+	lines := session.RenderTreeLinesV4(entries, leaf)
 	if n < 1 || n > len(lines) {
 		return "", fmt.Errorf("invalid selection %d (1..%d)", n, len(lines))
 	}
 	target := lines[n-1].Entry
-	custom["curLeaf"] = target.ID
-	meta.CustomMetadata = writeSessionCustom(custom)
-	if err := store.SaveMetadata(meta); err != nil {
+	if err := store.SetLabel(sessionID, target.ID, label); err != nil {
 		return "", err
 	}
-	path := session.PathToLeaf(entries, target.ID)
-	return fmt.Sprintf("switched to branch at node %d (%d messages) - next prompt continues from here", n, len(path)), nil
+	if label == "" {
+		return fmt.Sprintf("cleared label on node %d", n), nil
+	}
+	return fmt.Sprintf("set label on node %d: %s", n, label), nil
+}
+
+func treeNodeKind(e session.V4Entry) string {
+	switch e.Type {
+	case session.EntryTypeMessage:
+		if msg, err := e.MessageValue(); err == nil {
+			return msg.Role()
+		}
+		return "message"
+	case session.EntryTypeCompaction:
+		return "compaction"
+	case session.EntryTypeBranchSummary:
+		return "branch_summary"
+	case session.EntryTypeCustomMessage:
+		return "custom_message"
+	case session.EntryTypeCustom:
+		return "custom"
+	case session.EntryTypeModelChange:
+		return "model_change"
+	case session.EntryTypeThinkingChange:
+		return "thinking_level_change"
+	default:
+		return ""
+	}
 }
 
 // Export writes the session transcript to a file.
@@ -152,7 +292,7 @@ func (s *SessionService) Export(sessionID, directory, path string) (string, erro
 	if path == "" {
 		path = sessionID + ".jsonl"
 	}
-	n, err := store.TranscriptStore().Export(sessionID, path)
+	n, err := store.Export(sessionID, path)
 	if err != nil {
 		return "", err
 	}
@@ -165,15 +305,14 @@ func (s *SessionService) Import(directory, path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	newHeader, entries, err := store.TranscriptStore().Import(path, time.Now().UTC())
+	newHeader, entries, facts, err := store.ImportV4(path, time.Now().UTC())
 	if err != nil {
 		return "", err
 	}
 	meta := sessionstore.NewMetadata(newHeader.ID, "Session", "pigo", newHeader.Model, directory)
 	meta.ParentSessionID = newHeader.ParentSession
-	meta.MessageCount = len(entries)
 	meta.LastActiveAt = newHeader.UpdatedAt
-	if err := store.ImportEntries(meta, newHeader, entries); err != nil {
+	if err := store.ImportV4Entries(meta, newHeader, entries, facts); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("imported %d entries from %s -> session %s", len(entries), path, newHeader.ID), nil
@@ -219,9 +358,9 @@ func (s *SessionService) ResumeList(directory string) (string, error) {
 	for i, meta := range metas {
 		title := meta.SessionName
 		if title == "" {
-			title = meta.SessionID
+			title = "(untitled)"
 		}
-		fmt.Fprintf(&b, "  %d. %s (%s, messages: %d)\n", i+1, title, meta.LastActiveAt.Format("2006-01-02 15:04"), meta.MessageCount)
+		fmt.Fprintf(&b, "  %d. %s [%s] (%s, messages: %d)\n", i+1, title, meta.SessionID, meta.LastActiveAt.Format("2006-01-02 15:04"), meta.MessageCount)
 	}
 	return strings.TrimRight(b.String(), "\n"), nil
 }

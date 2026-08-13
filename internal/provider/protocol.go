@@ -7,11 +7,11 @@ package provider
 //	openai/chat      → Chat Completions (alias of "openai")
 //	openai/resp_api  → Responses API    (POST {base_url}/responses)
 //	anthropic        → Anthropic Messages
-//	""               → unset; downstream falls back to model-id heuristics
+//	""               → unset; config-first resolution requires a configured entry
 //
 // NormalizeProtocol collapses these into a small set of canonical internal
-// selectors so ResolveProvider (#543) can switch on chat vs resp_api without
-// re-parsing surface syntax. "openai" and "openai/chat" both normalize to
+// selectors so config-first resolution (#543) can switch on chat vs resp_api
+// without re-parsing surface syntax. "openai" and "openai/chat" both normalize to
 // ProtocolOpenAI, keeping the existing Chat Completions path byte-for-byte
 // unchanged; only "openai/resp_api" produces the new selector.
 

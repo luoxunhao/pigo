@@ -109,7 +109,7 @@ func (s *SessionService) Create(req gen.NewSessionRequest) (gen.Session, *APIErr
 }
 
 // List returns sessions filtered by directory and cursor.
-func (s *SessionService) List(directory, before string, limit int) (gen.SessionListResult, *APIError) {
+func (s *SessionService) List(directory, before string, limit int, includeSubagents bool) (gen.SessionListResult, *APIError) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
@@ -130,6 +130,9 @@ func (s *SessionService) List(directory, before string, limit int) (gen.SessionL
 	if err != nil {
 		return gen.SessionListResult{}, Internal(err.Error())
 	}
+	if !includeSubagents {
+		metas = nonSubagentSessions(metas)
+	}
 	offset := 0
 	if before != "" {
 		if n, convErr := strconv.Atoi(before); convErr == nil && n > 0 {
@@ -148,10 +151,14 @@ func (s *SessionService) List(directory, before string, limit int) (gen.SessionL
 		title := m.SessionName
 		updatedAt := m.LastActiveAt.Format(time.RFC3339)
 		sessions = append(sessions, gen.SessionSummary{
-			SessionId: m.SessionID,
-			Directory: m.WorkspacePath,
-			Title:     &title,
-			UpdatedAt: &updatedAt,
+			SessionId:        m.SessionID,
+			Directory:        m.WorkspacePath,
+			Title:            &title,
+			UpdatedAt:        &updatedAt,
+			ParentSessionId:  optString(m.ParentSessionID),
+			ParentToolCallId: optString(m.ParentToolCallID),
+			SubagentType:     optString(m.SubagentType),
+			SessionKind:      optString(m.SessionKind),
 		})
 	}
 	var next *string
@@ -171,13 +178,14 @@ func (s *SessionService) Load(sessionID string, req gen.LoadSessionRequest) (gen
 	if err != nil {
 		return gen.SessionLoadResult{}, Internal(err.Error())
 	}
-	meta, _, _, err := store.Load(sessionID)
+	meta, err := store.LoadMetadata(sessionID)
 	if err != nil {
 		return gen.SessionLoadResult{}, NotFound(CodeSessionNotFound, "session not found: "+sessionID)
 	}
-	_, entries, err := store.TranscriptStore().LoadEntries(sessionID)
-	if err != nil {
-		return gen.SessionLoadResult{}, Internal(err.Error())
+	if req.LeafId != nil && *req.LeafId != "" {
+		if apiErr := s.moveLeaf(store, sessionID, *req.LeafId); apiErr != nil {
+			return gen.SessionLoadResult{}, apiErr
+		}
 	}
 	limit := 50
 	if req.Limit != nil && *req.Limit > 0 {
@@ -186,29 +194,22 @@ func (s *SessionService) Load(sessionID string, req gen.LoadSessionRequest) (gen
 	if limit > 200 {
 		limit = 200
 	}
-	offset := 0
+	end := 0
 	if req.Before != nil && *req.Before != "" {
-		if n, convErr := strconv.Atoi(*req.Before); convErr == nil && n > 0 {
-			offset = n
+		if n, convErr := strconv.Atoi(*req.Before); convErr == nil && n >= 0 {
+			end = n
 		}
 	}
-	end := len(entries) - offset
-	if end < 0 {
-		end = 0
+	var win *sessionstore.ProjectionWindow
+	if req.FullHistory != nil && *req.FullHistory {
+		win, err = store.HistoryWindow(sessionID, end, limit)
+	} else {
+		win, err = store.ProjectionWindow(sessionID, end, limit)
 	}
-	start := end - limit
-	if start < 0 {
-		start = 0
+	if err != nil {
+		return gen.SessionLoadResult{}, Internal(err.Error())
 	}
-	messages := make([]gen.Message, 0, end-start)
-	for _, e := range entries[start:end] {
-		messages = append(messages, entryToDomainMessage(e))
-	}
-	var next *string
-	if start > 0 && len(messages) > 0 {
-		v := strconv.Itoa(start)
-		next = &v
-	}
+	messages, next := messagesFromWindow(win)
 	cfg, cfgErr := config.LoadFileConfig(s.configPath)
 	if cfgErr != nil {
 		return gen.SessionLoadResult{}, Internal(cfgErr.Error())
@@ -218,13 +219,16 @@ func (s *SessionService) Load(sessionID string, req gen.LoadSessionRequest) (gen
 		Directory:     req.Directory,
 		ConfigOptions: sessionConfigOptions(cfg, meta.ModelName, "build"),
 		Messages:      messages,
-		HasMore:       start > 0,
+		HasMore:       win.Start > 0,
 		NextCursor:    next,
+		CurrentLeafId: optString(win.LeafID),
+		CurrentLane:   optString(win.Lane),
+		Lanes:         lanesToGen(win.Lanes),
 	}, nil
 }
 
 // Messages returns a paginated message window.
-func (s *SessionService) Messages(sessionID, directory, before string, limit int) (gen.MessageListResult, *APIError) {
+func (s *SessionService) Messages(sessionID, directory, before string, limit int, fullHistory bool) (gen.MessageListResult, *APIError) {
 	if directory == "" || !filepath.IsAbs(directory) {
 		return gen.MessageListResult{}, InvalidParams("directory must be an absolute path")
 	}
@@ -235,37 +239,39 @@ func (s *SessionService) Messages(sessionID, directory, before string, limit int
 	if _, err := store.LoadMetadata(sessionID); err != nil {
 		return gen.MessageListResult{}, NotFound(CodeSessionNotFound, "session not found: "+sessionID)
 	}
-	_, entries, err := store.TranscriptStore().LoadEntries(sessionID)
-	if err != nil {
-		return gen.MessageListResult{}, Internal(err.Error())
-	}
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	offset := 0
+	end := 0
 	if before != "" {
-		if n, convErr := strconv.Atoi(before); convErr == nil && n > 0 {
-			offset = n
+		if n, convErr := strconv.Atoi(before); convErr == nil && n >= 0 {
+			end = n
 		}
 	}
-	end := len(entries) - offset
-	if end < 0 {
-		end = 0
+	var win *sessionstore.ProjectionWindow
+	if fullHistory {
+		win, err = store.HistoryWindow(sessionID, end, limit)
+	} else {
+		win, err = store.ProjectionWindow(sessionID, end, limit)
 	}
-	start := end - limit
-	if start < 0 {
-		start = 0
+	if err != nil {
+		return gen.MessageListResult{}, Internal(err.Error())
 	}
-	messages := make([]gen.Message, 0, end-start)
-	for _, e := range entries[start:end] {
-		messages = append(messages, entryToDomainMessage(e))
+	messages, next := messagesFromWindow(win)
+	return gen.MessageListResult{Messages: messages, HasMore: win.Start > 0, NextCursor: next}, nil
+}
+
+func messagesFromWindow(win *sessionstore.ProjectionWindow) ([]gen.Message, *string) {
+	messages := make([]gen.Message, 0, len(win.Entries))
+	for i, e := range win.Entries {
+		messages = append(messages, v4EntryToDomainMessage(e, win.Start+i, win.Lane))
 	}
 	var next *string
-	if start > 0 && len(messages) > 0 {
-		v := strconv.Itoa(start)
+	if win.Start > 0 && len(messages) > 0 {
+		v := strconv.Itoa(win.Start)
 		next = &v
 	}
-	return gen.MessageListResult{Messages: messages, HasMore: start > 0, NextCursor: next}, nil
+	return messages, next
 }
 
 // Delete removes a session idempotently.
@@ -307,13 +313,24 @@ func (s *SessionService) Status(sessionID, directory string) (gen.SessionStatusR
 	if err != nil {
 		return gen.SessionStatusResult{}, Internal(err.Error())
 	}
-	meta, _, _, err := store.Load(sessionID)
+	meta, err := store.LoadMetadata(sessionID)
 	if err != nil {
 		return gen.SessionStatusResult{}, NotFound(CodeSessionNotFound, "session not found: "+sessionID)
+	}
+	proj, err := store.Projection(sessionID, "")
+	if err != nil {
+		return gen.SessionStatusResult{}, Internal(err.Error())
 	}
 	model := meta.ModelName
 	mode := "build"
 	thinking := "medium"
+	if proj.Model != "" {
+		model = proj.Model
+	}
+	if proj.ThinkingLevel != "" {
+		thinking = proj.ThinkingLevel
+	}
+	mode = sessionMode(meta)
 	queued := 0
 	return gen.SessionStatusResult{
 		SessionId:     sessionID,
@@ -322,6 +339,9 @@ func (s *SessionService) Status(sessionID, directory string) (gen.SessionStatusR
 		Mode:          &mode,
 		ThinkingLevel: &thinking,
 		QueuedCount:   &queued,
+		CurrentLeafId: optString(proj.LeafID),
+		CurrentLane:   optString(proj.Lane),
+		Lanes:         lanesToGen(proj.Lanes),
 	}, nil
 }
 
@@ -464,10 +484,10 @@ func defaultModes() []gen.Mode {
 
 func (s *SessionService) sessionResponse(id, directory, model, mode string, cfg config.FileConfig) gen.Session {
 	return gen.Session{
-		SessionId:       id,
-		Directory:       directory,
-		ConfigOptions:   sessionConfigOptions(cfg, model, mode),
-		AvailableModes:  []gen.Mode{{Id: "build", Name: "Build", Description: "Default mode"}},
+		SessionId:         id,
+		Directory:         directory,
+		ConfigOptions:     sessionConfigOptions(cfg, model, mode),
+		AvailableModes:    []gen.Mode{{Id: "build", Name: "Build", Description: "Default mode"}},
 		AvailableCommands: []gen.AvailableCommand{},
 	}
 }
@@ -509,4 +529,31 @@ func configuredModelName(m config.ModelConfig) string {
 		return m.Name
 	}
 	return m.Key()
+}
+
+func optString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func lanesToGen(lanes []session.LaneState) *[]gen.LaneState {
+	out := make([]gen.LaneState, 0, len(lanes))
+	for _, l := range lanes {
+		item := gen.LaneState{Lane: l.Lane}
+		if l.LeafID != nil {
+			item.LeafId = l.LeafID
+		}
+		out = append(out, item)
+	}
+	return &out
+}
+
+func (s *SessionService) moveLeaf(store *sessionstore.Store, sessionID, leafID string) *APIError {
+	target := leafID
+	if err := store.MoveLane(sessionID, "main", &target); err != nil {
+		return NotFound(CodeSessionNotFound, "leaf not found: "+leafID)
+	}
+	return nil
 }

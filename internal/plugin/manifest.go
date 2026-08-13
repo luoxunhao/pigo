@@ -37,11 +37,25 @@ type Manifest struct {
 	Commands []CommandSpec `json:"commands,omitempty"`
 	// Modes are the agent modes this plugin registers.
 	Modes []ModeSpec `json:"modes,omitempty"`
+	// Subagents are declarative sub-agent tools this plugin registers.
+	Subagents []SubagentSpec `json:"subagents,omitempty"`
 	// Events lists the agent lifecycle event types this plugin subscribes to
 	// (US-017, #133). pigo delivers only these via one-way `event` notifications;
 	// an empty list means the plugin observes no events. Valid values are the
 	// agentcore.Event* discriminants (e.g. "agent_start", "tool_execution_end").
 	Events []string `json:"events,omitempty"`
+}
+
+// SubagentSpec declares a sub-agent tool backed by the core child-session
+// engine. Tools is a name allowlist resolved against builtins plus all plugin
+// tools; unknown names fail at registration.
+type SubagentSpec struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	SystemPrompt string  `json:"systemPrompt,omitempty"`
+	Tools       []string `json:"tools,omitempty"`
+	Isolation   string   `json:"isolation,omitempty"`
+	Model       string   `json:"model,omitempty"`
 }
 
 // ModeSpec declares one agent mode a plugin provides.

@@ -2,7 +2,7 @@ import { PigoAcpClient } from "../dist/index.js";
 
 const client = new PigoAcpClient({
   command: process.env.PIGO_ACP_COMMAND ?? "pigo",
-  args: ["--acp"],
+  args: ["acp"],
   cwd: process.cwd(),
   events: {
     onUpdate: (_sessionId, update) => {

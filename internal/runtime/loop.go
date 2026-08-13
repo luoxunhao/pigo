@@ -22,7 +22,6 @@ package runtime
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -149,18 +148,12 @@ type RunConfig struct {
 
 	// SessionID, when set, is carried in the run's agent_start event so a
 	// stream-json consumer sees the backing session id in the first event and can
-	// resume the run later (mirrors pi/Claude Code). It is also the session key
-	// under which auto-compaction checkpoints are persisted (see MemoryRoot).
+	// resume the run later (mirrors pi/Claude Code).
 	SessionID string
 
-	// MemoryRoot, when non-empty (together with SessionID), enables checkpoint
-	// persistence for the "infinite context" feature (#480/#481): after a
-	// successful auto-compaction the collapsed prefix's summary is written as a
-	// checkpoint under <MemoryRoot>/sessions/<SessionID>/checkpoint.md so a later
-	// run can reload it instead of replaying the whole transcript. It is left ""
-	// when persistent memory is disabled (memory.enabled=false), which fully
-	// disables checkpoint writing. A checkpoint write failure is non-fatal.
-	MemoryRoot string
+	// OnCompaction, when non-nil, receives every successful auto-compaction
+	// result so the caller can persist it as a typed compaction entry.
+	OnCompaction func(ctx context.Context, res *compaction.CompactionResult) error
 }
 
 // LoopEventStream is the stream returned by the loop entry points: it carries
@@ -501,11 +494,22 @@ func maybeAutoCompact(ctx context.Context, agentCtx *agentcore.AgentContext, cfg
 		// Nothing to summarize (cut point left no prefix); leave context as-is.
 		return
 	}
+	if cfg.OnCompaction != nil {
+		if err := cfg.OnCompaction(ctx, res); err != nil {
+			_ = emit(agentcore.CompactionEvent{
+				Reason:       "threshold",
+				TokensBefore: before,
+				TokensAfter:  before,
+				KeptCount:    len(agentCtx.Messages),
+				ErrorMessage: "persist compaction: " + err.Error(),
+			})
+			return
+		}
+	}
 	// Persist a checkpoint of the collapsed prefix before rewriting the context so
 	// a later run can reload it (infinite context, #480/#481). It reuses the
 	// summary compaction just produced — no extra LLM call — and is best-effort:
 	// a write failure is logged and the run continues on the compacted context.
-	writeCompactionCheckpoint(ctx, agentCtx.Messages, res, cfg)
 	now := nowMillis()
 	rebuilt := res.RebuildContext(agentCtx.Messages, now)
 	summarized := len(agentCtx.Messages) - (len(rebuilt) - 1)
@@ -542,40 +546,27 @@ func runCompaction(ctx context.Context, msgs agentcore.MessageList, cfg *RunConf
 		}
 	}
 	scfg := provider.StreamConfig{APIKey: key, ThinkingLevel: cfg.ThinkingLevel}
-	return compaction.Compact(ctx, stream, model, msgs, cfg.Compaction, -1, nil, "", scfg)
+	prevIndex, prevDetails, prevSummary := lastCompactionInfo(msgs)
+	return compaction.Compact(ctx, stream, model, msgs, cfg.Compaction, prevIndex, prevDetails, prevSummary, scfg)
 }
 
-// writeCompactionCheckpoint persists the just-produced compaction summary as a
-// session checkpoint so a later run can reload the collapsed prefix instead of
-// replaying it (#480/#481). It is a no-op unless checkpoint persistence is wired
-// (MemoryRoot and SessionID both set) — which is how memory.enabled=false keeps
-// the whole subsystem inert. It reuses res.Summary (no extra summarization call)
-// via BuildCheckpoint, tagging the checkpoint with the compaction cut point as
-// its watermark. All failures are non-fatal: they are logged to stderr and the
-// run continues on the compacted context (WriteCheckpoint's log-and-continue
-// contract).
-func writeCompactionCheckpoint(ctx context.Context, msgs agentcore.MessageList, res *compaction.CompactionResult, cfg *RunConfig) {
-	if cfg.MemoryRoot == "" || cfg.SessionID == "" || res == nil {
-		return
+func lastCompactionInfo(msgs agentcore.MessageList) (int, *compaction.CompactionDetails, string) {
+	idx := -1
+	var details *compaction.CompactionDetails
+	summary := ""
+	for i, m := range msgs {
+		if c, ok := m.(agentcore.CompactionMessage); ok {
+			idx = i
+			summary = c.Summary
+			if len(c.Details) > 0 {
+				var d compaction.CompactionDetails
+				if json.Unmarshal(c.Details, &d) == nil {
+					details = &d
+				}
+			}
+		}
 	}
-	watermark := max(0, res.FirstKeptIndex)
-	if watermark > len(msgs) {
-		watermark = len(msgs)
-	}
-	// summarize returns the summary the compaction already computed, so
-	// BuildCheckpoint records an honest CoveredMessages count without a second
-	// LLM round-trip.
-	summarize := func(context.Context, []agentcore.Message) (string, error) {
-		return res.Summary, nil
-	}
-	cp, err := BuildCheckpoint(ctx, msgs[:watermark], watermark, time.Now(), summarize)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "pigo: checkpoint: build for session %s: %v\n", cfg.SessionID, err)
-		return
-	}
-	if err := WriteCheckpoint(cfg.SessionID, cfg.MemoryRoot, cp); err != nil {
-		fmt.Fprintf(os.Stderr, "pigo: checkpoint: write for session %s: %v\n", cfg.SessionID, err)
-	}
+	return idx, details, summary
 }
 
 // applyTurnUpdate applies a non-nil TurnUpdate to the mutable loop state: any

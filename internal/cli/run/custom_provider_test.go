@@ -97,11 +97,11 @@ func TestResolveStartupProviderCustomLocalNoKey(t *testing.T) {
 
 func TestResolveStartupProviderNonCustom(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	prov, name, key, wireModel, err := resolveStartupProvider("openrouter/free", "", "", "", "sk-flag")
+	prov, name, key, wireModel, err := resolveStartupProvider("unconfigured/model", "", "", "", "sk-flag")
 	if err != nil {
 		t.Fatalf("error = %v", err)
 	}
-	if name != "" || key != "" || wireModel != "openrouter/free" {
+	if name != "" || key != "" || wireModel != "unconfigured/model" {
 		t.Fatalf("resolved = %q %q %q", name, key, wireModel)
 	}
 	deferred, ok := prov.(provider.DeferredErrorProvider)
@@ -110,5 +110,32 @@ func TestResolveStartupProviderNonCustom(t *testing.T) {
 	}
 	if !strings.Contains(deferred.Err.Error(), "not configured") {
 		t.Fatalf("deferred error = %v", deferred.Err)
+	}
+}
+
+// TestResolveStartupProviderInvalidProtocolSurfacesError verifies explicit
+// flag errors are not masked as a deferred "not configured" error.
+func TestResolveStartupProviderInvalidProtocolSurfacesError(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if _, _, _, _, err := resolveStartupProvider("", "", "grpc", "", ""); err == nil {
+		t.Fatal("invalid --protocol must surface an error at startup")
+	}
+}
+
+// TestResolveStartupProviderDisabledReturnsDeferred verifies a disabled
+// [[models]] entry starts with a deferred error rather than failing setup.
+func TestResolveStartupProviderDisabledReturnsDeferred(t *testing.T) {
+	disabled := false
+	writeCustomConfig(t, "custom-gw/m1", config.ModelConfig{
+		Provider: "custom-gw", ModelID: "m1", BaseURL: "https://gw.example/v1",
+		Protocol: "openai", Enabled: &disabled,
+	})
+	prov, _, _, _, err := resolveStartupProvider("custom-gw/m1", "", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deferred, ok := prov.(provider.DeferredErrorProvider)
+	if !ok || !strings.Contains(deferred.Err.Error(), "disabled") {
+		t.Fatalf("provider = %T, error = %v; want deferred disabled error", prov, deferred.Err)
 	}
 }

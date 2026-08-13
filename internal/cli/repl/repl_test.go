@@ -19,19 +19,22 @@ import (
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/agenttool"
 	"github.com/smallnest/pigo/internal/cli"
+	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/cli/prompts"
 	"github.com/smallnest/pigo/internal/cli/ui"
 	"github.com/smallnest/pigo/internal/provider"
 	"github.com/smallnest/pigo/internal/runtime"
 	"github.com/smallnest/pigo/internal/session"
+	"github.com/smallnest/pigo/internal/sessionstore"
 )
 
 // replProvider is a minimal Provider that streams one scripted text turn per
 // StreamCompletion call and records how many times it was called, so a test can
 // assert whether a run was launched.
 type replProvider struct {
-	reply string
-	calls int
+	reply      string
+	calls      int
+	titleCalls int
 }
 
 func (p *replProvider) Name() string { return "faux" }
@@ -40,6 +43,10 @@ func (p *replProvider) Models() []provider.Model {
 }
 
 func (p *replProvider) StreamCompletion(ctx context.Context, req provider.CompletionRequest) (*provider.AssistantMessageEventStream, error) {
+	if titleStream, ok := titleReplyStream(ctx, req); ok {
+		p.titleCalls++
+		return titleStream, nil
+	}
 	p.calls++
 	partial := agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant}
 	withText := partial
@@ -60,12 +67,13 @@ func (p *replProvider) StreamCompletion(ctx context.Context, req provider.Comple
 // store, with a registry carrying one action command and one prompt command so
 // slash dispatch can be exercised. actionRuns/promptResolved report whether each
 // command fired.
-func newTestDeps(t *testing.T, p provider.Provider) (replDeps, *session.Store) {
+func newTestDeps(t *testing.T, p provider.Provider) (replDeps, *sessionstore.Store) {
 	t.Helper()
-	store, err := session.NewStore(t.TempDir())
+	store, err := sessionstore.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
 	live := &cli.LiveConfig{Model: "faux", ProviderName: "faux", Provider: p}
 	reg := runtime.NewSlashRegistry()
 	reg.AddBuiltin(runtime.SlashCommand{
@@ -112,6 +120,66 @@ func TestREPLQuitCommand(t *testing.T) {
 	}
 	if p.calls != 0 {
 		t.Errorf("/quit must not launch a run, got %d calls", p.calls)
+	}
+}
+
+// TestRunResumeListsSessionID verifies the /resume list shows both the session
+// title and the stable session id, not just an opaque timestamp line.
+func TestRunResumeListsSessionID(t *testing.T) {
+	cleanupStores(t)
+	home := t.TempDir()
+	t.Setenv("PIGO_HOME", home)
+	ws := filepath.Join(home, "ws")
+	store, err := sessionstore.OpenForWorkspace(home, ws)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC()
+	header := session.SessionHeader{ID: session.NewID(now), CreatedAt: now, UpdatedAt: now, Model: "faux", Provider: "faux", Cwd: ws}
+	meta := sessionstore.NewMetadata(header.ID, "My Task", "pigo", "faux", ws)
+	if err := store.Create(meta, header, agentcore.MessageList{
+		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("hi")}},
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	deps := replDeps{cwd: ws}
+	var out bytes.Buffer
+	runResume(&out, &deps, "/resume")
+	got := out.String()
+	if !strings.Contains(got, "My Task") || !strings.Contains(got, "["+header.ID+"]") {
+		t.Fatalf("resume list = %q, want title and session id", got)
+	}
+}
+
+// TestRunResumeDerivesDefaultTitle verifies a session created with the default
+// "Session" name is listed using its first user message as the display title.
+func TestRunResumeDerivesDefaultTitle(t *testing.T) {
+	cleanupStores(t)
+	home := t.TempDir()
+	t.Setenv("PIGO_HOME", home)
+	ws := filepath.Join(home, "ws")
+	store, err := sessionstore.OpenForWorkspace(home, ws)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC()
+	header := session.SessionHeader{ID: session.NewID(now), CreatedAt: now, UpdatedAt: now, Model: "faux", Provider: "faux", Cwd: ws}
+	meta := sessionstore.NewMetadata(header.ID, "Session", "pigo", "faux", ws)
+	if err := store.Create(meta, header, agentcore.MessageList{
+		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("Inefficient string concatenation in call to WriteString" +
+			"\nsecond line")}},
+		agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant, Content: agentcore.ContentList{agentcore.NewTextContent("done")}},
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	deps := replDeps{cwd: ws}
+	var out bytes.Buffer
+	runResume(&out, &deps, "/resume")
+	got := out.String()
+	if !strings.Contains(got, "Inefficient string concatenation") || !strings.Contains(got, "["+header.ID+"]") {
+		t.Fatalf("resume list = %q, want derived first-user title and session id", got)
 	}
 }
 
@@ -220,28 +288,61 @@ func TestREPLUnknownCommandNoRun(t *testing.T) {
 func TestREPLModelSwitchTakesEffect(t *testing.T) {
 	p := &replProvider{reply: "hi"}
 	deps, _ := newTestDeps(t, p)
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", root)
+	cfgPath := filepath.Join(root, "pigo", "config.toml")
+	if err := config.SaveFileConfig(cfgPath, config.FileConfig{
+		Model: "openai/agnes-2.5-flash",
+		Models: []config.ModelConfig{{
+			Provider:       "openai",
+			ModelID:        "agnes-2.5-flash",
+			Name:           "Agnes 2.5 Flash",
+			BaseURL:        "https://api.example.com/v1",
+			APIKey:         "sk-config",
+			Protocol:       "openai",
+			ThinkingLevels: []string{"low", "high"},
+		}, {
+			Provider:       "openai",
+			ModelID:        "no-key",
+			Name:           "No Key",
+			BaseURL:        "https://api.example.com/v1",
+			Protocol:       "openai",
+			ThinkingLevels: []string{"off"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENAI_API_KEY", "")
+	deps.live.Creds = deps.creds
 	// Register the real live action commands (/model, /models, /help) against the
 	// same live config the REPL runs on, so /model mutates it.
 	prompts.RegisterLiveCommands(deps.slash, deps.live)
 
 	var out bytes.Buffer
-	// /model with no arg reports the current model; /model <id> switches to an
-	// Ollama preset (no API key required); /exit ends the loop.
-	in := strings.NewReader("/model\n/model ollama/llama3.3\n/exit\n")
+	// /model with no arg reports the current model; /model <id> switches to a
+	// configured model, resets thinking, and clears a stale credential when the
+	// next entry has no key; /exit ends the loop.
+	in := strings.NewReader("/model\n/model openai/agnes-2.5-flash\n/model openai/no-key\n/exit\n")
 	if err := runREPL(in, &out, deps); err != nil {
 		t.Fatalf("runREPL: %v", err)
 	}
 	if p.calls != 0 {
 		t.Errorf("/model actions must not launch a run, got %d calls", p.calls)
 	}
-	if deps.live.Model != "ollama/llama3.3" || deps.live.ProviderName != "ollama" {
+	if deps.live.Model != "openai/no-key" || deps.live.ProviderName != "openai" {
 		t.Errorf("live not switched: model=%q provider=%q", deps.live.Model, deps.live.ProviderName)
+	}
+	if deps.live.ThinkingLevel != "off" {
+		t.Errorf("thinking not reset after second switch: %q", deps.live.ThinkingLevel)
+	}
+	if got := deps.creds.GetAPIKey(context.Background(), "openai"); got != "" {
+		t.Errorf("stale credential override = %q, want empty", got)
 	}
 	s := out.String()
 	if !strings.Contains(s, "faux") {
 		t.Errorf("/model (no arg) should report the current model, out=%q", s)
 	}
-	if !strings.Contains(s, "ollama/llama3.3") {
+	if !strings.Contains(s, "openai/no-key") {
 		t.Errorf("/model switch should confirm the new model, out=%q", s)
 	}
 }
@@ -263,8 +364,31 @@ func TestREPLPersistsModelIntoHeader(t *testing.T) {
 	if len(headers) != 1 {
 		t.Fatalf("expected 1 saved session, got %d", len(headers))
 	}
-	if headers[0].Model != "faux" || headers[0].Provider != "faux" {
-		t.Errorf("header model/provider = %q/%q, want live faux/faux", headers[0].Model, headers[0].Provider)
+	if headers[0].Header == nil || headers[0].Header.Model != "faux" || headers[0].Header.Provider != "faux" {
+		t.Errorf("header model/provider = %v, want live faux/faux", headers[0].Header)
+	}
+}
+
+// TestREPLModelSwitchRejectsUnconfigured verifies /model refuses ids that are
+// not in [[models]] and leaves the live config untouched.
+func TestREPLModelSwitchRejectsUnconfigured(t *testing.T) {
+	p := &replProvider{reply: "hi"}
+	deps, _ := newTestDeps(t, p)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	prompts.RegisterLiveCommands(deps.slash, deps.live)
+
+	var out bytes.Buffer
+	if err := runREPL(strings.NewReader("/model nope/nope\n/exit\n"), &out, deps); err != nil {
+		t.Fatalf("runREPL: %v", err)
+	}
+	if p.calls != 0 {
+		t.Errorf("/model actions must not launch a run, got %d calls", p.calls)
+	}
+	if deps.live.Model != "faux" || deps.live.ProviderName != "faux" {
+		t.Errorf("live changed after rejected switch: model=%q provider=%q", deps.live.Model, deps.live.ProviderName)
+	}
+	if !strings.Contains(out.String(), "not configured") {
+		t.Errorf("expected not-configured error, out=%q", out.String())
 	}
 }
 
@@ -327,12 +451,12 @@ func TestREPLTreePrintsAndSwitchesBranch(t *testing.T) {
 	var out bytes.Buffer
 	// Two turns build a linear history (4 messages), then /tree lists it, /tree 1
 	// switches to the first node, a new prompt branches, then /exit.
-	in := strings.NewReader("first\nsecond\n/tree\n/tree 1\nbranched\n/exit\n")
+	in := strings.NewReader("first\nsecond\n/tree\n/tree 1\nn\nbranched\n/exit\n")
 	if err := runREPL(in, &out, deps); err != nil {
 		t.Fatalf("runREPL: %v", err)
 	}
 	s := out.String()
-	if !strings.Contains(s, "← current") {
+	if !strings.Contains(s, "-> current") {
 		t.Errorf("/tree should mark the current leaf, out=%q", s)
 	}
 	if !strings.Contains(s, "1. user:") {
@@ -343,7 +467,7 @@ func TestREPLTreePrintsAndSwitchesBranch(t *testing.T) {
 	}
 	// The on-disk tree must retain both branches: the original 4-message line plus
 	// the new branch off node 1. Reload and confirm the root has 2 children.
-	_, entries, err := store.LoadEntries(deps.header.ID)
+	entries, err := store.Entries(deps.header.ID)
 	if err != nil {
 		t.Fatalf("LoadEntries: %v", err)
 	}
@@ -433,6 +557,9 @@ func (p *errProvider) Models() []provider.Model {
 }
 
 func (p *errProvider) StreamCompletion(ctx context.Context, req provider.CompletionRequest) (*provider.AssistantMessageEventStream, error) {
+	if titleStream, ok := titleReplyStream(ctx, req); ok {
+		return titleStream, nil
+	}
 	p.calls++
 	partial := agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant}
 	final := partial
@@ -479,6 +606,9 @@ func (p *emptyProvider) Models() []provider.Model {
 }
 
 func (p *emptyProvider) StreamCompletion(ctx context.Context, req provider.CompletionRequest) (*provider.AssistantMessageEventStream, error) {
+	if titleStream, ok := titleReplyStream(ctx, req); ok {
+		return titleStream, nil
+	}
 	p.calls++
 	partial := agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant}
 	final := partial
@@ -490,6 +620,28 @@ func (p *emptyProvider) StreamCompletion(ctx context.Context, req provider.Compl
 		s.Close()
 	}()
 	return s, nil
+}
+
+func titleReplyStream(ctx context.Context, req provider.CompletionRequest) (*provider.AssistantMessageEventStream, bool) {
+	if len(req.Context.Messages) == 0 {
+		return nil, false
+	}
+	u, ok := req.Context.Messages[0].(agentcore.UserMessage)
+	if !ok || !strings.Contains(agentcore.ContentToText(u.Content), "Summarize this task in one short title:") {
+		return nil, false
+	}
+	msg := agentcore.AssistantMessage{
+		RoleField:  agentcore.RoleAssistant,
+		Content:    agentcore.ContentList{agentcore.NewTextContent("Generated Title")},
+		StopReason: agentcore.StopReasonEndTurn,
+	}
+	s := provider.NewAssistantMessageEventStream(0)
+	go func() {
+		defer s.Close()
+		_ = s.Emit(ctx, provider.StreamStartEvent{Partial: msg})
+		_ = s.Emit(ctx, provider.StreamDoneEvent{Message: msg})
+	}()
+	return s, true
 }
 
 // TestREPLNotesEmptyResponse verifies a clean turn that produced no output at
@@ -543,7 +695,7 @@ func TestREPLExportImportRoundTrip(t *testing.T) {
 	}
 	var foundNew bool
 	for _, h := range headers {
-		if h.ID != origID && h.ParentSession == origID {
+		if h.SessionID != origID && h.ParentSessionID == origID {
 			foundNew = true
 		}
 	}
@@ -652,5 +804,31 @@ func TestREPLCopyDegradesToPrint(t *testing.T) {
 	}
 	if !strings.Contains(s, "the important answer") {
 		t.Errorf("/copy should print the reply when degrading, out=%q", s)
+	}
+}
+
+// TestREPLLabelSetsAndClearsFact verifies /label writes and clears a fact.
+func TestREPLLabelSetsAndClearsFact(t *testing.T) {
+	p := &replProvider{reply: "reply"}
+	deps, store := newTestDeps(t, p)
+	var out bytes.Buffer
+	in := strings.NewReader("hello\n/label 1 task\n/tree\n/label 1\n/exit\n")
+	if err := runREPL(in, &out, deps); err != nil {
+		t.Fatalf("runREPL: %v", err)
+	}
+	if !strings.Contains(out.String(), "set label on node 1: task") {
+		t.Errorf("label set message missing, out=%q", out.String())
+	}
+	if !strings.Contains(out.String(), "cleared label on node 1") {
+		t.Errorf("label clear message missing, out=%q", out.String())
+	}
+	facts, err := store.Facts(deps.header.ID)
+	if err != nil {
+		t.Fatalf("Facts: %v", err)
+	}
+	for _, f := range facts {
+		if f.Kind == "label" && f.Value != "" {
+			t.Fatalf("label fact should be cleared, got %+v", f)
+		}
 	}
 }

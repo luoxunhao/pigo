@@ -14,6 +14,7 @@ import (
 
 func TestRunHTTPOnce(t *testing.T) {
 	pigoHome := t.TempDir()
+	cleanupStores(t)
 	cfgPath := filepath.Join(t.TempDir(), "config.toml")
 	if err := config.SaveFileConfig(cfgPath, config.FileConfig{
 		Model: "test/provider",

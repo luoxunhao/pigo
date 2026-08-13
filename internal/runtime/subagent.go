@@ -62,9 +62,8 @@ type SubAgentProcessConfig struct {
 	// Args are appended to the command after the subagent-rpc flag. Rarely
 	// needed; reserved for test doubles or non-standard layouts.
 	Args []string
-	// Model is the model id the subprocess runs against. Required. A preset id
-	// (e.g. "openrouter/free", "anthropic/claude-...") or ollama/nvidia-prefixed
-	// id resolves its own provider; a custom gateway needs BaseURL/Protocol.
+	// Model is the model id the subprocess runs against. Required. It must be a
+	// configured [[models]] id, or a custom gateway must supply BaseURL/Protocol.
 	Model string
 	// BaseURL and Protocol override the provider endpoint and wire protocol for
 	// custom gateways (Protocol "anthropic"/"openai" forces that wire format).
@@ -505,7 +504,7 @@ func (t *SubAgentTool) executeChildSession(ctx context.Context, id, prompt, desc
 			tools = cfg.Batch.ToolExecutorConfig.Registry.List()
 		}
 	}
-	child := t.registry.CreateOrGet(parentID, id, "task", t.spec.SystemPrompt, tools, factory, nil, t.spec.Cwd)
+	child := t.registry.CreateOrGet(parentID, id, t.spec.Name, t.spec.SystemPrompt, tools, factory, nil, t.spec.Cwd)
 
 	parentEmit := agentcore.ProgressEmitterFromContext(ctx)
 	sink := t.registry.eventSink()
@@ -513,7 +512,7 @@ func (t *SubAgentTool) executeChildSession(ctx context.Context, id, prompt, desc
 		"sessionId":        child.ID,
 		"parentSessionId":  parentID,
 		"parentToolCallId": id,
-		"subagentType":     "task",
+		"subagentType":     t.spec.Name,
 	}
 	onEvent := func(ev agentcore.AgentEvent) {
 		if sink != nil {
@@ -551,7 +550,7 @@ func (t *SubAgentTool) executeChildSession(ctx context.Context, id, prompt, desc
 		"sessionId":        child.ID,
 		"parentSessionId":  parentID,
 		"parentToolCallId": id,
-		"subagentType":     "task",
+		"subagentType":     t.spec.Name,
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {

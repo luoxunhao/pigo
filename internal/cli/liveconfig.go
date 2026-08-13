@@ -21,6 +21,10 @@ type LiveConfig struct {
 	Provider     provider.Provider
 	BaseURL      string
 	Protocol     string
+	// Creds is the session credential store. A /model switch updates it with
+	// the configured entry's API key so the next turn uses that model's own
+	// credential. It may be nil in session-less construction paths.
+	Creds *provider.CredentialStore
 	// ThinkingLevel is the reasoning-effort level applied to each turn. It is
 	// seeded from the resolved config chain and read on every prompt.
 	ThinkingLevel agentcore.ThinkingLevel

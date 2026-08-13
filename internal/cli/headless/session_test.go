@@ -26,6 +26,7 @@ func textAssistant(s string) agentcore.AssistantMessage {
 // can be resumed.
 func TestOpenHeadlessSessionFresh(t *testing.T) {
 	t.Setenv("PIGO_HOME", t.TempDir())
+	cleanupStores(t)
 
 	prior, hs, err := openHeadlessSession("", "faux-model", "faux", "sys prompt")
 	if err != nil {
@@ -66,6 +67,7 @@ func TestOpenHeadlessSessionFresh(t *testing.T) {
 // session grows rather than being rewritten.
 func TestOpenHeadlessSessionResume(t *testing.T) {
 	t.Setenv("PIGO_HOME", t.TempDir())
+	cleanupStores(t)
 
 	// First run: create and persist a session.
 	_, hs1, err := openHeadlessSession("", "faux-model", "faux", "sys")
@@ -111,6 +113,7 @@ func TestOpenHeadlessSessionResume(t *testing.T) {
 // the run produced nothing new past what was already persisted.
 func TestHeadlessPersistNoop(t *testing.T) {
 	t.Setenv("PIGO_HOME", t.TempDir())
+	cleanupStores(t)
 	_, hs, err := openHeadlessSession("", "m", "p", "s")
 	if err != nil {
 		t.Fatalf("openHeadlessSession: %v", err)
@@ -138,6 +141,7 @@ func TestHeadlessPersistNoop(t *testing.T) {
 // the tail slice stays in bounds rather than panicking.
 func TestHeadlessPersistCompactionShrink(t *testing.T) {
 	t.Setenv("PIGO_HOME", t.TempDir())
+	cleanupStores(t)
 	_, hs, err := openHeadlessSession("", "m", "p", "s")
 	if err != nil {
 		t.Fatalf("openHeadlessSession: %v", err)
@@ -161,58 +165,14 @@ func TestHeadlessPersistCompactionShrink(t *testing.T) {
 	}
 }
 
-// TestHeadlessLegacySessionMigratesOnResume verifies that a session written by
-// the old flat store is migrated into the project-scoped store on first resume:
-// the new run appends only to the project store, and the legacy flat copy is
-// never written again (no double write).
-func TestHeadlessLegacySessionMigratesOnResume(t *testing.T) {
+// TestHeadlessLegacySessionNotReadable verifies old flat JSONL ids are not
+// probed or migrated at runtime; they return the standard not-found path.
+func TestHeadlessLegacySessionNotReadable(t *testing.T) {
 	t.Setenv("PIGO_HOME", t.TempDir())
-	legacy, err := LegacySessionStore()
-	if err != nil {
-		t.Fatalf("LegacySessionStore: %v", err)
-	}
+	cleanupStores(t)
 	now := time.Now().UTC()
 	id := session.NewID(now)
-	header := session.SessionHeader{
-		ID:           id,
-		CreatedAt:    now,
-		UpdatedAt:    now,
-		Model:        "m",
-		Provider:     "p",
-		SystemPrompt: "s",
-		Cwd:          headlessCwd(),
-	}
-	msgs := agentcore.MessageList{textUser("old question"), textAssistant("old answer")}
-	if err := legacy.Save(header, msgs); err != nil {
-		t.Fatalf("save legacy session: %v", err)
-	}
-
-	prior, hs, err := openHeadlessSession(id, "m", "p", "s")
-	if err != nil {
-		t.Fatalf("resume legacy session: %v", err)
-	}
-	if len(prior) != 2 {
-		t.Fatalf("resume must seed %d prior messages, got %d", 2, len(prior))
-	}
-
-	ctx := &agentcore.AgentContext{Messages: append(prior, textUser("new question"), textAssistant("new answer"))}
-	if err := hs.persist(ctx); err != nil {
-		t.Fatalf("persist after migration: %v", err)
-	}
-	_, _, projectMsgs, err := hs.store.Load(id)
-	if err != nil {
-		t.Fatalf("project store Load: %v", err)
-	}
-	if len(projectMsgs) != 4 {
-		t.Fatalf("project store has %d messages, want 4", len(projectMsgs))
-	}
-	// The legacy flat copy must remain untouched: exactly the two original
-	// messages, proving the resumed run did not write there again.
-	_, legacyMsgs, err := legacy.Load(id)
-	if err != nil {
-		t.Fatalf("legacy Load: %v", err)
-	}
-	if len(legacyMsgs) != 2 {
-		t.Fatalf("legacy copy has %d messages, want 2 (no double write)", len(legacyMsgs))
+	if _, _, err := openHeadlessSession(id, "m", "p", "s"); err == nil {
+		t.Fatalf("resume of absent/legacy session %q should fail", id)
 	}
 }

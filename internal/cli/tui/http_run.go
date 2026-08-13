@@ -119,13 +119,14 @@ func newHTTPSession(ctx context.Context, opts Options, client *httpclient.Client
 	}
 	creds := provider.NewCredentialStore(nil)
 	creds.SetOverride(opts.ProviderName, opts.APIKey)
+	live.Creds = creds
 	mgr, mgrErr := trust.NewManager(trust.DefaultPath())
 	if mgrErr != nil {
 		fmt.Fprintf(os.Stderr, "pigo: trust store unavailable, trust disabled: %v\n", mgrErr)
 		mgr = nil
 	}
 	s := &runSession{
-		store:      store.TranscriptStore(),
+		store:      store,
 		header:     header,
 		agentCtx:   &agentcore.AgentContext{SystemPrompt: opts.SysPrompt, Messages: history, Tools: opts.Tools},
 		live:       live,
@@ -257,6 +258,9 @@ func (s *runSession) drainEventStream(ctx context.Context, resp *http.Response, 
 		if ctx.Err() != nil {
 			return false
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "pigo: stream drain: %v\n", err)
 	}
 	return false
 }

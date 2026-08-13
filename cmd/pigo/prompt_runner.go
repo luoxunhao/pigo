@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,6 +24,7 @@ import (
 	"github.com/smallnest/pigo/internal/runtime"
 	"github.com/smallnest/pigo/internal/session"
 	"github.com/smallnest/pigo/internal/sessionstore"
+	"github.com/smallnest/pigo/internal/sessiontitle"
 	"github.com/smallnest/pigo/internal/trust"
 )
 
@@ -97,12 +97,15 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 	if opts.thinkingLevel != "" {
 		thinking = agentcore.ThinkingLevel(opts.thinkingLevel)
 	}
+	creds := provider.NewCredentialStore(nil)
+	creds.SetOverride(env.ProviderName, env.APIKey)
 	live := &cli.LiveConfig{
 		Model:         env.Model,
 		ProviderName:  env.ProviderName,
 		Provider:      env.Provider,
 		BaseURL:       opts.baseURL,
 		Protocol:      opts.protocol,
+		Creds:         creds,
 		ThinkingLevel: thinking,
 		ContextWindow: cli.DefaultContextWindow,
 	}
@@ -156,30 +159,25 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 		var header session.SessionHeader
 		curLeaf := ""
 		if storeErr == nil {
-			if h, entries, loadErr := store.TranscriptStore().LoadEntries(run.SessionID); loadErr == nil {
-				header = h
-				history = make(agentcore.MessageList, len(entries))
-				for i, e := range entries {
-					history[i] = e.Message
-				}
-				if len(entries) > 0 {
-					curLeaf = entries[len(entries)-1].ID
-				}
-			}
-			if meta, metaErr := store.LoadMetadata(run.SessionID); metaErr == nil && len(meta.CustomMetadata) > 0 {
-				var custom map[string]any
-				if json.Unmarshal(meta.CustomMetadata, &custom) == nil {
-					if leaf, ok := custom["curLeaf"].(string); ok && leaf != "" {
-						curLeaf = leaf
-					}
-				}
+			header, _ = store.Header(run.SessionID)
+			if proj, projErr := store.Projection(run.SessionID, ""); projErr == nil {
+				history = proj.Messages
+				curLeaf = proj.LeafID
 			}
 		}
+		isFirstPrompt := len(history) == 0
 
 		onEvent := func(ev agentcore.AgentEvent) {
 			mapper.publish(run.SessionID, run.MessageID, run.Publish, ev)
 		}
-		msgs, last, err := runner.RunWithTools(ctx, run.Text, nil, history, env.SysPrompt, env.Tools, model, thinking, run.BeforeToolCall, onEvent, acp.TurnHooks{})
+		onCompaction := func(ctx context.Context, res *compaction.CompactionResult) error {
+			if store == nil || res == nil {
+				return nil
+			}
+			_, err := store.AppendCompaction(run.SessionID, header, res)
+			return err
+		}
+		msgs, last, err := runner.RunWithTools(ctx, run.Text, nil, history, env.SysPrompt, env.Tools, model, thinking, run.BeforeToolCall, onEvent, acp.TurnHooks{OnCompaction: onCompaction})
 		if err != nil {
 			return gen.PromptResponse{}, err
 		}
@@ -194,38 +192,30 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 			header.SystemPrompt = env.SysPrompt
 			header.Cwd = run.Directory
 			header.UpdatedAt = time.Now().UTC()
-			var newLeaf string
 			if len(msgs) < len(history) {
-				_ = store.TranscriptStore().Save(header, msgs)
+				_ = store.Save(header, msgs)
 				curLeaf = ""
 			} else {
-				newLeaf, _ = store.AppendBranch(run.SessionID, header, curLeaf, tail)
+				_, _ = store.AppendBranch(run.SessionID, header, curLeaf, tail)
 			}
 			if meta, metaErr := store.LoadMetadata(run.SessionID); metaErr == nil {
 				meta.ModelName = model
 				meta.LastActiveAt = header.UpdatedAt
-				if len(msgs) < len(history) {
-					meta.MessageCount = len(msgs)
-					var custom map[string]any
-					if len(meta.CustomMetadata) > 0 {
-						_ = json.Unmarshal(meta.CustomMetadata, &custom)
-					}
-					delete(custom, "curLeaf")
-					if b, marshalErr := json.Marshal(custom); marshalErr == nil {
-						meta.CustomMetadata = b
-					}
-				}
-				if newLeaf != "" {
-					custom := map[string]any{"curLeaf": newLeaf}
-					if len(meta.CustomMetadata) > 0 {
-						_ = json.Unmarshal(meta.CustomMetadata, &custom)
-					}
-					custom["curLeaf"] = newLeaf
-					if b, marshalErr := json.Marshal(custom); marshalErr == nil {
-						meta.CustomMetadata = b
-					}
-				}
 				_ = store.SaveMetadata(meta)
+			}
+			if isFirstPrompt {
+				if prov, provName, apiKey, wireModel, resolveErr := runner.ResolveForModel(model); resolveErr == nil {
+					_ = sessiontitle.AutoTitle(ctx, store, run.SessionID, run.Text,
+						provider.StreamFnFromProvider(prov),
+						provider.Model{Provider: provName, ID: wireModel},
+						provider.StreamConfig{APIKey: apiKey, ThinkingLevel: agentcore.ThinkingLevel(thinking)},
+						func(title string) {
+							run.Publish("session.updated", map[string]any{
+								"title":     title,
+								"updatedAt": time.Now().UTC().Format(time.RFC3339),
+							})
+						})
+				}
 			}
 		}
 		reply := ""
@@ -269,17 +259,16 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 			if res == nil {
 				return fmt.Sprintf("nothing to compact (%d tokens, %d messages)", before, len(msgs)), nil
 			}
-			rebuilt := res.RebuildContext(msgs, time.Now().UnixMilli())
-			after := compaction.EstimateContextTokens(rebuilt).Tokens
 			header.UpdatedAt = time.Now().UTC()
 			header.Model = modelID
 			header.Provider = runner.ProviderName
-			if saveErr := store.TranscriptStore().Save(header, rebuilt); saveErr != nil {
+			if _, saveErr := store.AppendCompaction(sessionID, header, res); saveErr != nil {
 				return "", saveErr
 			}
-			meta.MessageCount = len(rebuilt)
 			meta.LastActiveAt = header.UpdatedAt
 			_ = store.SaveMetadata(meta)
+			rebuilt := res.RebuildContext(msgs, time.Now().UnixMilli())
+			after := compaction.EstimateContextTokens(rebuilt).Tokens
 			return fmt.Sprintf("compacted: %d -> %d tokens, summarized %d messages, kept %d",
 				before, after, len(msgs)-(len(rebuilt)-1), len(rebuilt)-1), nil
 		},

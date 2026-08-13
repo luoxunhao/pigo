@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -30,7 +29,7 @@ import (
 // intact and only replaces the terminal/store seams via goal.Options.
 type serveGoalHost struct {
 	cli.Host
-	store      *session.Store
+	store      *sessionstore.Store
 	header     session.SessionHeader
 	agentCtx   *agentcore.AgentContext
 	live       *cli.LiveConfig
@@ -45,7 +44,7 @@ type serveGoalHost struct {
 	hookDeps   run.HookDeps
 }
 
-func (h *serveGoalHost) Store() *session.Store                { return h.store }
+func (h *serveGoalHost) Store() *sessionstore.Store           { return h.store }
 func (h *serveGoalHost) Header() session.SessionHeader        { return h.header }
 func (h *serveGoalHost) AgentCtx() *agentcore.AgentContext    { return h.agentCtx }
 func (h *serveGoalHost) Live() *cli.LiveConfig                { return h.live }
@@ -114,6 +113,7 @@ func makeGoalFunc(opts cliOptions, env run.Env, pigoHome string, thinking agentc
 		}
 		creds := provider.NewCredentialStore(nil)
 		creds.SetOverride(env.ProviderName, env.APIKey)
+		live.Creds = creds
 		mgr, _ := trust.NewManager(trust.DefaultPath())
 
 		mu.Lock()
@@ -144,7 +144,7 @@ func makeGoalFunc(opts cliOptions, env run.Env, pigoHome string, thinking agentc
 		}
 
 		host := &serveGoalHost{
-			store:     store.TranscriptStore(),
+			store:     store,
 			header:    header,
 			agentCtx:  &agentcore.AgentContext{SystemPrompt: env.SysPrompt, Messages: msgs, Tools: env.Tools},
 			live:      live,
@@ -208,34 +208,23 @@ func goalSummary(state *agenttool.GoalState) string {
 
 func persistGoalStore(store *sessionstore.Store, sessionID string, header session.SessionHeader, msgs agentcore.MessageList, prevCount int) error {
 	var curLeaf string
-	if _, entries, err := store.TranscriptStore().LoadEntries(sessionID); err == nil && len(entries) > 0 {
-		curLeaf = entries[len(entries)-1].ID
-	}
-	if meta, err := store.LoadMetadata(sessionID); err == nil && len(meta.CustomMetadata) > 0 {
-		var custom map[string]any
-		if json.Unmarshal(meta.CustomMetadata, &custom) == nil {
-			if leaf, ok := custom["curLeaf"].(string); ok && leaf != "" {
-				curLeaf = leaf
-			}
-		}
+	if proj, err := store.Projection(sessionID, ""); err == nil {
+		curLeaf = proj.LeafID
 	}
 	header.UpdatedAt = time.Now().UTC()
-	var newLeaf string
 	if len(msgs) < prevCount {
-		if err := store.TranscriptStore().Save(header, msgs); err != nil {
-			return err
-		}
+		// Auto-compaction was persisted by OnCompaction as a typed compaction
+		// entry; flattening the tree with Save would destroy the retained tail.
 		curLeaf = ""
 	} else {
 		tail := msgs
 		if len(msgs) >= prevCount {
 			tail = msgs[prevCount:]
 		}
-		leaf, err := store.AppendBranch(sessionID, header, curLeaf, tail)
+		_, err := store.AppendBranch(sessionID, header, curLeaf, tail)
 		if err != nil {
 			return err
 		}
-		newLeaf = leaf
 	}
 	meta, err := store.LoadMetadata(sessionID)
 	if err != nil {
@@ -244,17 +233,5 @@ func persistGoalStore(store *sessionstore.Store, sessionID string, header sessio
 	meta.ModelName = header.Model
 	meta.LastActiveAt = header.UpdatedAt
 	meta.MessageCount = len(msgs)
-	custom := map[string]any{}
-	if len(meta.CustomMetadata) > 0 {
-		_ = json.Unmarshal(meta.CustomMetadata, &custom)
-	}
-	if newLeaf != "" {
-		custom["curLeaf"] = newLeaf
-	} else {
-		delete(custom, "curLeaf")
-	}
-	if b, marshalErr := json.Marshal(custom); marshalErr == nil {
-		meta.CustomMetadata = b
-	}
 	return store.SaveMetadata(meta)
 }

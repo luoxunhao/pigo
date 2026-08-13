@@ -7,8 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -53,17 +51,9 @@ type ChildSession struct {
 type Registry struct {
 	mu       sync.Mutex
 	sessions map[string]*ChildSession
-	index    map[string]childRef
 	sink     EventSink
 	home     string
 	stores   map[string]*sstore.Store
-}
-
-type childRef struct {
-	ParentID   string `json:"parentSessionId"`
-	ToolCallID string `json:"parentToolCallId"`
-	Type       string `json:"subagentType"`
-	Cwd        string `json:"cwd"`
 }
 
 // EventSink receives every raw agent event emitted by a child session. It is
@@ -75,7 +65,6 @@ type EventSink func(parentSessionID, childSessionID string, ev agentcore.AgentEv
 func NewRegistry() *Registry {
 	return &Registry{
 		sessions: make(map[string]*ChildSession),
-		index:    make(map[string]childRef),
 		stores:   make(map[string]*sstore.Store),
 	}
 }
@@ -85,14 +74,6 @@ func (r *Registry) SetHome(home string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.home = home
-	if home == "" {
-		return
-	}
-	data, err := os.ReadFile(filepath.Join(home, "subagents.json"))
-	if err != nil {
-		return
-	}
-	_ = json.Unmarshal(data, &r.index)
 }
 
 // SetEventSink installs the sink invoked for every child event.
@@ -145,11 +126,6 @@ func (r *Registry) CreateOrGet(
 		inputCh:      make(chan agentcore.AgentMessage, 64),
 	}
 	r.sessions[id] = s
-	if r.index == nil {
-		r.index = make(map[string]childRef)
-	}
-	r.index[id] = childRef{ParentID: parentID, ToolCallID: toolCallID, Type: subagentType, Cwd: cwd}
-	r.saveIndexLocked()
 	r.mu.Unlock()
 	_ = s.ensurePersisted()
 	return s
@@ -163,34 +139,7 @@ func (r *Registry) Load(id string) *ChildSession {
 	if s, ok := r.sessions[id]; ok {
 		return s
 	}
-	ref, ok := r.index[id]
-	if !ok {
-		return nil
-	}
-	s := &ChildSession{
-		ID:         id,
-		ParentID:   ref.ParentID,
-		ToolCallID: ref.ToolCallID,
-		Type:       ref.Type,
-		Cwd:        ref.Cwd,
-		Home:       r.home,
-		reg:        r,
-		inputCh:    make(chan agentcore.AgentMessage, 64),
-	}
-	r.sessions[id] = s
-	_ = s.ensurePersisted()
-	return s
-}
-
-func (r *Registry) saveIndexLocked() {
-	if r.home == "" || r.index == nil {
-		return
-	}
-	data, err := json.Marshal(r.index)
-	if err != nil {
-		return
-	}
-	_ = os.WriteFile(filepath.Join(r.home, "subagents.json"), data, 0o644)
+	return nil
 }
 
 // storeFor returns the shared project store for a workspace. All child
@@ -225,8 +174,8 @@ func (s *ChildSession) ensurePersisted() error {
 		s.Header = header
 		s.Messages = msgs
 		s.Persisted = len(msgs)
-		if _, entries, e := st.TranscriptStore().LoadEntries(s.ID); e == nil && len(entries) > 0 {
-			s.CurLeaf = entries[len(entries)-1].ID
+		if projection, pe := st.Projection(s.ID, ""); pe == nil {
+			s.CurLeaf = projection.LeafID
 		}
 		ApplySubagentMetadata(&meta, s.ParentID, s.ToolCallID, s.Type)
 		return st.SaveMetadata(meta)

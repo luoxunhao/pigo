@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -19,14 +21,24 @@ type HTTPAdapter struct {
 	transport Transport
 	version   string
 
-	mu      sync.Mutex
-	dirs    map[string]string
-	cursors map[string]int64
+	mu          sync.Mutex
+	dirs        map[string]string
+	cursors     map[string]int64
+	tree        map[string]sessionTreeState
+	treeEnabled bool
+	afterMu     sync.Mutex
+	after       map[string][]func()
+}
+
+type sessionTreeState struct {
+	CurrentLeafID string
+	CurrentLane   string
+	Lanes         []map[string]any
 }
 
 // NewHTTPAdapter builds an adapter over a serve HTTP client.
 func NewHTTPAdapter(client *httpclient.ClientWithResponses, transport Transport, version string) *HTTPAdapter {
-	return &HTTPAdapter{client: client, transport: transport, version: version, dirs: make(map[string]string), cursors: make(map[string]int64)}
+	return &HTTPAdapter{client: client, transport: transport, version: version, dirs: make(map[string]string), cursors: make(map[string]int64), tree: make(map[string]sessionTreeState), after: make(map[string][]func())}
 }
 
 func (a *HTTPAdapter) directory(sessionID string) (string, bool) {
@@ -58,7 +70,7 @@ func (a *HTTPAdapter) setCursor(sessionID string, id int64) {
 func (a *HTTPAdapter) HandleRequest(ctx context.Context, id RequestID, method string, params json.RawMessage) (any, *Error) {
 	switch method {
 	case MethodInitialize:
-		return a.initialize(), nil
+		return a.initialize(params), nil
 	case "authenticate":
 		return nil, NewError(CodeInvalidParams, "unknown auth method")
 	case MethodSessionNew:
@@ -103,7 +115,44 @@ func (a *HTTPAdapter) HandleNotification(ctx context.Context, method string, par
 	_, _ = a.client.CancelSessionPromptWithResponse(ctx, req.SessionID)
 }
 
-func (a *HTTPAdapter) initialize() map[string]any {
+// AfterResponse runs side effects deferred until the current response has been
+// delivered, so clients never receive session notifications before they know
+// the session id.
+func (a *HTTPAdapter) AfterResponse(method string) {
+	a.afterMu.Lock()
+	fns := a.after[method]
+	delete(a.after, method)
+	a.afterMu.Unlock()
+	for _, fn := range fns {
+		fn()
+	}
+}
+
+func (a *HTTPAdapter) deferAfterResponse(method string, fn func()) {
+	a.afterMu.Lock()
+	a.after[method] = append(a.after[method], fn)
+	a.afterMu.Unlock()
+}
+
+func (a *HTTPAdapter) initialize(params json.RawMessage) map[string]any {
+	var req struct {
+		ClientCapabilities struct {
+			Meta struct {
+				Pigo struct {
+					SessionTree struct {
+						Version int `json:"version"`
+					} `json:"sessionTree"`
+				} `json:"pigo"`
+			} `json:"_meta"`
+		} `json:"clientCapabilities"`
+	}
+	treeVersion := 0
+	if json.Unmarshal(params, &req) == nil {
+		treeVersion = req.ClientCapabilities.Meta.Pigo.SessionTree.Version
+	}
+	a.mu.Lock()
+	a.treeEnabled = treeVersion == 1
+	a.mu.Unlock()
 	return map[string]any{
 		"protocolVersion": 1,
 		"agentCapabilities": map[string]any{
@@ -119,6 +168,11 @@ func (a *HTTPAdapter) initialize() map[string]any {
 				"close":  map[string]any{},
 			},
 			"mcpCapabilities": map[string]any{"http": false, "sse": false},
+			"_meta": map[string]any{
+				"pigo": map[string]any{
+					"sessionTree": map[string]any{"version": 1},
+				},
+			},
 		},
 		"authMethods": []any{},
 		"agentInfo": map[string]any{
@@ -146,7 +200,9 @@ func (a *HTTPAdapter) sessionNew(ctx context.Context, params json.RawMessage) (a
 		return nil, NewError(CodeInternalError, "session/new failed")
 	}
 	a.remember(resp.JSON200.SessionId, req.Cwd)
-	go a.sendAvailableCommands(req.Cwd, resp.JSON200.SessionId)
+	a.deferAfterResponse(MethodSessionNew, func() {
+		a.sendAvailableCommands(req.Cwd, resp.JSON200.SessionId)
+	})
 	modes := a.modesState()
 	return map[string]any{
 		"sessionId":     resp.JSON200.SessionId,
@@ -160,23 +216,31 @@ func (a *HTTPAdapter) sessionLoad(ctx context.Context, params json.RawMessage) (
 		SessionID             string          `json:"sessionId"`
 		Cwd                   string          `json:"cwd"`
 		AdditionalDirectories []string        `json:"additionalDirectories,omitempty"`
+		LeafID                *string         `json:"leafId,omitempty"`
 		MCPServers            json.RawMessage `json:"mcpServers,omitempty"`
 	}
 	if err := json.Unmarshal(params, &req); err != nil || req.SessionID == "" || req.Cwd == "" {
 		return nil, NewError(CodeInvalidParams, "missing sessionId or cwd")
 	}
 	limit := 50
+	fullHistory := true
 	resp, err := a.client.LoadSessionWithResponse(ctx, req.SessionID, httpclient.LoadSessionJSONRequestBody{
-		Directory: req.Cwd,
-		Limit:     &limit,
+		Directory:   req.Cwd,
+		Limit:       &limit,
+		LeafId:      req.LeafID,
+		FullHistory: &fullHistory,
 	})
 	if err != nil || resp.JSON200 == nil {
 		return nil, NewError(CodeInternalError, "session/load failed")
 	}
 	a.remember(req.SessionID, req.Cwd)
 	a.replayAll(ctx, req.SessionID, req.Cwd, resp.JSON200.Messages, resp.JSON200.NextCursor, resp.JSON200.HasMore)
-	go a.sendAvailableCommands(req.Cwd, req.SessionID)
+	a.deferAfterResponse(MethodSessionLoad, func() {
+		a.sendAvailableCommands(req.Cwd, req.SessionID)
+		a.refreshTree(context.Background(), req.SessionID, req.Cwd)
+	})
 	return map[string]any{
+		"sessionId":     req.SessionID,
 		"configOptions": resp.JSON200.ConfigOptions,
 		"modes":         a.modesState(),
 	}, nil
@@ -184,23 +248,41 @@ func (a *HTTPAdapter) sessionLoad(ctx context.Context, params json.RawMessage) (
 
 func (a *HTTPAdapter) sessionList(ctx context.Context, params json.RawMessage) (any, *Error) {
 	var req struct {
-		Cwd string `json:"cwd"`
+		Cwd              string `json:"cwd"`
+		IncludeSubagents bool   `json:"includeSubagents,omitempty"`
 	}
 	_ = json.Unmarshal(params, &req)
-	resp, err := a.client.ListSessionsWithResponse(ctx, &httpclient.ListSessionsParams{Directory: &req.Cwd})
+	resp, err := a.client.ListSessionsWithResponse(ctx, &httpclient.ListSessionsParams{Directory: &req.Cwd, IncludeSubagents: &req.IncludeSubagents})
 	if err != nil || resp.JSON200 == nil {
 		return nil, NewError(CodeInternalError, "session/list failed")
 	}
 	sessions := make([]map[string]any, 0, len(resp.JSON200.Sessions))
 	for _, s := range resp.JSON200.Sessions {
-		sessions = append(sessions, map[string]any{
+		item := map[string]any{
 			"sessionId": s.SessionId,
 			"cwd":       s.Directory,
 			"title":     s.Title,
 			"updatedAt": s.UpdatedAt,
-		})
+		}
+		if s.ParentSessionId != nil {
+			item["parentSessionId"] = *s.ParentSessionId
+		}
+		if s.ParentToolCallId != nil {
+			item["parentToolCallId"] = *s.ParentToolCallId
+		}
+		if s.SubagentType != nil {
+			item["subagentType"] = *s.SubagentType
+		}
+		if s.SessionKind != nil {
+			item["sessionKind"] = *s.SessionKind
+		}
+		sessions = append(sessions, item)
 	}
-	return map[string]any{"sessions": sessions}, nil
+	result := map[string]any{"sessions": sessions}
+	if a.treeEnabledForSession() {
+		result["_meta"] = map[string]any{"pigo": map[string]any{"sessionList": map[string]any{"version": 1}}}
+	}
+	return result, nil
 }
 
 func (a *HTTPAdapter) sessionDelete(ctx context.Context, params json.RawMessage) (any, *Error) {
@@ -310,13 +392,17 @@ func (a *HTTPAdapter) runPrompt(ctx context.Context, id RequestID, params json.R
 	go a.streamEvents(ctx, req.SessionID)
 	text := promptText(req.Prompt)
 	stopReason := "end_turn"
+	var structured any
 	if strings.HasPrefix(strings.TrimSpace(text), "/") {
 		args := commandArgs(text)
 		resp, err := a.client.ExecuteCommandWithResponse(ctx, req.SessionID, httpclient.ExecuteCommandJSONRequestBody{Directory: dir, Command: commandName(text), Arguments: &args})
 		if err == nil && resp.JSON200 != nil {
 			stopReason = resp.JSON200.StopReason
+			structured = resp.JSON200.Structured
 			if resp.JSON200.Text != nil {
-				_ = a.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(req.SessionID, textChunkUpdate(*resp.JSON200.Text)))
+				payload := sessionUpdatePayload(req.SessionID, textChunkUpdate(*resp.JSON200.Text))
+				a.attachTreeMeta(req.SessionID, payload, nil)
+				_ = a.transport.SendNotification(NotificationSessionUpdate, payload)
 			}
 		} else {
 			promptResp, promptErr := a.client.PromptSessionWithResponse(ctx, req.SessionID, httpclient.PromptSessionJSONRequestBody{Directory: dir, Prompt: req.Prompt})
@@ -334,7 +420,12 @@ func (a *HTTPAdapter) runPrompt(ctx context.Context, id RequestID, params json.R
 		}
 		stopReason = resp.JSON200.StopReason
 	}
-	_ = a.transport.SendResponse(ctx, id, map[string]any{"stopReason": stopReason}, nil)
+	a.refreshTree(ctx, req.SessionID, dir)
+	result := map[string]any{"stopReason": stopReason}
+	if structured != nil {
+		result["_meta"] = map[string]any{"pigo": map[string]any{"structured": structured}}
+	}
+	_ = a.transport.SendResponse(ctx, id, result, nil)
 }
 
 func (a *HTTPAdapter) streamEvents(ctx context.Context, sessionID string) {
@@ -378,22 +469,31 @@ func (a *HTTPAdapter) streamEvents(ctx context.Context, sessionID string) {
 			return
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "pigo: stream events: %v\n", err)
+	}
 }
 
 func (a *HTTPAdapter) mapEvent(sessionID, eventType string, data map[string]any) {
 	switch eventType {
 	case "message.part.delta":
 		if delta, ok := data["delta"].(string); ok && delta != "" {
-			_ = a.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(sessionID, map[string]any{
+			payload := sessionUpdatePayload(sessionID, map[string]any{
 				"sessionUpdate": "agent_message_chunk",
 				"content":       map[string]any{"type": "text", "text": delta},
-			}))
+				"messageId":     data["messageId"],
+			})
+			a.attachTreeMeta(sessionID, payload, nil)
+			_ = a.transport.SendNotification(NotificationSessionUpdate, payload)
 		}
 		if thinking, ok := data["thinking"].(string); ok && thinking != "" {
-			_ = a.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(sessionID, map[string]any{
+			payload := sessionUpdatePayload(sessionID, map[string]any{
 				"sessionUpdate": "agent_thought_chunk",
 				"content":       map[string]any{"type": "text", "text": thinking},
-			}))
+				"messageId":     data["messageId"],
+			})
+			a.attachTreeMeta(sessionID, payload, nil)
+			_ = a.transport.SendNotification(NotificationSessionUpdate, payload)
 		}
 	case "tool.updated":
 		id, _ := data["toolCallId"].(string)
@@ -435,28 +535,41 @@ func (a *HTTPAdapter) mapEvent(sessionID, eventType string, data map[string]any)
 				update = toolCallEnd(id, title, failed, output, rawInput)
 			}
 		}
-		_ = a.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(sessionID, update))
+		payload := sessionUpdatePayload(sessionID, update)
+		if messageID, ok := data["messageId"]; ok {
+			payload["update"].(map[string]any)["messageId"] = messageID
+		}
+		a.attachTreeMeta(sessionID, payload, nil)
+		_ = a.transport.SendNotification(NotificationSessionUpdate, payload)
 	case "mode.updated":
-		_ = a.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(sessionID, map[string]any{
+		payload := sessionUpdatePayload(sessionID, map[string]any{
 			"sessionUpdate": "current_mode_update",
 			"currentModeId": data["currentModeId"],
-		}))
+		})
+		a.attachTreeMeta(sessionID, payload, nil)
+		_ = a.transport.SendNotification(NotificationSessionUpdate, payload)
 	case "config.updated":
-		_ = a.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(sessionID, map[string]any{
+		payload := sessionUpdatePayload(sessionID, map[string]any{
 			"sessionUpdate": "config_option_update",
 			"configOptions": data["configOptions"],
-		}))
+		})
+		a.attachTreeMeta(sessionID, payload, nil)
+		_ = a.transport.SendNotification(NotificationSessionUpdate, payload)
 	case "session.updated":
-		_ = a.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(sessionID, map[string]any{
+		payload := sessionUpdatePayload(sessionID, map[string]any{
 			"sessionUpdate": "session_info_update",
 			"title":         data["title"],
 			"updatedAt":     data["updatedAt"],
-		}))
+		})
+		a.attachTreeMeta(sessionID, payload, nil)
+		_ = a.transport.SendNotification(NotificationSessionUpdate, payload)
 	case "commands.updated":
-		_ = a.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(sessionID, map[string]any{
+		payload := sessionUpdatePayload(sessionID, map[string]any{
 			"sessionUpdate":     "available_commands_update",
 			"availableCommands": data["availableCommands"],
-		}))
+		})
+		a.attachTreeMeta(sessionID, payload, nil)
+		_ = a.transport.SendNotification(NotificationSessionUpdate, payload)
 	case "permission.asked":
 		a.handlePermissionAsked(sessionID, data)
 	}
@@ -552,44 +665,183 @@ func (a *HTTPAdapter) sendAvailableCommands(directory, sessionID string) {
 	if err != nil || resp.JSON200 == nil {
 		return
 	}
-	_ = a.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(sessionID, map[string]any{
+	payload := sessionUpdatePayload(sessionID, map[string]any{
 		"sessionUpdate":     "available_commands_update",
 		"availableCommands": resp.JSON200.Commands,
-	}))
+	})
+	a.attachTreeMeta(sessionID, payload, nil)
+	_ = a.transport.SendNotification(NotificationSessionUpdate, payload)
 }
 
 func (a *HTTPAdapter) replayAll(ctx context.Context, sessionID, directory string, messages []httpclient.Message, nextCursor *string, hasMore bool) {
-	for {
-		for _, msg := range messages {
-			text := messageText(msg)
-			if text == "" {
-				continue
+	state := &replayState{}
+	defer state.flush(sessionID, directory, a)
+
+	if hasMore && nextCursor != nil {
+		var cursors []string
+		cur := *nextCursor
+		for {
+			cursors = append(cursors, cur)
+			limit := replayPageSize
+			resp, err := a.client.GetSessionMessagesWithResponse(ctx, sessionID, &httpclient.GetSessionMessagesParams{
+				Directory:   directory,
+				Before:      &cur,
+				Limit:       &limit,
+				FullHistory: boolPtr(true),
+			})
+			if err != nil || resp.JSON200 == nil || resp.JSON200.NextCursor == nil || !resp.JSON200.HasMore {
+				break
 			}
-			update := "user_message_chunk"
-			if msg.Role == "assistant" {
-				update = "agent_message_chunk"
+			next := *resp.JSON200.NextCursor
+			if next == cur {
+				break
 			}
-			_ = a.transport.SendNotification(NotificationSessionUpdate, sessionUpdatePayload(sessionID, map[string]any{
-				"sessionUpdate": update,
-				"content":       map[string]any{"type": "text", "text": text},
-			}))
+			cur = next
 		}
-		if !hasMore || nextCursor == nil {
-			return
+		slices.Reverse(cursors)
+		for _, before := range cursors {
+			limit := replayPageSize
+			resp, err := a.client.GetSessionMessagesWithResponse(ctx, sessionID, &httpclient.GetSessionMessagesParams{
+				Directory:   directory,
+				Before:      &before,
+				Limit:       &limit,
+				FullHistory: boolPtr(true),
+			})
+			if err != nil || resp.JSON200 == nil {
+				break
+			}
+			a.replayMessagesInto(state, sessionID, directory, resp.JSON200.Messages)
 		}
-		limit := 50
-		resp, err := a.client.GetSessionMessagesWithResponse(ctx, sessionID, &httpclient.GetSessionMessagesParams{
-			Directory: directory,
-			Before:    nextCursor,
-			Limit:     &limit,
-		})
-		if err != nil || resp.JSON200 == nil {
-			return
-		}
-		messages = resp.JSON200.Messages
-		nextCursor = resp.JSON200.NextCursor
-		hasMore = resp.JSON200.HasMore
 	}
+	a.replayMessagesInto(state, sessionID, directory, messages)
+}
+
+func boolPtr(v bool) *bool {
+	return &v
+}
+
+type pendingToolCall struct {
+	id           string
+	name         string
+	rawInput     any
+	assistantMsg httpclient.Message
+}
+
+const replayPageSize = 50
+
+type replayState struct {
+	pending []pendingToolCall
+}
+
+func (s *replayState) flush(sessionID, directory string, a *HTTPAdapter) {
+	for _, p := range s.pending {
+		a.sendReplayToolCall(sessionID, directory, p, "")
+	}
+	s.pending = nil
+}
+
+func (a *HTTPAdapter) replayMessages(sessionID, directory string, messages []httpclient.Message) {
+	state := &replayState{}
+	a.replayMessagesInto(state, sessionID, directory, messages)
+	state.flush(sessionID, directory, a)
+}
+
+func (a *HTTPAdapter) replayMessagesInto(state *replayState, sessionID, directory string, messages []httpclient.Message) {
+	for _, msg := range messages {
+		if msg.Role == "compaction" || msg.Role == "branch_summary" {
+			continue
+		}
+		if msg.Role == "toolResult" {
+			if len(state.pending) > 0 {
+				p := state.pending[0]
+				state.pending = state.pending[1:]
+				output := messageText(msg)
+				a.sendReplayToolCall(sessionID, directory, p, output)
+			}
+			continue
+		}
+		for _, block := range msg.Content {
+			switch block["type"] {
+			case "text":
+				text, _ := block["text"].(string)
+				if text == "" {
+					continue
+				}
+				update := "user_message_chunk"
+				if msg.Role == "assistant" {
+					update = "agent_message_chunk"
+				}
+				a.sendReplayUpdate(sessionID, msg, map[string]any{
+					"sessionUpdate": update,
+					"content":       map[string]any{"type": "text", "text": text},
+				})
+			case "thinking":
+				thinking, _ := block["thinking"].(string)
+				if thinking == "" {
+					continue
+				}
+				a.sendReplayUpdate(sessionID, msg, map[string]any{
+					"sessionUpdate": "agent_thought_chunk",
+					"content":       map[string]any{"type": "text", "text": thinking},
+				})
+			case "toolCall":
+				id, _ := block["id"].(string)
+				name, _ := block["name"].(string)
+				if id == "" || name == "" {
+					continue
+				}
+				state.pending = append(state.pending, pendingToolCall{
+					id:           id,
+					name:         name,
+					rawInput:     block["arguments"],
+					assistantMsg: msg,
+				})
+			}
+		}
+	}
+}
+
+func (a *HTTPAdapter) sendReplayToolCall(sessionID, directory string, p pendingToolCall, output string) {
+	if isBashTool(p.name) {
+		command := bashCommandFromArgs(p.rawInput)
+		a.sendReplayUpdate(sessionID, p.assistantMsg, bashToolCallStart(p.id, p.name, p.rawInput, directory, command))
+		result := agentcore.AgentToolResult{Content: agentcore.ContentList{agentcore.NewTextContent(output)}}
+		a.sendReplayUpdate(sessionID, p.assistantMsg, bashToolCallEnd(p.id, p.name, false, result, directory, command, p.rawInput))
+		return
+	}
+	a.sendReplayUpdate(sessionID, p.assistantMsg, toolCallStart(p.id, p.name, p.rawInput))
+	a.sendReplayUpdate(sessionID, p.assistantMsg, toolCallEnd(p.id, p.name, false, output, p.rawInput))
+}
+
+func (a *HTTPAdapter) sendReplayUpdate(sessionID string, msg httpclient.Message, update map[string]any) {
+	if msg.Id != "" {
+		if _, ok := update["messageId"]; !ok {
+			update["messageId"] = msg.Id
+		}
+	}
+	payload := sessionUpdatePayload(sessionID, update)
+	a.attachTreeMeta(sessionID, payload, replayTreeExtra(msg))
+	_ = a.transport.SendNotification(NotificationSessionUpdate, payload)
+}
+
+func replayTreeExtra(msg httpclient.Message) map[string]any {
+	extra := map[string]any{}
+	if msg.EntryId != nil {
+		extra["entryId"] = *msg.EntryId
+	}
+	if msg.EntryType != nil {
+		extra["entryType"] = *msg.EntryType
+	}
+	if msg.ParentId != nil {
+		extra["parentId"] = *msg.ParentId
+	}
+	if msg.Seq != nil {
+		extra["seq"] = *msg.Seq
+	}
+	if msg.Lane != nil {
+		extra["lane"] = *msg.Lane
+	}
+	return extra
 }
 
 func promptText(blocks []map[string]interface{}) string {
@@ -641,6 +893,97 @@ func configOptionsFromHTTP(options []httpclient.ConfigOption) []map[string]any {
 		out = append(out, item)
 	}
 	return out
+}
+
+func (a *HTTPAdapter) treeEnabledForSession() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.treeEnabled
+}
+
+func (a *HTTPAdapter) treeState(sessionID string) map[string]any {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	st, ok := a.tree[sessionID]
+	if !ok {
+		return map[string]any{
+			"version":       1,
+			"currentLeafId": nil,
+			"currentLane":   "main",
+			"lanes":         []map[string]any{{"lane": "main", "leafId": nil}},
+		}
+	}
+	lanes := st.Lanes
+	if lanes == nil {
+		lanes = []map[string]any{{"lane": st.CurrentLane, "leafId": st.CurrentLeafID}}
+	}
+	return map[string]any{
+		"version":       1,
+		"currentLeafId": st.CurrentLeafID,
+		"currentLane":   st.CurrentLane,
+		"lanes":         lanes,
+	}
+}
+
+func (a *HTTPAdapter) attachTreeMeta(sessionID string, payload map[string]any, extra map[string]any) {
+	if !a.treeEnabledForSession() {
+		return
+	}
+	tree := a.treeState(sessionID)
+	for k, v := range extra {
+		tree[k] = v
+	}
+	meta, _ := payload["_meta"].(map[string]any)
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	pigo, _ := meta["pigo"].(map[string]any)
+	if pigo == nil {
+		pigo = map[string]any{}
+	}
+	pigo["sessionTree"] = tree
+	meta["pigo"] = pigo
+	payload["_meta"] = meta
+}
+
+func (a *HTTPAdapter) refreshTree(ctx context.Context, sessionID, directory string) {
+	if !a.treeEnabledForSession() {
+		return
+	}
+	resp, err := a.client.GetSessionStatusWithResponse(ctx, sessionID, &httpclient.GetSessionStatusParams{Directory: directory})
+	if err != nil || resp.JSON200 == nil {
+		return
+	}
+	st := sessionTreeState{CurrentLane: "main"}
+	if resp.JSON200.CurrentLeafId != nil {
+		st.CurrentLeafID = *resp.JSON200.CurrentLeafId
+	}
+	if resp.JSON200.CurrentLane != nil {
+		st.CurrentLane = *resp.JSON200.CurrentLane
+	}
+	if resp.JSON200.Lanes != nil {
+		for _, l := range *resp.JSON200.Lanes {
+			item := map[string]any{"lane": l.Lane}
+			if l.LeafId != nil {
+				item["leafId"] = *l.LeafId
+			} else {
+				item["leafId"] = nil
+			}
+			st.Lanes = append(st.Lanes, item)
+		}
+	}
+	a.mu.Lock()
+	a.tree[sessionID] = st
+	a.mu.Unlock()
+	update := map[string]any{
+		"sessionUpdate": "session_info_update",
+		"currentLeafId": st.CurrentLeafID,
+		"currentLane":   st.CurrentLane,
+		"lanes":         st.Lanes,
+	}
+	payload := sessionUpdatePayload(sessionID, update)
+	a.attachTreeMeta(sessionID, payload, nil)
+	_ = a.transport.SendNotification(NotificationSessionUpdate, payload)
 }
 
 func messageText(msg httpclient.Message) string {

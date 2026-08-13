@@ -5,22 +5,25 @@ import (
 	"time"
 
 	"github.com/smallnest/pigo/internal/agentcore"
+	"github.com/smallnest/pigo/internal/compaction"
 	"github.com/smallnest/pigo/internal/session"
+	"github.com/smallnest/pigo/internal/sessionstore"
 )
 
 // newTestStore opens a session store rooted at a temp dir so persistence/resume
 // can be exercised without touching ~/.pigo.
-func newTestStore(t *testing.T) *session.Store {
+func newTestStore(t *testing.T) *sessionstore.Store {
 	t.Helper()
-	store, err := session.NewStore(t.TempDir())
+	store, err := sessionstore.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
 	return store
 }
 
 // saveSession writes a linear session with the given messages and returns its id.
-func saveSession(t *testing.T, store *session.Store, msgs agentcore.MessageList) string {
+func saveSession(t *testing.T, store *sessionstore.Store, msgs agentcore.MessageList) string {
 	t.Helper()
 	now := time.Now().UTC()
 	header := session.SessionHeader{
@@ -138,7 +141,7 @@ func TestFreshSessionPersists(t *testing.T) {
 		t.Errorf("persisted = %d, want 2", s.persisted)
 	}
 
-	_, msgs, err := store.Load(s.header.ID)
+	_, _, msgs, err := store.Load(s.header.ID)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -156,10 +159,9 @@ func TestFreshSessionPersists(t *testing.T) {
 	}
 }
 
-// TestPersistAfterCompaction reproduces the crash where an automatic compaction
-// shrinks agentCtx.Messages below the persisted cursor: an incremental
-// Messages[persisted:] would panic with a slice-bounds error. persist() must
-// instead re-save the flattened context and reset the cursor to the new length.
+// TestPersistAfterCompaction verifies that a compaction already persisted by
+// OnCompaction is not flattened by persist(): the cursor resets to the rebuilt
+// context and the retained-tail compaction entry stays authoritative.
 func TestPersistAfterCompaction(t *testing.T) {
 	store := newTestStore(t)
 	s, _, err := newRunSessionWithStore(store, Options{Model: "m", ProviderName: "p"})
@@ -181,13 +183,19 @@ func TestPersistAfterCompaction(t *testing.T) {
 		t.Fatalf("persisted = %d, want 8 before compaction", s.persisted)
 	}
 
-	// Simulate the run loop compacting: Messages is rewritten to a shorter
-	// summary + tail (here just a 2-message tail), and the loop signalled it via
-	// compactionMsg (which sets s.compacted).
-	s.agentCtx.Messages = agentcore.MessageList{
-		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("recent q")}},
-		agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant, Content: agentcore.ContentList{agentcore.NewTextContent("recent a")}},
+	// Simulate the run loop compacting: OnCompaction persists a typed entry and
+	// the loop rewrites Messages to summary + retained tail.
+	prev := s.agentCtx.Messages
+	res := &compaction.CompactionResult{
+		Summary:      "compacted",
+		RetainedTail: prev[6:],
+		TokensBefore: 100,
+		Details:      compaction.CompactionDetails{},
 	}
+	if _, err := s.store.AppendCompaction(s.header.ID, s.header, res); err != nil {
+		t.Fatalf("AppendCompaction: %v", err)
+	}
+	s.agentCtx.Messages = res.RebuildContext(prev, time.Now().UnixMilli())
 	s.compacted = true
 
 	if err := s.persist(); err != nil {
@@ -196,15 +204,15 @@ func TestPersistAfterCompaction(t *testing.T) {
 	if s.compacted {
 		t.Error("compacted flag should be cleared after persist")
 	}
-	if s.persisted != 2 {
-		t.Errorf("persisted = %d, want 2 (the compacted length)", s.persisted)
+	if s.persisted != 3 {
+		t.Errorf("persisted = %d, want 3 (compaction + retained tail)", s.persisted)
 	}
 
-	_, msgs, err := store.Load(s.header.ID)
+	_, _, msgs, err := store.Load(s.header.ID)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if len(msgs) != 2 {
-		t.Fatalf("persisted messages = %d, want 2 (flattened compacted context)", len(msgs))
+	if len(msgs) != 3 {
+		t.Fatalf("persisted messages = %d, want 3 (compaction + retained tail)", len(msgs))
 	}
 }

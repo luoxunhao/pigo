@@ -16,6 +16,7 @@ import (
 
 func TestHTTPAdapterStandardFlow(t *testing.T) {
 	pigoHome := t.TempDir()
+	cleanupStores(t)
 	workspace := filepath.Join(t.TempDir(), "ws")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatal(err)

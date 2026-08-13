@@ -8,9 +8,12 @@ package compaction
 import (
 	"context"
 	"encoding/json"
+	"strings"
+	"time"
 
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/provider"
+	"github.com/smallnest/pigo/internal/session"
 )
 
 // CompactionDetails records the files touched in the compacted history, stored
@@ -30,12 +33,20 @@ type CompactionDetails struct {
 type CompactionResult struct {
 	// Summary is the structured summary that replaces the compacted history.
 	Summary string
+	// TurnPrefixSummary is the split-turn prefix summary, empty for clean cuts.
+	TurnPrefixSummary string
 	// FirstKeptIndex is the index of the first retained message.
 	FirstKeptIndex int
+	// RetainedTail is the self-contained tail carried by the compaction entry.
+	RetainedTail []agentcore.Message
 	// TokensBefore is the estimated context tokens before compaction.
 	TokensBefore int
 	// Details holds the file operations extracted from the compacted range.
 	Details CompactionDetails
+	// FromHook reports a hook-triggered compaction.
+	FromHook bool
+	// Usage is optional provider usage metadata for the summary request.
+	Usage json.RawMessage
 }
 
 // Compact prepares and generates a compaction over msgs. It cuts at
@@ -71,6 +82,8 @@ func Compact(
 		return nil, nil
 	}
 	toSummarize := msgs[start:cut.FirstKeptIndex]
+	retainedTail := append([]agentcore.Message(nil), msgs[cut.FirstKeptIndex:]...)
+	turnPrefixSummary := ""
 
 	// Seed file ops from the previous compaction, then fold in this range.
 	ops := NewFileOps()
@@ -91,13 +104,29 @@ func Compact(
 	if err != nil {
 		return nil, err
 	}
+	if cut.IsSplitTurn && cut.TurnStartIndex > start {
+		historySummary, err := GenerateSummary(ctx, stream, model, msgs[start:cut.TurnStartIndex], settings.ReserveTokens, previousSummary, cfg)
+		if err != nil {
+			return nil, err
+		}
+		turnPrefixSummary, err = GenerateSummary(ctx, stream, model, msgs[cut.TurnStartIndex:cut.FirstKeptIndex], settings.ReserveTokens, historySummary, cfg)
+		if err != nil {
+			return nil, err
+		}
+		summary = historySummary
+		if strings.TrimSpace(turnPrefixSummary) != "" {
+			summary += "\n\n" + turnPrefixSummary
+		}
+	}
 	summary += formatFileOperations(readFiles, modifiedFiles)
 
 	return &CompactionResult{
-		Summary:        summary,
-		FirstKeptIndex: cut.FirstKeptIndex,
-		TokensBefore:   EstimateContextTokens(msgs).Tokens,
-		Details:        CompactionDetails{ReadFiles: readFiles, ModifiedFiles: modifiedFiles},
+		Summary:          summary,
+		TurnPrefixSummary: turnPrefixSummary,
+		FirstKeptIndex:   cut.FirstKeptIndex,
+		RetainedTail:     retainedTail,
+		TokensBefore:     EstimateContextTokens(msgs).Tokens,
+		Details:          CompactionDetails{ReadFiles: readFiles, ModifiedFiles: modifiedFiles},
 	}, nil
 }
 
@@ -117,6 +146,31 @@ func (r *CompactionResult) Message(now int64) agentcore.CompactionMessage {
 	}
 }
 
+// V4Entry converts the compaction result into a typed v4 compaction entry.
+// The retained tail is serialized as raw agentcore messages so the entry is
+// self-contained and can be replayed by ProjectLeaf without touching history.
+func (r *CompactionResult) V4Entry(id, parentID string, ts time.Time) session.V4Entry {
+	retained := make([]json.RawMessage, 0, len(r.RetainedTail))
+	for _, m := range r.RetainedTail {
+		if raw, err := json.Marshal(m); err == nil {
+			retained = append(retained, raw)
+		}
+	}
+	details, _ := json.Marshal(r.Details)
+	return session.V4Entry{
+		Type:         session.EntryTypeCompaction,
+		ID:           id,
+		ParentID:     parentID,
+		Timestamp:    ts,
+		Summary:      r.Summary,
+		RetainedTail: retained,
+		Details:      details,
+		TokensBefore: r.TokensBefore,
+		FromHook:     r.FromHook,
+		Usage:        r.Usage,
+	}
+}
+
 // RebuildContext returns the post-compaction message list: the compaction
 // checkpoint followed by the retained recent messages (msgs[FirstKeptIndex:]).
 // The summarized prefix is dropped and replaced by the single checkpoint,
@@ -125,6 +179,10 @@ func (r *CompactionResult) Message(now int64) agentcore.CompactionMessage {
 func (r *CompactionResult) RebuildContext(msgs []agentcore.Message, now int64) agentcore.MessageList {
 	out := make(agentcore.MessageList, 0, len(msgs)-r.FirstKeptIndex+1)
 	out = append(out, r.Message(now))
-	out = append(out, msgs[r.FirstKeptIndex:]...)
+	tail := r.RetainedTail
+	if len(tail) == 0 {
+		tail = msgs[r.FirstKeptIndex:]
+	}
+	out = append(out, tail...)
 	return out
 }

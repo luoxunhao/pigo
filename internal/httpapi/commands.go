@@ -40,10 +40,13 @@ func NewCommandService(sessions *SessionService, prompts *PromptManager, slash *
 }
 
 func (c *CommandService) List() gen.CommandListResult {
+	structuredKinds := []string{"sessionTree"}
 	commands := []gen.AvailableCommand{
 		{Name: "name", Description: "Set the session display name", Input: hintInput("<name>")},
+		{Name: "tree", Description: "Show and switch the session tree", Input: hintInput("[n]"), StructuredKinds: &structuredKinds},
+		{Name: "label", Description: "Set or clear a tree node label", Input: hintInput("<n> [text]")},
 	}
-	seen := map[string]bool{"name": true}
+	seen := map[string]bool{"name": true, "tree": true, "label": true}
 	if c.slash != nil {
 		for _, cmd := range c.slash.List() {
 			if serveUnsupportedCommands[cmd.Name] {
@@ -214,7 +217,27 @@ func (c *CommandService) Execute(ctx context.Context, sessionID string, req gen.
 			}
 			n = parsed
 		}
-		text, err := c.sessions.Tree(sessionID, req.Directory, n)
+		text, structured, err := c.sessions.TreeStructured(sessionID, req.Directory, n)
+		if err != nil {
+			return gen.PromptResponse{}, Internal(err.Error())
+		}
+		resp := actionResponse(text)
+		resp.Structured = structured
+		return resp, nil
+	case "label":
+		parts := strings.SplitN(args, " ", 2)
+		if parts[0] == "" {
+			return gen.PromptResponse{}, InvalidParams("usage: /label <n> [text]")
+		}
+		n, convErr := strconv.Atoi(parts[0])
+		if convErr != nil || n < 1 {
+			return gen.PromptResponse{}, InvalidParams("usage: /label <n> [text]")
+		}
+		label := ""
+		if len(parts) == 2 {
+			label = strings.TrimSpace(parts[1])
+		}
+		text, err := c.sessions.Label(sessionID, req.Directory, n, label)
 		if err != nil {
 			return gen.PromptResponse{}, Internal(err.Error())
 		}

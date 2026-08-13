@@ -90,6 +90,7 @@ func TestChildSessionContinue(t *testing.T) {
 func TestChildSessionPersistsSubagentMetadata(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
+	cleanupStores(t)
 	reg := NewRegistry()
 	reg.SetHome(home)
 	factory := func() RunConfig { return RunConfig{} }
@@ -107,8 +108,8 @@ func TestChildSessionPersistsSubagentMetadata(t *testing.T) {
 	if meta.ParentSessionID != "parent-1" || meta.ParentToolCallID != "call-1" || meta.SubagentType != "task" {
 		t.Errorf("child relationship metadata = %+v", meta)
 	}
-	if _, err := os.Stat(filepath.Join(home, "subagents.json")); err != nil {
-		t.Errorf("subagents.json index missing: %v", err)
+	if _, err := os.Stat(filepath.Join(home, "subagents.json")); !os.IsNotExist(err) {
+		t.Errorf("subagents.json index should be removed, stat err = %v", err)
 	}
 }
 
@@ -279,6 +280,7 @@ func TestChildSessionDegenerateLoopStops(t *testing.T) {
 func TestChildSessionPersistsBeforeErrorReturn(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
+	cleanupStores(t)
 	reg := NewRegistry()
 	reg.SetHome(home)
 	child := &fauxProvider{
@@ -310,6 +312,7 @@ func TestChildSessionPersistsBeforeErrorReturn(t *testing.T) {
 func TestConcurrentChildSessionsShareStore(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
+	cleanupStores(t)
 	reg := NewRegistry()
 	reg.SetHome(home)
 	factory := func() RunConfig { return RunConfig{} }

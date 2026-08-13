@@ -7,7 +7,7 @@ import { PigoAcpClient } from "pigo-acp";
 
 const client = new PigoAcpClient({
   command: "pigo",
-  args: ["--acp"],
+  args: ["acp"],
   events: {
     onUpdate: (sessionId, update) => console.log(sessionId, update),
     onPermission: async (request) => {

@@ -23,6 +23,8 @@ type TurnHooks struct {
 	// built RunConfig. Dispatcher binds it per session so RuntimeRunner stays
 	// agnostic of session identity. An error fails the turn closed.
 	InstallSeams func(cfg *runtime.RunConfig) error
+	// OnCompaction persists a successful auto-compaction as a typed entry.
+	OnCompaction func(ctx context.Context, res *compaction.CompactionResult) error
 }
 
 // RuntimeRunner drives pigo's real agent loop through runtime.RunHeadless. It
@@ -115,6 +117,9 @@ func (r *RuntimeRunner) RunWithTools(ctx context.Context, prompt string, images 
 	}
 	if hooks.FollowUp != nil {
 		cfg.GetFollowUpMessages = hooks.FollowUp
+	}
+	if hooks.OnCompaction != nil {
+		cfg.OnCompaction = hooks.OnCompaction
 	}
 
 	headless := runtime.HeadlessConfig{

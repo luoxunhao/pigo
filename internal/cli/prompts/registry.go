@@ -19,6 +19,7 @@ import (
 
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/cli"
+	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/cli/ui"
 	"github.com/smallnest/pigo/internal/plugin"
 	"github.com/smallnest/pigo/internal/provider"
@@ -224,26 +225,37 @@ func formatNotifications(notes []plugin.CommandNotification) string {
 func RegisterLiveCommands(reg *runtime.SlashRegistry, live *cli.LiveConfig) {
 	reg.AddBuiltin(runtime.SlashCommand{
 		Name:        "model",
-		Description: "view or switch the active model: /model [model-id] (see /models for presets)",
+		Description: "view or switch the active model: /model [model-id] (see /models for configured models)",
 		Action: func(args string) string {
 			id := strings.TrimSpace(args)
 			if id == "" {
-				return fmt.Sprintf("model: %s (provider: %s)\nrun /models to see presets, or /model <id> to switch", live.Model, live.ProviderName)
+				return fmt.Sprintf("model: %s (provider: %s)\nrun /models to see configured models, or /model <id> to switch", live.Model, live.ProviderName)
 			}
-			prov, providerName, err := provider.ResolveProvider(id, live.BaseURL, live.Protocol, "", os.Getenv)
+			prov, providerName, apiKey, _, err := provider.ResolveConfiguredModel(id, "", "", "", "", os.Getenv)
 			if err != nil {
 				return fmt.Sprintf("model: cannot switch to %q: %v", id, err)
+			}
+			cfg, cfgErr := config.LoadFileConfig(config.FileConfigPath())
+			if cfgErr != nil {
+				return fmt.Sprintf("model: cannot switch to %q: %v", id, cfgErr)
+			}
+			if entry, ok := cfg.FindModel(id); ok && len(entry.ThinkingLevels) > 0 {
+				live.ThinkingLevel = agentcore.ThinkingLevel(entry.ThinkingLevels[0])
 			}
 			live.Model = id
 			live.ProviderName = providerName
 			live.Provider = prov
+			if live.Creds != nil {
+				live.Creds.ClearOverride(providerName)
+				live.Creds.SetOverride(providerName, apiKey)
+			}
 			return fmt.Sprintf("model switched to %s (provider: %s)", id, providerName)
 		},
 	})
 	reg.AddBuiltin(runtime.SlashCommand{
 		Name:        "models",
-		Description: "list preset providers and models you can switch to",
-		Action:      func(args string) string { return presetListing(strings.TrimSpace(args)) },
+		Description: "list configured models you can switch to",
+		Action:      func(args string) string { return configuredModelListing(strings.TrimSpace(args)) },
 	})
 	// thinkAction views or switches the reasoning-effort level. It backs both
 	// /think and its alias /effect, so the two commands share identical behavior.
@@ -343,46 +355,54 @@ func validThinkingLevel(s string) (agentcore.ThinkingLevel, bool) {
 	}
 }
 
-// presetListing renders the preset provider/model catalog for /models. With an
-// argument it filters to a single provider (e.g. "/models nvidia"). Providers
-// are grouped and shown with the env var their API key is read from (referenced
-// by name only, never a value). The output guides the user to `/model <id>`.
-func presetListing(filter string) string {
+// configuredModelListing renders the configured model list for /models. With an
+// argument it filters to a single provider (e.g. "/models openrouter").
+// Disabled entries are hidden; the current default is marked.
+func configuredModelListing(filter string) string {
+	cfg, err := config.LoadFileConfig(config.FileConfigPath())
+	if err != nil {
+		return fmt.Sprintf("models: cannot read config: %v", err)
+	}
 	var b strings.Builder
-	b.WriteString("preset providers & models (switch with /model <id>):")
-	shown := 0
-	for _, pv := range provider.PresetProviders {
-		if filter != "" && !strings.EqualFold(filter, pv.Name) {
+	b.WriteString("available models (switch with /model <id>):")
+	byProvider := make(map[string][]config.ModelConfig)
+	var order []string
+	for _, m := range cfg.Models {
+		if !m.IsEnabled() {
 			continue
 		}
-		models := provider.PresetsByProvider(pv.Name)
-		if len(models) == 0 {
+		if filter != "" && !strings.EqualFold(filter, m.Provider) {
 			continue
 		}
-		shown++
+		if _, ok := byProvider[m.Provider]; !ok {
+			order = append(order, m.Provider)
+		}
+		byProvider[m.Provider] = append(byProvider[m.Provider], m)
+	}
+	if len(order) == 0 {
+		if filter != "" {
+			return fmt.Sprintf("no configured models for provider %q", filter)
+		}
+		path := config.FileConfigPath()
+		if path == "" {
+			return "no configured models"
+		}
+		return "no configured models (add [[models]] to " + path + ")"
+	}
+	for _, providerName := range order {
 		b.WriteString("\n\n")
-		b.WriteString(pv.Name)
-		if pv.EnvVar != "" {
-			b.WriteString(" (API key: $")
-			b.WriteString(pv.EnvVar)
-			b.WriteString(")")
-		} else {
-			b.WriteString(" (local, no API key)")
-		}
-		for _, m := range models {
+		b.WriteString(providerName)
+		for _, m := range byProvider[providerName] {
 			b.WriteString("\n  ")
-			b.WriteString(m.ID)
-			if m.DisplayName != "" {
-				b.WriteString("  — ")
-				b.WriteString(m.DisplayName)
+			b.WriteString(m.Key())
+			if m.Name != "" {
+				b.WriteString(" — ")
+				b.WriteString(m.Name)
+			}
+			if cfg.Model == m.Key() {
+				b.WriteString(" (default)")
 			}
 		}
-	}
-	if shown == 0 {
-		if filter != "" {
-			return fmt.Sprintf("no preset provider named %q (try openrouter, nvidia, or ollama)", filter)
-		}
-		return "no presets configured"
 	}
 	return b.String()
 }

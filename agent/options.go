@@ -29,7 +29,8 @@ type Option func(*config)
 
 // WithModel sets the model id. It must match a configured [[models]] entry in
 // config.toml (provider/model_id), the same source the pigo CLI uses. The
-// default is "openrouter/free", which resolves only when such an entry exists.
+// default is empty, so New requires WithModel (or a configured config.toml
+// default model) to resolve a provider.
 func WithModel(model string) Option {
 	return func(c *config) { c.model = model }
 }

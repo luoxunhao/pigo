@@ -8,14 +8,27 @@ import (
 	"github.com/smallnest/pigo/internal/session"
 )
 
-func entryToDomainMessage(e session.Entry) gen.Message {
+func v4EntryToDomainMessage(e session.V4Entry, seq int, lane string) gen.Message {
 	msg := gen.Message{
 		Id:        e.ID,
-		Role:      e.Message.Role(),
+		EntryId:   &e.ID,
+		EntryType: &e.Type,
+		Seq:       &seq,
+		Lane:      &lane,
 		Timestamp: e.Timestamp.Format(time.RFC3339),
 		Content:   []map[string]interface{}{},
 	}
-	switch m := e.Message.(type) {
+	if e.ParentID != "" {
+		msg.ParentId = &e.ParentID
+	}
+	m, err := e.MessageValue()
+	if err != nil {
+		msg.Role = e.Type
+		msg.Content = []map[string]interface{}{{"type": "text", "text": err.Error()}}
+		return msg
+	}
+	msg.Role = m.Role()
+	switch m := m.(type) {
 	case agentcore.UserMessage:
 		msg.Content = contentBlocksToDomain(m.Content)
 	case agentcore.AssistantMessage:

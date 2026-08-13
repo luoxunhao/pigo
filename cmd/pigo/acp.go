@@ -40,7 +40,7 @@ func runACP(args []string, version string, in io.Reader, out io.Writer, errOut i
 	}
 	defer pluginMgr.Close()
 
-	acpOpts := cliOptions{model: "openrouter/free"}
+	acpOpts := cliOptions{}
 	if cfg, cfgErr := config.LoadFileConfig(config.FileConfigPath()); cfgErr == nil {
 		applyFileConfig(&acpOpts, cfg, func(string) bool { return false })
 	}

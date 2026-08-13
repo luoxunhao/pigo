@@ -60,6 +60,13 @@ type Model struct {
 	// running is true while an agent run is draining through runCh. Input submit
 	// is gated on it so a new run cannot start mid-run.
 	running bool
+	// compacting is true between compactionStartMsg and compactionMsg. While it
+	// is set the composer stays active and Enter enqueues prompts instead of
+	// submitting them to the in-flight run.
+	compacting bool
+	// pendingQueue holds prompts typed while compaction is in flight. They are
+	// submitted in order after the current run ends.
+	pendingQueue []string
 	// runCh is the bridge channel for the in-flight run, or nil when idle. Update
 	// re-issues waitForEvent(runCh) after every bridged msg except runEndMsg.
 	runCh chan tea.Msg
@@ -74,7 +81,7 @@ type Model struct {
 
 	// session is the assembled run/persistence state (store, header, growing
 	// context, live config). It is nil for a session-less model; when set, the
-	// model persists the conversation to ~/.pigo/sessions after each turn ends.
+	// model persists the conversation to $PIGO_HOME/sessions.db after each turn ends.
 	session *runSession
 
 	// interruptFn cancels the in-flight run (the first stage of the two-stage
@@ -113,6 +120,9 @@ type Model struct {
 	// It filters slash by the typed prefix; the model intercepts arrow/Tab/Enter
 	// keys to drive it before delegating to the textarea.
 	menu slashMenu
+	// tree is the full-screen /tree selector. It is inactive except while the
+	// user is navigating or editing labels/branch summaries.
+	tree treeModal
 
 	// toolCards indexes the rich tool-call cards (#389, US-006) by tool-call id so
 	// a toolEndMsg can locate the card started earlier and flip its state / attach
@@ -454,11 +464,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.pumpNext()
 
 	case compactionStartMsg:
-		m.spinner.pin("Compacting conversation")
-		return m, m.pumpNext()
+		label := "Compacting conversation"
+		if msg.reason != "" {
+			label += " (" + msg.reason + ")"
+		}
+		m.spinner.pin(label)
+		m.compacting = true
+		return m, tea.Batch(m.pumpNext(), m.input.Focus())
 
 	case compactionMsg:
 		m.spinner.unpin()
+		m.compacting = false
 		if m.session != nil {
 			m.session.compacted = true
 		}
@@ -483,6 +499,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case runEndMsg:
 		m.running = false
+		m.compacting = false
 		m.runCh = nil
 		m.spinner.stop()
 		// The run is over: any still-open sub-agent rows are stale (their tasks ended
@@ -502,6 +519,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err := m.session.persist(); err != nil {
 				m.transcript.addSystem("Session save failed: " + err.Error())
 			}
+		}
+		// Submit prompts queued while compaction was in flight, one run per
+		// prompt, after the current run settles.
+		if len(m.pendingQueue) > 0 {
+			prompt := m.pendingQueue[0]
+			m.pendingQueue = m.pendingQueue[1:]
+			m.transcript.addUser(prompt)
+			next, cmd := m.startPrompt(prompt)
+			return next, cmd
 		}
 		// The editor was blurred at submit; re-enable it so the next prompt can be
 		// typed, and re-probe git since a run may have changed the working tree.
@@ -534,6 +560,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m = next.(Model)
 		return m, tea.Batch(cmd, m.waitRemoteInput())
+	case branchSummaryDoneMsg:
+		if !m.tree.active {
+			return m, nil
+		}
+		m.tree.pendingSummary = false
+		m.tree.summaryPrompt = false
+		if msg.err != nil {
+			m.tree.summary = ""
+			m.tree.message = "summary failed: " + msg.err.Error()
+			m.relayout()
+			return m, nil
+		}
+		m.tree.summary = msg.summary
+		return m.commitTreeNavigation()
 	}
 	return m, nil
 }
@@ -544,6 +584,56 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // newline) to the input editor while idle. Keys are matched via KeyPressMsg
 // .String() so the mapping is terminal-independent.
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.tree.active {
+		return m.handleTreeKey(msg)
+	}
+	if m.running && m.compacting {
+		switch msg.String() {
+		case "enter":
+			raw := strings.TrimSpace(m.input.Value())
+			if raw != "" {
+				m.input.Clear()
+				if strings.HasPrefix(raw, "/") {
+					name := strings.Fields(raw)[0]
+					switch name {
+					case "/session", "/status", "/memory", "/help":
+						next, cmd := m.runSlash(raw)
+						return next, cmd
+					case "/tree", "/label", "/resume", "/fork", "/clone", "/compact", "/rebuild", "/import", "/export", "/rewind":
+						m.transcript.addSystem("command rejected while compaction is in progress: " + name)
+					default:
+						m.pendingQueue = append(m.pendingQueue, raw)
+						m.transcript.addSystem("queued: " + raw)
+					}
+				} else {
+					m.pendingQueue = append(m.pendingQueue, raw)
+					m.transcript.addSystem("queued: " + raw)
+				}
+				m.relayout()
+			}
+			return m, nil
+		case "esc":
+			m.compacting = false
+			m.transcript.addSystem("(compaction queue disabled; typed-ahead stays in the editor)")
+			m.relayout()
+			return m, nil
+		case "alt+up":
+			if len(m.pendingQueue) > 0 {
+				m.input.SetValue(strings.Join(m.pendingQueue, "\n"))
+				m.pendingQueue = nil
+				m.relayout()
+			}
+			return m, nil
+		default:
+			if msg.String() == "ctrl+c" || msg.String() == "ctrl+d" {
+				break
+			}
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			m.relayout()
+			return m, cmd
+		}
+	}
 	// While idle with the autocomplete popup open, the arrow / Tab / Esc keys
 	// drive the menu instead of the transcript or textarea (FR-15). Enter is left
 	// to the main switch below, which routes through submit → runSlash so the
@@ -766,8 +856,13 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 // the refresh closes the popup. It is the Tab action while the menu is open.
 func (m Model) completeSlash() Model {
 	if c, ok := m.menu.current(); ok {
-		m.input.SetValue("/" + c.Name + " ")
-		m.menu.refresh(m.input.Value(), m.slash)
+		if strings.Contains(c.Name, " ") {
+			m.input.SetValue("/" + c.Name)
+			m.menu.close()
+		} else {
+			m.input.SetValue("/" + c.Name + " ")
+			m.menu.refresh(m.input.Value(), m.slash)
+		}
 	}
 	return m
 }
@@ -861,6 +956,50 @@ func (m Model) runSlash(line string) (tea.Model, tea.Cmd) {
 		var buf bytes.Buffer
 		m.session.renderSession(&buf)
 		m.transcript.addSystem(strings.TrimRight(buf.String(), "\n"))
+		m.relayout()
+		return m, nil
+	}
+	// /tree and /label open the full-screen tree selector. /label additionally
+	// starts in label-edit mode on the requested (or current) node.
+	if strings.HasPrefix(line, "/tree") || strings.HasPrefix(line, "/label") {
+		m.transcript.addUser(line)
+		m.input.Clear()
+		m.menu.close()
+		if m.session == nil {
+			m.transcript.addSystem("(tree unavailable: no active session)")
+			m.relayout()
+			return m, nil
+		}
+		if m.running {
+			m.transcript.addSystem("cannot open tree while a run is in progress")
+			m.relayout()
+			return m, nil
+		}
+		var tm treeModal
+		if err := tm.open(m.session.store, m.session.header.ID); err != nil {
+			m.transcript.addSystem("tree failed: " + err.Error())
+			m.relayout()
+			return m, nil
+		}
+		if len(tm.lines) == 0 {
+			m.transcript.addSystem("session tree is empty - send a message first")
+			m.relayout()
+			return m, nil
+		}
+		if strings.HasPrefix(line, "/label") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				if n, convErr := strconv.Atoi(fields[1]); convErr == nil && n >= 1 && n <= len(tm.lines) {
+					tm.selected = n - 1
+				}
+			}
+			if len(fields) >= 3 {
+				tm.labelBuf = strings.TrimSpace(strings.TrimPrefix(line, "/label "+fields[1]))
+			}
+			tm.editingLabel = true
+			tm.message = "Label (enter to save, esc to cancel):"
+		}
+		m.tree = tm
 		m.relayout()
 		return m, nil
 	}
@@ -1283,6 +1422,9 @@ func (m Model) renderContent() string {
 	height := m.height
 	if height <= 0 {
 		height = 24
+	}
+	if m.tree.active {
+		return m.tree.view(width, height)
 	}
 
 	status := m.statusBar.Render(width)

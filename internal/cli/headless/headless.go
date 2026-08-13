@@ -12,13 +12,16 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/cli/run"
 	"github.com/smallnest/pigo/internal/cli/ui"
+	"github.com/smallnest/pigo/internal/compaction"
 	"github.com/smallnest/pigo/internal/plugin"
 	"github.com/smallnest/pigo/internal/provider"
 	"github.com/smallnest/pigo/internal/runtime"
+	"github.com/smallnest/pigo/internal/sessiontitle"
 )
 
 // RunParams carries the resolved inputs for one headless run. Mode and Env are
@@ -64,6 +67,7 @@ func Run(ctx context.Context, p RunParams, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "pigo: %v\n", err)
 		return 1
 	}
+	isFirstPrompt := len(priorMsgs) == 0
 	messages := append(priorMsgs, agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: promptContent})
 	agentCtx := &agentcore.AgentContext{
 		SystemPrompt: hs.header.SystemPrompt,
@@ -85,9 +89,17 @@ func Run(ctx context.Context, p RunParams, out, errOut io.Writer) int {
 	creds.SetOverride(env.ProviderName, p.APIKey)
 	runCfg := run.NewConfig(p.Model, env.ProviderName, thinking, env.Provider, creds, run.ToolRegistry(env.Tools), run.TodoReminders(env.Tools))
 	runCfg.SessionID = hs.header.ID
-	// Route auto-compaction checkpoints to the shared memory root so a rebuild can
-	// recover the pre-watermark prefix (no-op when memory is disabled → empty root).
-	runCfg.MemoryRoot = run.MemoryRootFromTools(env.Tools)
+	runCfg.OnCompaction = func(ctx context.Context, res *compaction.CompactionResult) error {
+		if res == nil {
+			return nil
+		}
+		hs.header.UpdatedAt = time.Now().UTC()
+		_, err := hs.store.AppendCompaction(hs.header.ID, hs.header, res)
+		if err == nil {
+			hs.compacted = true
+		}
+		return err
+	}
 
 	// Wire hooks uniformly with every other driver (#425): resolve the trust-gated
 	// hook set, install the tool-execution + Stop seams, dispatch SessionStart, and
@@ -132,6 +144,16 @@ func Run(ctx context.Context, p RunParams, out, errOut io.Writer) int {
 	// error.
 	if perr := hs.persist(agentCtx); perr != nil {
 		fmt.Fprintf(errOut, "pigo: warning: could not persist session %s: %v\n", hs.header.ID, perr)
+	} else if isFirstPrompt {
+		apiKey := ""
+		if creds != nil {
+			apiKey = creds.GetAPIKey(context.Background(), env.ProviderName)
+		}
+		_ = sessiontitle.AutoTitle(context.Background(), hs.store, hs.header.ID, headlessPrompt,
+			provider.StreamFnFromProvider(env.Provider),
+			provider.Model{Provider: env.ProviderName, ID: run.WireModel(p.Model)},
+			provider.StreamConfig{APIKey: apiKey, ThinkingLevel: thinking},
+			nil)
 	}
 	if runErr != nil {
 		fmt.Fprintf(errOut, "pigo: %v\n", runErr)

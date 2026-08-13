@@ -1,11 +1,13 @@
 package tui
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/runtime"
 )
 
@@ -76,9 +78,42 @@ func TestSlashMenuFiltersByPrefix(t *testing.T) {
 // TestSlashMenuClosesOnSpace verifies name-completion stops once the buffer moves
 // on to arguments (a space after the command name closes the popup).
 func TestSlashMenuClosesOnSpace(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	m := typeInto(t, NewModel(Options{}), "/model ").(Model)
 	if m.menu.active {
 		t.Errorf("menu should close once the command name is complete (buffer %q)", m.input.Value())
+	}
+}
+
+// TestSlashMenuCompletesConfiguredModels verifies /model completion suggests
+// only configured model ids and Tab fills the selected id.
+func TestSlashMenuCompletesConfiguredModels(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", root)
+	path := filepath.Join(root, "pigo", "config.toml")
+	if err := config.SaveFileConfig(path, config.FileConfig{
+		Models: []config.ModelConfig{{
+			Provider: "openai", ModelID: "agnes-2.5-flash", Name: "Agnes",
+			BaseURL: "https://api.example.com/v1", Protocol: "openai",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m := typeInto(t, NewModel(Options{}), "/model agn").(Model)
+	if !m.menu.active {
+		t.Fatalf("menu should be active for /model agn")
+	}
+	names := menuNames(m)
+	if len(names) != 1 || names[0] != "/model openai/agnes-2.5-flash" {
+		t.Fatalf("model candidates = %v", names)
+	}
+	got, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	gm := got.(Model)
+	if gm.input.Value() != "/model openai/agnes-2.5-flash" {
+		t.Errorf("after Tab, buffer = %q", gm.input.Value())
+	}
+	if gm.menu.active {
+		t.Errorf("menu should close after model completion")
 	}
 }
 

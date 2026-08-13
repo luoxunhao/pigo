@@ -36,7 +36,7 @@ type Session struct {
 // See the package documentation for the default tool, skill, and memory
 // behavior — in particular, that tools are enabled and auto-executed by default.
 func New(opts ...Option) (*Session, error) {
-	c := config{model: "openrouter/free"}
+	c := config{}
 	for _, o := range opts {
 		o(&c)
 	}
@@ -153,7 +153,7 @@ func (s *Session) ToolNames() []string {
 func (s *Session) Model() string { return s.model }
 
 // Provider returns the resolved provider name (e.g. "anthropic", "openrouter"),
-// which is inferred from the model id unless WithProvider was set.
+// taken from the configured model entry or an explicit WithProvider option.
 func (s *Session) Provider() string { return s.env.ProviderName }
 
 // Close releases resources held by the session: any loaded plugin manager and
