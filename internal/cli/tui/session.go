@@ -198,6 +198,7 @@ func newRunSessionWithStore(store *sessionstore.Store, opts Options) (*runSessio
 		Provider:      opts.Provider,
 		BaseURL:       opts.BaseURL,
 		Protocol:      opts.Protocol,
+		Creds:         creds,
 		ThinkingLevel: opts.ThinkingLevel,
 		ContextWindow: cli.DefaultContextWindow,
 	}

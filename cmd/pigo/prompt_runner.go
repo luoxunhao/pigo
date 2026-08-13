@@ -96,12 +96,15 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 	if opts.thinkingLevel != "" {
 		thinking = agentcore.ThinkingLevel(opts.thinkingLevel)
 	}
+	creds := provider.NewCredentialStore(nil)
+	creds.SetOverride(env.ProviderName, env.APIKey)
 	live := &cli.LiveConfig{
 		Model:         env.Model,
 		ProviderName:  env.ProviderName,
 		Provider:      env.Provider,
 		BaseURL:       opts.baseURL,
 		Protocol:      opts.protocol,
+		Creds:         creds,
 		ThinkingLevel: thinking,
 		ContextWindow: cli.DefaultContextWindow,
 	}

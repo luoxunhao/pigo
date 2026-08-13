@@ -28,6 +28,7 @@ import (
 	"github.com/smallnest/pigo/internal/agenttool"
 	"github.com/smallnest/pigo/internal/cli"
 	"github.com/smallnest/pigo/internal/cli/btw"
+	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/cli/goal"
 	"github.com/smallnest/pigo/internal/cli/memstatus"
 	"github.com/smallnest/pigo/internal/cli/run"
@@ -260,7 +261,7 @@ func runREPL(in io.Reader, out io.Writer, deps replDeps) error {
 		}
 	}
 	editor := newREPLLineEditor(in, deps.in, out, deps.slash, priorInputs)
-	editor.models = append([]string{deps.live.Model}, editor.models...)
+	editor.models = config.EnabledModelIDs()
 
 	// A SIGINT during a run cancels only that run; the handler is installed for
 	// the whole REPL and targets whichever run is active via runCancel. runCancel

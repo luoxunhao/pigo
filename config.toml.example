@@ -9,17 +9,17 @@ model = "openrouter/free"
 # Configured model entries: each carries its own endpoint, credential,
 # protocol, and runtime metadata. The default model above selects one entry.
 #
-# [[models]]
-# provider = "openrouter"
-# model_id = "free"
-# name = "OpenRouter Free"
-# base_url = "https://openrouter.ai/api/v1"
-# api_key = "your-api-key-here"
-# protocol = "openai"
-# context_window = 128000
-# max_tokens = 8192
-# thinking_levels = ["off", "low", "medium", "high"]
-# supports_images = false
+[[models]]
+provider = "openrouter"
+model_id = "free"
+name = "OpenRouter Free"
+base_url = "https://openrouter.ai/api/v1"
+api_key = "your-api-key-here"
+protocol = "openai"
+context_window = 128000
+max_tokens = 8192
+thinking_levels = ["off", "low", "medium", "high"]
+supports_images = false
 
 # Output format: text | stream-json
 output_format = "text"

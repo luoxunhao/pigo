@@ -97,7 +97,7 @@ pigo -o stream-json -p "读取 README 并总结" > events.jsonl
 | 参数 | 说明 |
 |------|------|
 | `-p, --print <prompt>` | headless 一次性执行 |
-| `-m, --model <id>` | 模型 id，默认 `openrouter/free` |
+| `-m, --model <id>` | 模型 id，默认空；必须是 config.toml 中已配置的 `provider/model_id` |
 | `-u, --base-url <url>` | 覆盖 Provider base URL（如本地 Ollama） |
 | `-k, --api-key <key>` | 指定 API Key，默认读 `<PROVIDER>_API_KEY` |
 | `-P, --protocol <proto>` | 强制线路协议：`openai` \| `anthropic` |
@@ -128,8 +128,8 @@ pigo -o stream-json -p "读取 README 并总结" > events.jsonl
 # 位置参数等价于 -p
 pigo "把 utils.go 里的 getUserName 重命名为 getUsername"
 
-# 指定模型（claude-* 自动推断 Anthropic Provider）
-pigo -m claude-3-5-sonnet-20241022 -p "审查 foo.go 的并发安全"
+# 指定已配置模型
+pigo -m openai/agnes-2.5-flash -p "审查 foo.go 的并发安全"
 
 # 自定义系统提示词
 pigo --system-prompt "你是一个只使用中文回答的 Go 专家" -p "什么是 goroutine 泄漏"
@@ -140,18 +140,18 @@ pigo --allowed-tools read,grep -p "这个仓库的架构是什么"
 
 ## 模型与 Provider
 
-默认模型 id 是 `openrouter/free`。解析顺序：显式 `--provider` / `--protocol` / `--base-url` 优先，其次 `ollama/` 前缀或本地 Ollama 端口，再按模型名推断（如 `claude-*` 走 Anthropic），最后回落到 OpenRouter。
+默认模型从 `config.toml` 的 `model` 读取，命令行 `--model` 可覆盖。解析只认两条路径：显式 `--provider` / `--protocol` / `--base-url`，或 `[[models]]` 中已配置的 `provider/model_id`；找不到配置时报 `model "..." is not configured`，不再有内置模型目录或模型名推断。
 
 常用 Provider：
 
 | Provider | 线路 | 默认 base URL | API Key 环境变量 |
 |----------|------|---------------|------------------|
-| OpenRouter（默认） | OpenAI | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
+| OpenRouter | OpenAI | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
 | Ollama（本地） | OpenAI | `http://localhost:11434/v1` | 无需 |
 | OpenAI 兼容端点 | OpenAI | 需 `--base-url` | `OPENAI_API_KEY` |
 | Anthropic | Anthropic | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` / `CLAUDE_API_KEY` |
 
-其余内置 Provider（deepseek、google、xai、mistral、minimax、moonshotai、zai、volcengine、dashscope、hunyuan 等）遵循 `<PROVIDER>_API_KEY` 约定，也支持 `<PROVIDER>_BASE_URL` 覆盖；完整清单与模型预设在 `pigo --help` 和 REPL 的 `/models` 中查看。
+其余内置 Provider（deepseek、google、xai、mistral、minimax、moonshotai、zai、volcengine、dashscope、hunyuan 等）遵循 `<PROVIDER>_API_KEY` 约定，也支持 `<PROVIDER>_BASE_URL` 覆盖；完整 Provider 清单见 `pigo --help`。REPL 的 `/models` 只列出 config.toml 中已配置且启用的模型。
 
 Key 解析顺序：`--api-key` > 环境变量（含 OAuth token）> 配置文件。base URL 覆盖顺序：`--base-url` > Provider 专有 `*_BASE_URL` > 通用 `<PROVIDER>_BASE_URL` > 注册表默认值。
 
@@ -399,8 +399,17 @@ flowchart LR
 
 ```toml
 # ~/.config/pigo/config.toml
-model = "openrouter/free"
+model = "openai/agnes-2.5-flash"
 allowed_tools = ["read", "grep", "bash"]
+
+[[models]]
+provider = "openai"
+model_id = "agnes-2.5-flash"
+name = "Agnes 2.5 Flash"
+base_url = "https://api.example.com/v1"
+api_key = "sk-..."
+protocol = "openai"
+
 [memory]
 enabled = true
 ```

@@ -41,9 +41,10 @@ func TestLineEditorCompletesModelsByRecentUseAndBasename(t *testing.T) {
 		t.Fatalf("recent model suggestion = %q", got)
 	}
 	e = testLineEditor()
+	e.models = []string{"deepseek/deepseek-chat"}
 	got := e.suggestion("/model deepseek")
-	if got == "" || !strings.HasPrefix(got, "/model ") {
-		t.Fatalf("catalog model suggestion = %q", got)
+	if got != "/model deepseek/deepseek-chat" {
+		t.Fatalf("configured model suggestion = %q", got)
 	}
 }
 

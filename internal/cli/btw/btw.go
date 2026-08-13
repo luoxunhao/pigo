@@ -210,13 +210,19 @@ func AskSide(setCancel func(context.CancelFunc), out io.Writer, host cli.Host, s
 	// own line; the streamed answer follows below it.
 	fmt.Fprintln(out, ui.Colorize(ui.Enabled(), ui.Dim, "Answering…"))
 
+	getAPIKey := host.Creds().GetAPIKey
+	if settings.APIKey != "" {
+		creds := provider.NewCredentialStore(nil)
+		creds.SetOverride(settings.ProviderName, settings.APIKey)
+		getAPIKey = creds.GetAPIKey
+	}
 	cfg := runtime.RunConfig{
 		LoopConfig: runtime.LoopConfig{
 			Model:         run.WireModel(settings.Model),
 			Provider:      settings.ProviderName,
 			ThinkingLevel: settings.ThinkingLevel,
 			Stream:        provider.StreamFnFromProvider(settings.Provider),
-			GetAPIKey:     host.Creds().GetAPIKey,
+			GetAPIKey:     getAPIKey,
 			ContextWindow: host.Live().ContextWindow,
 			Compaction:    compaction.DefaultCompactionSettings,
 		},

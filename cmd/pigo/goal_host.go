@@ -113,6 +113,7 @@ func makeGoalFunc(opts cliOptions, env run.Env, pigoHome string, thinking agentc
 		}
 		creds := provider.NewCredentialStore(nil)
 		creds.SetOverride(env.ProviderName, env.APIKey)
+		live.Creds = creds
 		mgr, _ := trust.NewManager(trust.DefaultPath())
 
 		mu.Lock()

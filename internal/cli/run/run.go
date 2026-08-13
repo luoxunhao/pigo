@@ -7,6 +7,7 @@
 package run
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -240,43 +241,21 @@ func PluginSubagentTool(cwd string, policy ToolPolicy, model, providerName strin
 // resolveStartupProvider resolves the startup provider, supporting a default
 // model of the form custom-<slug>/<modelId> from the config provider registry.
 func resolveStartupProvider(model, baseURL, protocol, providerName, apiKey string) (provider.Provider, string, string, string, error) {
-	cfg, err := config.LoadFileConfig(config.FileConfigPath())
+	prov, name, resolvedKey, wireModel, err := provider.ResolveConfiguredModel(model, baseURL, protocol, providerName, apiKey, os.Getenv)
 	if err != nil {
+		if errors.Is(err, provider.ErrModelNotConfigured) {
+			errMsg := "no configured model"
+			if strings.TrimSpace(model) != "" {
+				errMsg = fmt.Sprintf("model %q is not configured", model)
+			}
+			return provider.DeferredErrorProvider{Err: fmt.Errorf("%s", errMsg)}, "", "", model, nil
+		}
+		if errors.Is(err, provider.ErrModelDisabled) {
+			return provider.DeferredErrorProvider{Err: err}, "", "", model, nil
+		}
 		return nil, "", "", "", err
 	}
-	model = strings.TrimSpace(model)
-	if model != "" {
-		if entry, ok := cfg.FindModel(model); ok {
-			models := []provider.Model{{
-				Provider:    entry.Provider,
-				ID:          entry.ModelID,
-				DisplayName: entry.Name,
-			}}
-			entryBaseURL := entry.BaseURL
-			if baseURL != "" {
-				entryBaseURL = baseURL
-			}
-			entryProtocol := entry.Protocol
-			if protocol != "" {
-				entryProtocol = protocol
-			}
-			entryAPIKey := entry.APIKey
-			if apiKey != "" {
-				entryAPIKey = apiKey
-			}
-			prov, err := provider.ResolveConfiguredProvider(entry.Provider, entryBaseURL, entryProtocol, models)
-			if err != nil {
-				return nil, "", "", "", err
-			}
-			return prov, entry.Provider, entryAPIKey, entry.ModelID, nil
-		}
-	}
-	_ = providerName
-	errMsg := "no configured model"
-	if model != "" {
-		errMsg = fmt.Sprintf("model %q is not configured", model)
-	}
-	return provider.DeferredErrorProvider{Err: fmt.Errorf("%s", errMsg)}, "", "", model, nil
+	return prov, name, resolvedKey, wireModel, nil
 }
 
 // localEndpoint reports whether a base URL points at a local, keyless endpoint.

@@ -201,6 +201,15 @@ func (c *CredentialStore) SetOverride(provider, key string) {
 	c.overrides[provider] = key
 }
 
+// ClearOverride removes an explicit API key override for a provider so the next
+// request falls back to environment/config resolution. It is used when a /model
+// switch selects an entry that carries no credential of its own.
+func (c *CredentialStore) ClearOverride(provider string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.overrides, provider)
+}
+
 // RegisterOAuth registers an OAuth TokenSource for a provider. Once registered,
 // GetAPIKey prefers the (auto-refreshing) OAuth token over static keys.
 func (c *CredentialStore) RegisterOAuth(provider string, src *TokenSource) {

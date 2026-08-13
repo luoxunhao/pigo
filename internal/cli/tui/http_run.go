@@ -119,6 +119,7 @@ func newHTTPSession(ctx context.Context, opts Options, client *httpclient.Client
 	}
 	creds := provider.NewCredentialStore(nil)
 	creds.SetOverride(opts.ProviderName, opts.APIKey)
+	live.Creds = creds
 	mgr, mgrErr := trust.NewManager(trust.DefaultPath())
 	if mgrErr != nil {
 		fmt.Fprintf(os.Stderr, "pigo: trust store unavailable, trust disabled: %v\n", mgrErr)

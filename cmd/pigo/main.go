@@ -180,10 +180,10 @@ func main() {
 
 	var opts cliOptions
 	flag.StringVarP(&opts.prompt, "print", "p", "", "prompt to run in headless print mode")
-	flag.StringVarP(&opts.model, "model", "m", "openrouter/free", "model id to run against (a well-known model name like claude-opus-4-8 or deepseek-chat auto-selects its provider when --provider/--protocol/--base-url are unset)")
+	flag.StringVarP(&opts.model, "model", "m", "", "configured model id (provider/model_id from config.toml; unset means no configured model)")
 	flag.StringVarP(&opts.baseURL, "base-url", "u", "", "override provider base URL (e.g. local Ollama)")
 	flag.StringVarP(&opts.apiKey, "api-key", "k", "", "API key for the resolved provider (overrides env/config; else <PROVIDER>_API_KEY)")
-	flag.StringVarP(&opts.protocol, "protocol", "P", "", "force wire protocol for a custom endpoint: openai | anthropic (default: inferred from model id)")
+	flag.StringVarP(&opts.protocol, "protocol", "P", "", "force wire protocol for a custom endpoint: openai | anthropic")
 	flag.StringVar(&opts.provider, "provider", "", "select a built-in provider by name (e.g. deepseek, minimax); uses its default base URL, protocol, and API-key env var (see --help provider list)")
 	flag.StringVarP(&opts.outputFmt, "output-format", "o", "text", "output format: text | stream-json")
 	flag.BoolVarP(&opts.noTools, "no-tools", "n", false, "disable the built-in file/shell tools")

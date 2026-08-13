@@ -99,3 +99,19 @@ func SplitModelID(model string) (providerID, modelID string, ok bool) {
 	}
 	return model[:i], model[i+1:], true
 }
+
+// EnabledModelIDs returns the keys of all enabled configured models, in config
+// order. A missing or malformed config returns nil.
+func EnabledModelIDs() []string {
+	cfg, err := LoadFileConfig(FileConfigPath())
+	if err != nil {
+		return nil
+	}
+	var ids []string
+	for _, m := range cfg.Models {
+		if m.IsEnabled() {
+			ids = append(ids, m.Key())
+		}
+	}
+	return ids
+}

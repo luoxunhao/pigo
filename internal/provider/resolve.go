@@ -2,9 +2,8 @@ package provider
 
 // Provider resolution moved here from cmd/pigo (US-004, #361): mapping a model
 // id / --provider / --protocol selection to a concrete wire driver, plus the
-// base-url override precedence. Environment lookups are injected as an
-// env func(string) string so callers (and tests) control the environment
-// instead of reaching into the process env directly.
+// base-url override precedence. Config-first resolution lives in
+// configresolve.go; this file keeps the explicit named-provider path.
 
 import (
 	"fmt"
@@ -12,110 +11,6 @@ import (
 
 	"github.com/smallnest/pigo/internal/cli/config"
 )
-
-// ResolveProvider maps a model id to a built-in provider. An explicit
-// --provider name wins over every other rule: it selects a built-in provider
-// from the registry and constructs the matching wire driver (see
-// ResolveNamedProvider). When provider is empty, protocol and model-id
-// heuristics apply as before.
-//
-// When protocol is a non-empty explicit selection ("openai" or "anthropic") it
-// wins over the model-id heuristics: the provider is built directly for that
-// wire format against baseURL, which is how a user points pigo at a self-hosted
-// or third-party endpoint and says which protocol it speaks. An "anthropic"
-// selection with no baseURL targets the public Anthropic API.
-//
-// When protocol is empty, resolution falls back to model-id heuristics:
-//
-//  1. If the id is in the preset catalog, use its declared provider (this is how
-//     OpenRouter/NVIDIA/Ollama presets pick the right gateway).
-//  2. An "ollama/" prefix (or a base URL on the Ollama port) → local Ollama.
-//  3. An "nvidia/" prefix → NVIDIA NIM (strips the prefix for the wire id).
-//  4. Model-name inference: with no --base-url, a well-known model-name prefix
-//     (e.g. "claude-*", "deepseek-*") selects its first-party built-in provider
-//     via ResolveNamedProvider (see InferProviderFromModel).
-//  5. Everything else → OpenRouter, the reference OpenAI-compatible gateway.
-//
-// An unknown protocol value is an error, surfaced to the caller for exit-code
-// mapping rather than silently falling back.
-func ResolveProvider(model, baseURL, protocol, providerName string, env func(string) string) (Provider, string, error) {
-	// Explicit --provider selects a built-in provider from the registry and
-	// wins over both --protocol inference and model-id heuristics.
-	if strings.TrimSpace(providerName) != "" {
-		return ResolveNamedProvider(providerName, model, baseURL, protocol, env)
-	}
-
-	// 0. Explicit protocol selection wins over every heuristic. Normalize the
-	// surface value first so "openai" and "openai/chat" collapse to the same
-	// Chat Completions selector and "openai/resp_api" routes to the Responses
-	// driver; an unknown value surfaces as an error for exit-code mapping.
-	canonical, err := NormalizeProtocol(protocol)
-	if err != nil {
-		return nil, "", err
-	}
-	switch canonical {
-	case ProtocolOpenAI:
-		if strings.TrimSpace(baseURL) == "" {
-			return nil, "", fmt.Errorf("--protocol openai requires --base-url")
-		}
-		return NewOpenAICompatibleProvider(baseURL, []Model{{Provider: "openai", ID: model, SupportsImages: true}}), "openai", nil
-	case ProtocolOpenAIResponses:
-		// The Responses driver has no public default endpoint here: unlike the
-		// anthropic path (which targets the public API), resp_api mirrors the
-		// Chat Completions requirement and demands an explicit --base-url.
-		if strings.TrimSpace(baseURL) == "" {
-			return nil, "", fmt.Errorf("--protocol openai/resp_api requires --base-url")
-		}
-		return NewOpenAIResponsesProvider("openai", baseURL, []Model{{Provider: "openai", ID: model, SupportsImages: true}}), "openai", nil
-	case ProtocolAnthropic:
-		return NewAnthropicProvider(baseURL, []Model{{Provider: "anthropic", ID: model, SupportsImages: true}}), "anthropic", nil
-	case "":
-		// fall through to heuristic resolution
-	}
-
-	// 1. Preset catalog wins: a curated id knows its own provider.
-	if p, ok := LookupPreset(model); ok {
-		switch p.Provider {
-		case "nvidia":
-			return NewNvidiaProvider(baseURL, []Model{{Provider: "nvidia", ID: model, SupportsImages: true}}), "nvidia", nil
-		case "ollama":
-			id := strings.TrimPrefix(model, "ollama/")
-			return NewOllamaProvider(baseURL, []Model{{Provider: "ollama", ID: id, SupportsImages: true}}), "ollama", nil
-		case "", "openrouter":
-			return NewOpenRouterProvider(baseURL, []Model{{Provider: "openrouter", ID: model, SupportsImages: true}}), "openrouter", nil
-		default:
-			// Any other preset provider is a named built-in (e.g. deepseek,
-			// qianfan, dashscope): build it from the registry so the correct
-			// base URL, protocol, and API-key env var are used — not OpenRouter's.
-			return ResolveNamedProvider(p.Provider, model, baseURL, protocol, env)
-		}
-	}
-
-	// 2. Local Ollama by prefix or port.
-	if strings.HasPrefix(model, "ollama/") || strings.Contains(baseURL, "11434") {
-		id := strings.TrimPrefix(model, "ollama/")
-		return NewOllamaProvider(baseURL, []Model{{Provider: "ollama", ID: id, SupportsImages: true}}), "ollama", nil
-	}
-	// 3. NVIDIA NIM by prefix.
-	if strings.HasPrefix(model, "nvidia/") {
-		id := strings.TrimPrefix(model, "nvidia/")
-		return NewNvidiaProvider(baseURL, []Model{{Provider: "nvidia", ID: id, SupportsImages: true}}), "nvidia", nil
-	}
-	// 4. Model-name inference: with no --provider/--protocol (both empty here) and
-	//    no --base-url, guess the provider from the model name's well-known prefix
-	//    (e.g. "claude-*" → anthropic, "deepseek-*" → deepseek). A confident hit is
-	//    routed through ResolveNamedProvider so the provider's registry protocol,
-	//    default base URL, and API-key env var are used. A --base-url is treated as
-	//    a custom-endpoint signal that should not be second-guessed, so inference is
-	//    skipped when one is given. Ambiguous/unknown names fall through to (5).
-	if strings.TrimSpace(baseURL) == "" {
-		if name, ok := InferProviderFromModel(model); ok {
-			return ResolveNamedProvider(name, model, baseURL, protocol, env)
-		}
-	}
-	// 5. Default: OpenRouter.
-	return NewOpenRouterProvider(baseURL, []Model{{Provider: "openrouter", ID: model, SupportsImages: true}}), "openrouter", nil
-}
 
 // ResolveNamedProvider builds the driver for an explicit --provider selection.
 // It looks the name up in the built-in registry and constructs the wire driver

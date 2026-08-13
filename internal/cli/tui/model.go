@@ -856,8 +856,13 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 // the refresh closes the popup. It is the Tab action while the menu is open.
 func (m Model) completeSlash() Model {
 	if c, ok := m.menu.current(); ok {
-		m.input.SetValue("/" + c.Name + " ")
-		m.menu.refresh(m.input.Value(), m.slash)
+		if strings.Contains(c.Name, " ") {
+			m.input.SetValue("/" + c.Name)
+			m.menu.close()
+		} else {
+			m.input.SetValue("/" + c.Name + " ")
+			m.menu.refresh(m.input.Value(), m.slash)
+		}
 	}
 	return m
 }

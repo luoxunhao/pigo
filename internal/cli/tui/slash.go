@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/smallnest/pigo/internal/cli"
+	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/cli/prompts"
 	"github.com/smallnest/pigo/internal/runtime"
 )
@@ -84,6 +85,22 @@ func slashToken(buffer string) (token string, ok bool) {
 // otherwise it deactivates and clears its candidates. The selection is clamped
 // so it stays in range as the filtered set shrinks.
 func (mn *slashMenu) refresh(buffer string, reg *runtime.SlashRegistry) {
+	lower := strings.ToLower(strings.TrimSpace(buffer))
+	if strings.HasPrefix(lower, "/model ") {
+		query := strings.TrimSpace(strings.TrimPrefix(lower, "/model "))
+		var out []runtime.SlashCommand
+		for _, id := range config.EnabledModelIDs() {
+			if query == "" || tuiModelMatches(id, query) {
+				out = append(out, runtime.SlashCommand{Name: "model " + id})
+			}
+		}
+		mn.filtered = out
+		mn.active = len(out) > 0
+		if mn.selected >= len(out) || mn.selected < 0 {
+			mn.selected = 0
+		}
+		return
+	}
 	token, ok := slashToken(buffer)
 	if !ok || reg == nil {
 		mn.close()
@@ -100,6 +117,19 @@ func (mn *slashMenu) refresh(buffer string, reg *runtime.SlashRegistry) {
 	if mn.selected >= len(out) || mn.selected < 0 {
 		mn.selected = 0
 	}
+}
+
+// tuiModelMatches reports whether a configured model id matches a /model
+// completion query by full prefix or by the model id's basename.
+func tuiModelMatches(id, query string) bool {
+	id, query = strings.ToLower(id), strings.ToLower(query)
+	if strings.HasPrefix(id, query) {
+		return true
+	}
+	if slash := strings.LastIndexByte(id, '/'); slash >= 0 {
+		return strings.HasPrefix(id[slash+1:], query)
+	}
+	return false
 }
 
 // rows reports how many terminal rows the popup occupies when rendered, so the

@@ -19,6 +19,7 @@ import (
 	"github.com/smallnest/pigo/internal/agentcore"
 	"github.com/smallnest/pigo/internal/agenttool"
 	"github.com/smallnest/pigo/internal/cli"
+	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/cli/prompts"
 	"github.com/smallnest/pigo/internal/cli/ui"
 	"github.com/smallnest/pigo/internal/provider"
@@ -222,28 +223,61 @@ func TestREPLUnknownCommandNoRun(t *testing.T) {
 func TestREPLModelSwitchTakesEffect(t *testing.T) {
 	p := &replProvider{reply: "hi"}
 	deps, _ := newTestDeps(t, p)
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", root)
+	cfgPath := filepath.Join(root, "pigo", "config.toml")
+	if err := config.SaveFileConfig(cfgPath, config.FileConfig{
+		Model: "openai/agnes-2.5-flash",
+		Models: []config.ModelConfig{{
+			Provider:       "openai",
+			ModelID:        "agnes-2.5-flash",
+			Name:           "Agnes 2.5 Flash",
+			BaseURL:        "https://api.example.com/v1",
+			APIKey:         "sk-config",
+			Protocol:       "openai",
+			ThinkingLevels: []string{"low", "high"},
+		}, {
+			Provider:       "openai",
+			ModelID:        "no-key",
+			Name:           "No Key",
+			BaseURL:        "https://api.example.com/v1",
+			Protocol:       "openai",
+			ThinkingLevels: []string{"off"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENAI_API_KEY", "")
+	deps.live.Creds = deps.creds
 	// Register the real live action commands (/model, /models, /help) against the
 	// same live config the REPL runs on, so /model mutates it.
 	prompts.RegisterLiveCommands(deps.slash, deps.live)
 
 	var out bytes.Buffer
-	// /model with no arg reports the current model; /model <id> switches to an
-	// Ollama preset (no API key required); /exit ends the loop.
-	in := strings.NewReader("/model\n/model ollama/llama3.3\n/exit\n")
+	// /model with no arg reports the current model; /model <id> switches to a
+	// configured model, resets thinking, and clears a stale credential when the
+	// next entry has no key; /exit ends the loop.
+	in := strings.NewReader("/model\n/model openai/agnes-2.5-flash\n/model openai/no-key\n/exit\n")
 	if err := runREPL(in, &out, deps); err != nil {
 		t.Fatalf("runREPL: %v", err)
 	}
 	if p.calls != 0 {
 		t.Errorf("/model actions must not launch a run, got %d calls", p.calls)
 	}
-	if deps.live.Model != "ollama/llama3.3" || deps.live.ProviderName != "ollama" {
+	if deps.live.Model != "openai/no-key" || deps.live.ProviderName != "openai" {
 		t.Errorf("live not switched: model=%q provider=%q", deps.live.Model, deps.live.ProviderName)
+	}
+	if deps.live.ThinkingLevel != "off" {
+		t.Errorf("thinking not reset after second switch: %q", deps.live.ThinkingLevel)
+	}
+	if got := deps.creds.GetAPIKey(context.Background(), "openai"); got != "" {
+		t.Errorf("stale credential override = %q, want empty", got)
 	}
 	s := out.String()
 	if !strings.Contains(s, "faux") {
 		t.Errorf("/model (no arg) should report the current model, out=%q", s)
 	}
-	if !strings.Contains(s, "ollama/llama3.3") {
+	if !strings.Contains(s, "openai/no-key") {
 		t.Errorf("/model switch should confirm the new model, out=%q", s)
 	}
 }
@@ -267,6 +301,29 @@ func TestREPLPersistsModelIntoHeader(t *testing.T) {
 	}
 	if headers[0].Header == nil || headers[0].Header.Model != "faux" || headers[0].Header.Provider != "faux" {
 		t.Errorf("header model/provider = %v, want live faux/faux", headers[0].Header)
+	}
+}
+
+// TestREPLModelSwitchRejectsUnconfigured verifies /model refuses ids that are
+// not in [[models]] and leaves the live config untouched.
+func TestREPLModelSwitchRejectsUnconfigured(t *testing.T) {
+	p := &replProvider{reply: "hi"}
+	deps, _ := newTestDeps(t, p)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	prompts.RegisterLiveCommands(deps.slash, deps.live)
+
+	var out bytes.Buffer
+	if err := runREPL(strings.NewReader("/model nope/nope\n/exit\n"), &out, deps); err != nil {
+		t.Fatalf("runREPL: %v", err)
+	}
+	if p.calls != 0 {
+		t.Errorf("/model actions must not launch a run, got %d calls", p.calls)
+	}
+	if deps.live.Model != "faux" || deps.live.ProviderName != "faux" {
+		t.Errorf("live changed after rejected switch: model=%q provider=%q", deps.live.Model, deps.live.ProviderName)
+	}
+	if !strings.Contains(out.String(), "not configured") {
+		t.Errorf("expected not-configured error, out=%q", out.String())
 	}
 }
 

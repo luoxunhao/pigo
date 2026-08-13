@@ -61,8 +61,8 @@ type ConfigLayer struct {
 // DefaultConfigLayer is the base layer applied before all others. It gives a
 // usable configuration out of the box.
 func DefaultConfigLayer() ConfigLayer {
-	model := "openrouter/free"
-	provider := "openrouter"
+	model := ""
+	provider := ""
 	mode := string(agentcore.ToolExecutionParallel)
 	level := string(agentcore.ThinkingMedium)
 	return ConfigLayer{
@@ -166,12 +166,9 @@ func EnvConfigLayer(getenv func(string) string) ConfigLayer {
 }
 
 // validate reports the first invalid field in the resolved config: an unknown
-// tool-execution mode or thinking level. An empty model is also rejected, since
-// a run cannot proceed without one.
+// tool-execution mode or thinking level. An empty model is allowed because pigo
+// starts without a configured model and only errors when a request is made.
 func (c Config) validate() error {
-	if c.Model == "" {
-		return fmt.Errorf("config: model must not be empty")
-	}
 	switch c.ToolExecutionMode {
 	case agentcore.ToolExecutionParallel, agentcore.ToolExecutionSequential:
 	default:

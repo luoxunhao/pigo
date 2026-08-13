@@ -49,8 +49,12 @@ A plain-text assistant block emitted after `session/new` with pigo version, mode
 _Avoid_: banner, splash, welcome message
 
 **Configured provider**:
-A provider whose credential is present in the environment or config, or a local provider that needs no credential; only configured providers' models appear in ACP model options.
-_Avoid_: available provider, authenticated provider
+A built-in provider in the provider registry, selected explicitly via `--provider` or through a configured model entry; its credential may come from the environment or config.
+_Avoid_: default provider, authenticated provider
+
+**Configured model**:
+An enabled `provider/model_id` entry under `[[models]]` in `config.toml`, carrying its own endpoint, protocol, and credential metadata; `/models` lists only these and `/model` switches only to these.
+_Avoid_: preset model, built-in model, available model
 
 **Embedded context**:
 ACP resource blocks embedded in prompt content; advertised only when `PIGO_ACP_ENABLE_EMBEDDED_CONTEXT=true` and otherwise degraded to plain text.
