@@ -15,8 +15,9 @@ import (
 	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/cli/prompts"
 	"github.com/smallnest/pigo/internal/cli/repl"
-	"github.com/smallnest/pigo/internal/cli/run"
+	clirun "github.com/smallnest/pigo/internal/cli/run"
 	"github.com/smallnest/pigo/internal/compaction"
+	"github.com/smallnest/pigo/internal/contextbuild"
 	"github.com/smallnest/pigo/internal/dream"
 	"github.com/smallnest/pigo/internal/httpapi"
 	"github.com/smallnest/pigo/internal/httpapi/gen"
@@ -75,7 +76,7 @@ type serveComponents struct {
 }
 
 func makePromptRunner(opts cliOptions) (*serveComponents, error) {
-	env, err := run.SetupEnv(
+	env, err := clirun.SetupEnv(
 		opts.model,
 		opts.baseURL,
 		opts.protocol,
@@ -83,10 +84,12 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 		opts.apiKey,
 		opts.noTools,
 		opts.noSkills,
+		!opts.noContextFiles,
 		opts.systemPrompt,
 		opts.appendSystemPrompt,
+		opts.pluginDirs,
 		opts.memory.Memory.Enabled,
-		run.NewToolPolicy(opts.allowedTools, opts.disallowedTools),
+		clirun.NewToolPolicy(opts.allowedTools, opts.disallowedTools),
 	)
 	if err != nil {
 		return nil, err
@@ -172,6 +175,33 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 		history = proj.Messages
 		curLeaf = proj.LeafID
 		isFirstPrompt := len(history) == 0
+		build, buildErr := clirun.NewContextBuild(clirun.ContextBuildInput{
+			Project:            proj,
+			BaseInstruction:    env.BaseInstruction,
+			Cwd:                run.Directory,
+			ContextFiles:       env.ContextFiles,
+			AppendInstructions: env.AppendInstructions,
+			Skills:             env.Skills,
+			AllTools:           env.Tools,
+			Plugins:            env.Plugins,
+			Reminders:          clirun.TodoReminders(env.Tools),
+			Warn:               os.Stderr,
+		})
+		if buildErr != nil {
+			return gen.PromptResponse{}, buildErr
+		}
+		build.Ctx.Model = model
+		build.Ctx.Provider = runner.ProviderName
+		build.Ctx.ThinkingLevel = agentcore.ThinkingLevel(thinking)
+		rb := contextbuild.RequestBuilder(build.Ctx, build.Deps, build.Req)
+		var lastPrompt string
+		requestBuilder := func(ctx context.Context, msgs agentcore.MessageList) (provider.LlmContext, error) {
+			llm, err := rb(ctx, msgs)
+			if err == nil {
+				lastPrompt = llm.SystemPrompt
+			}
+			return llm, err
+		}
 
 		var partialText, partialThought string
 		onEvent := func(ev agentcore.AgentEvent) {
@@ -185,14 +215,18 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 			}
 			mapper.publish(run.SessionID, run.MessageID, run.Publish, ev)
 		}
+		compacted := false
 		onCompaction := func(ctx context.Context, res *compaction.CompactionResult) error {
 			if store == nil || res == nil {
 				return nil
 			}
 			_, err := store.AppendCompaction(run.SessionID, header, res)
+			if err == nil {
+				compacted = true
+			}
 			return err
 		}
-		msgs, last, err := runner.RunWithTools(ctx, run.Text, nil, history, env.SysPrompt, env.Tools, model, thinking, run.BeforeToolCall, onEvent, acp.TurnHooks{OnCompaction: onCompaction})
+		msgs, last, err := runner.RunWithTools(ctx, run.Text, nil, history, env.SysPrompt, env.Tools, model, thinking, run.BeforeToolCall, onEvent, acp.TurnHooks{OnCompaction: onCompaction, RequestBuilder: requestBuilder})
 		if store != nil && (len(msgs) > 0 || err != nil) {
 			tail := msgs
 			if len(history) > 0 && len(msgs) >= len(history) {
@@ -201,7 +235,9 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 			header.ID = run.SessionID
 			header.Model = model
 			header.Provider = runner.ProviderName
-			header.SystemPrompt = env.SysPrompt
+			if lastPrompt != "" {
+				header.SystemPrompt = lastPrompt
+			}
 			header.Cwd = run.Directory
 			header.UpdatedAt = time.Now().UTC()
 			if err != nil {
@@ -230,7 +266,7 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 					updateSessionMeta(store, run.SessionID, model, header.UpdatedAt)
 				}
 			} else if len(msgs) > 0 {
-				if len(msgs) < len(history) {
+				if compacted {
 					if saveErr := store.Save(header, msgs); saveErr != nil {
 						return gen.PromptResponse{}, saveErr
 					}
@@ -291,7 +327,7 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 			if modelID == "" {
 				modelID = env.Model
 			}
-			model := provider.Model{Provider: runner.ProviderName, ID: run.WireModel(modelID), ContextWindow: live.ContextWindow}
+			model := provider.Model{Provider: runner.ProviderName, ID: clirun.WireModel(modelID), ContextWindow: live.ContextWindow}
 			stream := provider.StreamFnFromProvider(runner.Provider)
 			scfg := provider.StreamConfig{APIKey: env.APIKey}
 			res, compactErr := compaction.Compact(ctx, stream, model, msgs, compaction.DefaultCompactionSettings, -1, nil, "", scfg)
@@ -316,7 +352,7 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 		},
 		dream: func(ctx context.Context, args string) (string, error) {
 			dryRun := strings.Contains(args, "--dry-run")
-			thinking, thinkErr := run.ResolveThinkingLevel(opts.thinkingLevel)
+			thinking, thinkErr := clirun.ResolveThinkingLevel(opts.thinkingLevel)
 			if thinkErr != nil {
 				return "", thinkErr
 			}

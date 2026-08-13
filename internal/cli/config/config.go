@@ -62,6 +62,17 @@ type FileConfig struct {
 	// internal/dream (Config). See tasks/spec-dream-memory-consolidation.md
 	// §3.3.
 	Dream DreamConfig `toml:"dream"`
+	// ContextBuild is the [contextbuild] TOML table.
+	ContextBuild ContextBuildConfig `toml:"contextbuild"`
+}
+
+// ContextBuildConfig is the [contextbuild] TOML table. ContextFiles is a
+// pointer so an absent key (nil) is distinguishable from an explicit false;
+// nil means enabled by default.
+type ContextBuildConfig struct {
+	ContextFiles       *bool    `toml:"context_files"`
+	AppendSystemPrompt []string `toml:"append_system_prompt"`
+	PluginDirs         []string `toml:"plugin_dirs"`
 }
 
 // DreamConfig is the [dream] TOML table for /dream memory consolidation.

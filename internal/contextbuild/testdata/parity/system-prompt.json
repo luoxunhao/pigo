@@ -1,0 +1,61 @@
+{
+  "name": "system-prompt",
+  "piCommit": "fc09a0c63f08e133112f3d44f6591e1a0aa7fcc1",
+  "deviations": [
+    {
+      "code": "extension-events",
+      "scope": "hooks/plugins",
+      "piCommit": "fc09a0c63f08e133112f3d44f6591e1a0aa7fcc1",
+      "reason": "extension injection is compared by final effect only; registration mechanics differ from pi"
+    }
+  ],
+  "input": {
+    "activeToolNames": [
+      "read"
+    ],
+    "baseInstruction": "You are a parity agent.",
+    "cwd": "E:/parity/project",
+    "appendInstructions": [
+      "Append: be precise."
+    ],
+    "contextFiles": [
+      {
+        "path": "E:/parity/global/AGENTS.md",
+        "content": "global instructions"
+      },
+      {
+        "path": "E:/parity/project/CLAUDE.md",
+        "content": "project instructions"
+      }
+    ],
+    "skills": [
+      {
+        "name": "weather",
+        "description": "get weather",
+        "path": "E:/parity/skills/weather/SKILL.md"
+      }
+    ],
+    "tools": [
+      {
+        "name": "read",
+        "description": "read files",
+        "schema": {
+          "type": "object"
+        }
+      },
+      {
+        "name": "bash",
+        "description": "run commands",
+        "schema": {
+          "type": "object"
+        }
+      }
+    ]
+  },
+  "expected": {
+    "systemPrompt": "You are a parity agent.\n\n# Available tools\n- read: read files\n\n\n# Guidelines\n- Prefer precise, minimal changes and verify your work with the available tools.\n- Keep the user informed of progress and never claim an action was taken unless it was.\n\nAppend: be precise.\n\nThe following skills provide specialized instructions for specific tasks.\nUse the read tool to load a skill's file when the task matches its description.\nWhen a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.\n\n\u003cavailable_skills\u003e\n  \u003cskill\u003e\n    \u003cname\u003eweather\u003c/name\u003e\n    \u003cdescription\u003eget weather\u003c/description\u003e\n    \u003clocation\u003eE:\\parity\\skills\\weather\\SKILL.md\u003c/location\u003e\n  \u003c/skill\u003e\n\u003c/available_skills\u003e\n\nEnvironment:\n- Working directory: E:/parity/project\n- OS: windows/amd64\n",
+    "tools": [
+      "read"
+    ]
+  }
+}

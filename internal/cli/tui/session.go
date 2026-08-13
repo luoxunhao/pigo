@@ -28,6 +28,7 @@ import (
 	"github.com/smallnest/pigo/internal/cli/run"
 	"github.com/smallnest/pigo/internal/cli/ui"
 	"github.com/smallnest/pigo/internal/compaction"
+	"github.com/smallnest/pigo/internal/contextbuild"
 	"github.com/smallnest/pigo/internal/hooks"
 	"github.com/smallnest/pigo/internal/httpclient"
 	"github.com/smallnest/pigo/internal/memory"
@@ -50,6 +51,7 @@ type runSession struct {
 	store     *sessionstore.Store
 	header    session.SessionHeader
 	agentCtx  *agentcore.AgentContext
+	build     *run.ContextBuild
 	live      *cli.LiveConfig
 	reg       *agenttool.ToolRegistry
 	reminders *runtime.ReminderRegistry
@@ -161,24 +163,22 @@ func newRunSessionWithStore(store *sessionstore.Store, opts Options) (*runSessio
 		header   session.SessionHeader
 		history  []agentcore.Message
 		curLeaf  string
+		proj     *session.ProjectLeaf
 	)
 	if opts.ResumeID != "" {
 		_, h, msgs, err := store.Load(opts.ResumeID)
 		if err != nil {
 			return nil, nil, err
 		}
-		if proj, projErr := store.Projection(opts.ResumeID, ""); projErr == nil {
+		if p, projErr := store.Projection(opts.ResumeID, ""); projErr == nil {
+			proj = p
 			curLeaf = proj.LeafID
 		}
 		header = h
-		sysPrompt := h.SystemPrompt
-		if sysPrompt == "" {
-			sysPrompt = opts.SysPrompt
-		}
-		agentCtx = &agentcore.AgentContext{SystemPrompt: sysPrompt, Messages: msgs, Tools: opts.Tools}
+		agentCtx = &agentcore.AgentContext{Messages: msgs, Tools: opts.Tools}
 		history = msgs
 	} else {
-		agentCtx = &agentcore.AgentContext{SystemPrompt: opts.SysPrompt, Tools: opts.Tools}
+		agentCtx = &agentcore.AgentContext{Tools: opts.Tools}
 		// Stamp the launch directory onto a fresh session (#526/#524) so the
 		// session is attributed to a project and a later /dream pass can distill it
 		// under the right scope, mirroring headless/REPL. An unresolvable cwd
@@ -191,7 +191,33 @@ func newRunSessionWithStore(store *sessionstore.Store, opts Options) (*runSessio
 			Provider:     opts.ProviderName,
 			SystemPrompt: opts.SysPrompt,
 			Cwd:          cwd,
+			LaneConfig: &session.LaneConfig{
+				Model:         opts.Model,
+				Provider:      opts.ProviderName,
+				ThinkingLevel: string(opts.ThinkingLevel),
+			},
 		}
+		proj = &session.ProjectLeaf{
+			Model:         opts.Model,
+			Provider:      opts.ProviderName,
+			ThinkingLevel: string(opts.ThinkingLevel),
+			Config:        header.LaneConfig,
+		}
+	}
+	build, buildErr := run.NewContextBuild(run.ContextBuildInput{
+		Project:            proj,
+		BaseInstruction:    opts.BaseInstruction,
+		Cwd:                cwd,
+		ContextFiles:       opts.ContextFiles,
+		AppendInstructions: opts.AppendInstructions,
+		Skills:             opts.Skills,
+		AllTools:           opts.Tools,
+		Plugins:            opts.Plugins,
+		Reminders:          run.TodoReminders(opts.Tools),
+		Warn:               os.Stderr,
+	})
+	if buildErr != nil {
+		return nil, nil, buildErr
 	}
 
 	live := &cli.LiveConfig{
@@ -223,6 +249,7 @@ func newRunSessionWithStore(store *sessionstore.Store, opts Options) (*runSessio
 		store:      store,
 		header:     header,
 		agentCtx:   agentCtx,
+		build:      build,
 		live:       live,
 		reg:        run.ToolRegistry(opts.Tools),
 		reminders:  run.TodoReminders(opts.Tools),
@@ -333,6 +360,22 @@ func (s *runSession) buildConfig() runtime.RunConfig {
 			}
 			return err
 		},
+	}
+	// contextbuild owns per-request assembly; sync live lane state and reminders
+	// before installing the request seam.
+	if s.build != nil {
+		s.build.Ctx.Model = s.live.Model
+		s.build.Ctx.Provider = s.live.ProviderName
+		s.build.Ctx.ThinkingLevel = s.live.ThinkingLevel
+		s.build.Deps.Reminders = s.reminders
+		rb := contextbuild.RequestBuilder(s.build.Ctx, s.build.Deps, s.build.Req)
+		cfg.LoopConfig.RequestBuilder = func(ctx context.Context, msgs agentcore.MessageList) (provider.LlmContext, error) {
+			llm, err := rb(ctx, msgs)
+			if err == nil && llm.SystemPrompt != "" {
+				s.header.SystemPrompt = llm.SystemPrompt
+			}
+			return llm, err
+		}
 	}
 	// Per-turn wiring of the tool-execution + Stop seams; nil dispatcher is a
 	// no-op so the hot path pays nothing when no hooks are configured (FR-18).

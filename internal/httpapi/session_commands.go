@@ -270,8 +270,6 @@ func treeNodeKind(e session.V4Entry) string {
 		return "compaction"
 	case session.EntryTypeBranchSummary:
 		return "branch_summary"
-	case session.EntryTypeCustomMessage:
-		return "custom_message"
 	case session.EntryTypeCustom:
 		return "custom"
 	case session.EntryTypeModelChange:

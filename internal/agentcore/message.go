@@ -202,6 +202,18 @@ func decodeMessage(raw json.RawMessage) (Message, error) {
 			return nil, err
 		}
 		return m, nil
+	case RoleCustom:
+		var m CustomMessage
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return nil, err
+		}
+		return m, nil
+	case RoleBranchSummary:
+		var m BranchSummaryMessage
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return nil, err
+		}
+		return m, nil
 	case "":
 		return nil, fmt.Errorf("missing role discriminant")
 	default:

@@ -36,6 +36,7 @@ import (
 	"github.com/smallnest/pigo/internal/cli/ui"
 	"github.com/smallnest/pigo/internal/clipboard"
 	"github.com/smallnest/pigo/internal/compaction"
+	"github.com/smallnest/pigo/internal/contextbuild"
 	"github.com/smallnest/pigo/internal/hooks"
 	"github.com/smallnest/pigo/internal/memory"
 	"github.com/smallnest/pigo/internal/plugin"
@@ -52,6 +53,7 @@ type replDeps struct {
 	store    *sessionstore.Store
 	header   session.SessionHeader
 	agentCtx *agentcore.AgentContext
+	build    *run.ContextBuild
 	live     *cli.LiveConfig
 	reg      *agenttool.ToolRegistry
 	// reminders holds the per-turn system-reminder providers (US-002). It is nil
@@ -624,6 +626,23 @@ func streamRun(ctx context.Context, out io.Writer, deps *replDeps, prompt string
 			}
 			return err
 		},
+	}
+	// contextbuild owns per-request assembly: sync the live lane state (model
+	// switches via /model) and hook-provided reminders, then install the request
+	// seam into the loop.
+	if deps.build != nil {
+		deps.build.Ctx.Model = deps.live.Model
+		deps.build.Ctx.Provider = deps.live.ProviderName
+		deps.build.Ctx.ThinkingLevel = deps.live.ThinkingLevel
+		deps.build.Deps.Reminders = deps.reminders
+		rb := contextbuild.RequestBuilder(deps.build.Ctx, deps.build.Deps, deps.build.Req)
+		cfg.LoopConfig.RequestBuilder = func(ctx context.Context, msgs agentcore.MessageList) (provider.LlmContext, error) {
+			llm, err := rb(ctx, msgs)
+			if err == nil && llm.SystemPrompt != "" {
+				deps.header.SystemPrompt = llm.SystemPrompt
+			}
+			return llm, err
+		}
 	}
 	// Per-turn wiring of the tool-execution + Stop seams (PreToolUse/PostToolUse/
 	// Stop) onto this turn's freshly-built cfg; a nil dispatcher is a no-op so the

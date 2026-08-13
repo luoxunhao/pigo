@@ -44,6 +44,23 @@ type Manifest struct {
 	// an empty list means the plugin observes no events. Valid values are the
 	// agentcore.Event* discriminants (e.g. "agent_start", "tool_execution_end").
 	Events []string `json:"events,omitempty"`
+	// EntryProjectors declare fixed custom-entry projections by customType.
+	// pigo renders them in-process; no per-request plugin RPC is used.
+	EntryProjectors map[string]EntryProjectorSpec `json:"entryProjectors,omitempty"`
+	// ContextTransforms declare fixed text injected into every request copy.
+	ContextTransforms []ContextTransformSpec `json:"contextTransforms,omitempty"`
+}
+
+// EntryProjectorSpec declares one declarative custom-entry projector.
+type EntryProjectorSpec struct {
+	Content string `json:"content,omitempty"`
+	Display bool   `json:"display,omitempty"`
+}
+
+// ContextTransformSpec declares one fixed context injection.
+type ContextTransformSpec struct {
+	Name    string `json:"name,omitempty"`
+	Content string `json:"content,omitempty"`
 }
 
 // SubagentSpec declares a sub-agent tool backed by the core child-session

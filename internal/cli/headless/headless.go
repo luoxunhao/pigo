@@ -18,6 +18,7 @@ import (
 	"github.com/smallnest/pigo/internal/cli/run"
 	"github.com/smallnest/pigo/internal/cli/ui"
 	"github.com/smallnest/pigo/internal/compaction"
+	"github.com/smallnest/pigo/internal/contextbuild"
 	"github.com/smallnest/pigo/internal/plugin"
 	"github.com/smallnest/pigo/internal/provider"
 	"github.com/smallnest/pigo/internal/runtime"
@@ -70,9 +71,29 @@ func Run(ctx context.Context, p RunParams, out, errOut io.Writer) int {
 	isFirstPrompt := len(priorMsgs) == 0
 	messages := append(priorMsgs, agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: promptContent})
 	agentCtx := &agentcore.AgentContext{
-		SystemPrompt: hs.header.SystemPrompt,
-		Messages:     messages,
-		Tools:        env.Tools,
+		Messages: messages,
+		Tools:    env.Tools,
+	}
+	proj, projErr := hs.store.Projection(hs.header.ID, "")
+	if projErr != nil {
+		fmt.Fprintf(errOut, "pigo: %v\n", projErr)
+		return 1
+	}
+	build, buildErr := run.NewContextBuild(run.ContextBuildInput{
+		Project:            proj,
+		BaseInstruction:    env.BaseInstruction,
+		Cwd:                env.Cwd,
+		ContextFiles:       env.ContextFiles,
+		AppendInstructions: env.AppendInstructions,
+		Skills:             env.Skills,
+		AllTools:           env.Tools,
+		Plugins:            env.Plugins,
+		Reminders:          run.TodoReminders(env.Tools),
+		Warn:               errOut,
+	})
+	if buildErr != nil {
+		fmt.Fprintf(errOut, "pigo: %v\n", buildErr)
+		return 1
 	}
 
 	// Resolve the effective reasoning-effort level through the layered config
@@ -88,6 +109,16 @@ func Run(ctx context.Context, p RunParams, out, errOut io.Writer) int {
 	creds := provider.NewCredentialStore(nil)
 	creds.SetOverride(env.ProviderName, p.APIKey)
 	runCfg := run.NewConfig(p.Model, env.ProviderName, thinking, env.Provider, creds, run.ToolRegistry(env.Tools), run.TodoReminders(env.Tools))
+	build.Ctx.ThinkingLevel = thinking
+	build.Deps.Reminders = runCfg.Reminders
+	rb := contextbuild.RequestBuilder(build.Ctx, build.Deps, build.Req)
+	runCfg.LoopConfig.RequestBuilder = func(ctx context.Context, msgs agentcore.MessageList) (provider.LlmContext, error) {
+		llm, err := rb(ctx, msgs)
+		if err == nil && llm.SystemPrompt != "" {
+			hs.header.SystemPrompt = llm.SystemPrompt
+		}
+		return llm, err
+	}
 	runCfg.SessionID = hs.header.ID
 	runCfg.OnCompaction = func(ctx context.Context, res *compaction.CompactionResult) error {
 		if res == nil {

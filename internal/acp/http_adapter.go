@@ -239,11 +239,22 @@ func (a *HTTPAdapter) sessionLoad(ctx context.Context, params json.RawMessage) (
 		a.sendAvailableCommands(req.Cwd, req.SessionID)
 		a.refreshTree(context.Background(), req.SessionID, req.Cwd)
 	})
-	return map[string]any{
+	result := map[string]any{
 		"sessionId":     req.SessionID,
 		"configOptions": resp.JSON200.ConfigOptions,
 		"modes":         a.modesState(),
-	}, nil
+	}
+	if resp.JSON200.LaneConfig != nil || resp.JSON200.SystemPrompt != nil {
+		pigo := map[string]any{}
+		if resp.JSON200.LaneConfig != nil {
+			pigo["laneConfig"] = *resp.JSON200.LaneConfig
+		}
+		if resp.JSON200.SystemPrompt != nil {
+			pigo["systemPrompt"] = *resp.JSON200.SystemPrompt
+		}
+		result["_meta"] = map[string]any{"pigo": pigo}
+	}
+	return result, nil
 }
 
 func (a *HTTPAdapter) sessionList(ctx context.Context, params json.RawMessage) (any, *Error) {
@@ -980,6 +991,12 @@ func (a *HTTPAdapter) refreshTree(ctx context.Context, sessionID, directory stri
 		"currentLeafId": st.CurrentLeafID,
 		"currentLane":   st.CurrentLane,
 		"lanes":         st.Lanes,
+	}
+	if resp.JSON200.LaneConfig != nil {
+		update["laneConfig"] = *resp.JSON200.LaneConfig
+	}
+	if resp.JSON200.SystemPrompt != nil {
+		update["systemPrompt"] = *resp.JSON200.SystemPrompt
 	}
 	payload := sessionUpdatePayload(sessionID, update)
 	a.attachTreeMeta(sessionID, payload, nil)

@@ -69,7 +69,8 @@ func TestBuildProjectionUsesRetainedTail(t *testing.T) {
 		RetainedTail: []json.RawMessage{[]byte(`{"role":"user","content":[{"type":"text","text":"kept"}]}`)},
 	}
 	recent := V4Entry{Type: EntryTypeMessage, ID: "3", ParentID: "2", Timestamp: now, Message: []byte(`{"role":"assistant","content":[{"type":"text","text":"new"}]}`)}
-	proj, err := BuildProjection([]V4Entry{old, comp, recent}, []LaneState{{Lane: "main", LeafID: strPtr("3")}}, "3", nil)
+	cfg := &LaneConfig{Model: "m", Provider: "p", ThinkingLevel: "medium"}
+	proj, err := BuildProjection([]V4Entry{old, comp, recent}, []LaneState{{Lane: "main", LeafID: strPtr("3"), Config: cfg}}, "3", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -91,6 +91,10 @@ func (s *SessionService) Create(req gen.NewSessionRequest) (gen.Session, *APIErr
 		UpdatedAt: now,
 		Model:     model,
 		Cwd:       req.Directory,
+		LaneConfig: &session.LaneConfig{
+			Model:         model,
+			ThinkingLevel: "medium",
+		},
 	}
 	meta := sessionstore.NewMetadata(id, title, "pigo", model, req.Directory)
 	if err := store.Create(meta, header, nil); err != nil {
@@ -214,6 +218,14 @@ func (s *SessionService) Load(sessionID string, req gen.LoadSessionRequest) (gen
 	if cfgErr != nil {
 		return gen.SessionLoadResult{}, Internal(cfgErr.Error())
 	}
+	proj, projErr := store.Projection(sessionID, "")
+	if projErr != nil {
+		return gen.SessionLoadResult{}, Internal(projErr.Error())
+	}
+	var sysPrompt *string
+	if meta.Header != nil && meta.Header.SystemPrompt != "" {
+		sysPrompt = &meta.Header.SystemPrompt
+	}
 	return gen.SessionLoadResult{
 		SessionId:     sessionID,
 		Directory:     req.Directory,
@@ -224,6 +236,8 @@ func (s *SessionService) Load(sessionID string, req gen.LoadSessionRequest) (gen
 		CurrentLeafId: optString(win.LeafID),
 		CurrentLane:   optString(win.Lane),
 		Lanes:         lanesToGen(win.Lanes),
+		LaneConfig:    laneConfigFromProj(proj),
+		SystemPrompt:  sysPrompt,
 	}, nil
 }
 
@@ -332,6 +346,10 @@ func (s *SessionService) Status(sessionID, directory string) (gen.SessionStatusR
 	}
 	mode = sessionMode(meta)
 	queued := 0
+	var sysPrompt *string
+	if meta.Header != nil && meta.Header.SystemPrompt != "" {
+		sysPrompt = &meta.Header.SystemPrompt
+	}
 	return gen.SessionStatusResult{
 		SessionId:     sessionID,
 		Status:        "idle",
@@ -342,7 +360,24 @@ func (s *SessionService) Status(sessionID, directory string) (gen.SessionStatusR
 		CurrentLeafId: optString(proj.LeafID),
 		CurrentLane:   optString(proj.Lane),
 		Lanes:         lanesToGen(proj.Lanes),
+		LaneConfig:    laneConfigFromProj(proj),
+		SystemPrompt:  sysPrompt,
 	}, nil
+}
+
+func laneConfigFromProj(proj *session.ProjectLeaf) *map[string]any {
+	if proj == nil {
+		return nil
+	}
+	cfg := map[string]any{
+		"model":         proj.Model,
+		"provider":      proj.Provider,
+		"thinkingLevel": proj.ThinkingLevel,
+	}
+	if proj.Config != nil && len(proj.Config.ActiveToolNames) > 0 {
+		cfg["activeToolNames"] = proj.Config.ActiveToolNames
+	}
+	return &cfg
 }
 
 // UpdateConfig updates session-level model, thinking level, or mode.

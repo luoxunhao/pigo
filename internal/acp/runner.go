@@ -19,6 +19,9 @@ import (
 type TurnHooks struct {
 	Steering func(ctx context.Context) []agentcore.AgentMessage
 	FollowUp func(ctx context.Context, agentCtx *agentcore.AgentContext) []agentcore.AgentMessage
+	// RequestBuilder, when non-nil, installs the contextbuild request seam into
+	// the loop so system-prompt assembly/tools/transforms come from the frontend.
+	RequestBuilder runtime.RequestBuilderFunc
 	// InstallSeams, when non-nil, installs the run's hook seams into a freshly
 	// built RunConfig. Dispatcher binds it per session so RuntimeRunner stays
 	// agnostic of session identity. An error fails the turn closed.
@@ -106,6 +109,9 @@ func (r *RuntimeRunner) RunWithTools(ctx context.Context, prompt string, images 
 		Batch: agenttool.BatchConfig{
 			ToolExecutorConfig: agenttool.ToolExecutorConfig{Registry: reg, BeforeToolCall: beforeToolCall},
 		},
+	}
+	if hooks.RequestBuilder != nil {
+		cfg.LoopConfig.RequestBuilder = hooks.RequestBuilder
 	}
 	if hooks.InstallSeams != nil {
 		if err := hooks.InstallSeams(&cfg); err != nil {

@@ -165,6 +165,10 @@ func openHeadlessSession(resumeID, model, providerName, sysPrompt string) (agent
 		Provider:     providerName,
 		SystemPrompt: sysPrompt,
 		Cwd:          cwd,
+		LaneConfig: &session.LaneConfig{
+			Model:    model,
+			Provider: providerName,
+		},
 	}
 	meta := sessionstore.NewMetadata(header.ID, "Session", "pigo", model, cwd)
 	if err := proj.Create(meta, header, nil); err != nil {

@@ -29,6 +29,14 @@ type Options struct {
 	ThinkingLevel agentcore.ThinkingLevel
 	Tools         []agentcore.AgentTool
 	SysPrompt     string
+	// BaseInstruction is the raw --system-prompt base text (may be empty).
+	// contextbuild layers tools/guidelines/context files/skills on top of it per
+	// request; SysPrompt remains the legacy pre-assembled prompt.
+	BaseInstruction string
+	// ContextFiles enables per-directory AGENTS/CLAUDE context-file injection.
+	ContextFiles bool
+	// AppendInstructions are the resolved --append-system-prompt texts.
+	AppendInstructions []string
 
 	// ResumeID, when non-empty, resumes an existing session: its messages seed
 	// the context and replayed transcript. Otherwise a fresh session is created.

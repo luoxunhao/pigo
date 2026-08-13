@@ -175,3 +175,43 @@ func TestLoadFileConfig_DreamTableAbsent(t *testing.T) {
 		t.Errorf("absent dream table = %+v, want zero-value", cfg.Dream)
 	}
 }
+
+func TestLoadFileConfig_ContextBuildTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	content := `
+[contextbuild]
+context_files = false
+append_system_prompt = ["one", "two"]
+plugin_dirs = ["E:/plugins/a", "./plugins/b"]
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFileConfig(path)
+	if err != nil {
+		t.Fatalf("LoadFileConfig: %v", err)
+	}
+	if cfg.ContextBuild.ContextFiles == nil || *cfg.ContextBuild.ContextFiles {
+		t.Errorf("ContextFiles = %v, want explicit false", cfg.ContextBuild.ContextFiles)
+	}
+	if len(cfg.ContextBuild.AppendSystemPrompt) != 2 || cfg.ContextBuild.AppendSystemPrompt[0] != "one" || cfg.ContextBuild.AppendSystemPrompt[1] != "two" {
+		t.Errorf("AppendSystemPrompt = %v", cfg.ContextBuild.AppendSystemPrompt)
+	}
+	if len(cfg.ContextBuild.PluginDirs) != 2 || cfg.ContextBuild.PluginDirs[1] != "./plugins/b" {
+		t.Errorf("PluginDirs = %v", cfg.ContextBuild.PluginDirs)
+	}
+}
+
+func TestLoadFileConfig_ContextBuildAbsent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("model = \"foo\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFileConfig(path)
+	if err != nil {
+		t.Fatalf("LoadFileConfig: %v", err)
+	}
+	if cfg.ContextBuild.ContextFiles != nil || cfg.ContextBuild.AppendSystemPrompt != nil || cfg.ContextBuild.PluginDirs != nil {
+		t.Errorf("absent contextbuild table = %+v, want zero-value", cfg.ContextBuild)
+	}
+}

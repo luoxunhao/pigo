@@ -66,7 +66,7 @@ func New(opts ...Option) (*Session, error) {
 	// so an unknown tool name is reported as an error.
 	env, err := run.SetupEnv(
 		model, c.baseURL, c.protocol, c.provider, c.apiKey,
-		c.noTools, !c.skills, c.systemPrompt, c.appendSystemPrompt, c.memory, policy,
+		c.noTools, !c.skills, true, c.systemPrompt, c.appendSystemPrompt, nil, c.memory, policy,
 	)
 	if err != nil {
 		return nil, err

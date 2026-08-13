@@ -82,6 +82,7 @@ func (d *openAICompatDriver) StreamCompletion(ctx context.Context, req Completio
 		// Early "cannot build the stream": reference the provider, never a value.
 		return nil, fmt.Errorf("%s: missing API key", d.name)
 	}
+	req.Context.Messages = TransformMessages(req.Context.Messages, modelForRequest(d.name, req.Model, d.models), nil)
 	if err := checkImageSupport(d.name, req.Model, d.models, req.Context.Messages); err != nil {
 		return nil, err
 	}
@@ -162,10 +163,6 @@ func encodeOpenAIMessage(m agentcore.Message) []map[string]any {
 	switch msg := m.(type) {
 	case agentcore.UserMessage:
 		return []map[string]any{{"role": "user", "content": openAIUserContent(msg.Content)}}
-	case agentcore.CompactionMessage:
-		// A compaction checkpoint stands in for compacted history as user text.
-		u := msg.AsUserMessage()
-		return []map[string]any{{"role": "user", "content": openAIUserContent(u.Content)}}
 	case agentcore.AssistantMessage:
 		entry := map[string]any{"role": "assistant"}
 		text := agentcore.ContentToText(msg.Content)
@@ -293,6 +290,7 @@ func (d *anthropicCompatDriver) StreamCompletion(ctx context.Context, req Comple
 	if strings.TrimSpace(req.Config.APIKey) == "" {
 		return nil, fmt.Errorf("%s: missing API key", d.name)
 	}
+	req.Context.Messages = TransformMessages(req.Context.Messages, modelForRequest(d.name, req.Model, d.models), normalizeAnthropicToolCallID)
 	if err := checkImageSupport(d.name, req.Model, d.models, req.Context.Messages); err != nil {
 		return nil, err
 	}
@@ -410,9 +408,6 @@ func encodeAnthropicMessage(m agentcore.Message) map[string]any {
 	switch msg := m.(type) {
 	case agentcore.UserMessage:
 		return map[string]any{"role": "user", "content": anthropicUserContent(msg.Content)}
-	case agentcore.CompactionMessage:
-		u := msg.AsUserMessage()
-		return map[string]any{"role": "user", "content": anthropicUserContent(u.Content)}
 	case agentcore.AssistantMessage:
 		var blocks []map[string]any
 		// Thinking blocks must precede tool_use in the same assistant turn:

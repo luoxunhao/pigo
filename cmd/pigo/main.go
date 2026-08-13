@@ -76,6 +76,10 @@ type cliOptions struct {
 	// noSkills disables skill discovery (mirrors pi's --no-skills): skills under
 	// ~/.agents/skills are not loaded as /skill-name commands.
 	noSkills bool
+	// noContextFiles disables AGENTS/CLAUDE context-file injection.
+	noContextFiles bool
+	// pluginDirs holds --plugin-dir values (repeatable; absolute or cwd-relative).
+	pluginDirs []string
 	// systemPrompt, when non-empty, replaces the default coding-assistant base
 	// instruction (mirrors pi's --system-prompt). The environment block and
 	// AGENTS.md injection still apply on top of it.
@@ -194,6 +198,8 @@ func main() {
 	flag.BoolVarP(&opts.continueLast, "continue", "c", false, "resume the most recent interactive session")
 	flag.BoolVarP(&opts.approve, "approve", "a", false, "trust the working directory for this run: skip the first-launch trust prompt and run side-effect tools without per-call confirmation")
 	flag.BoolVar(&opts.noSkills, "no-skills", false, "disable skill discovery (do not load skills under ~/.agents/skills as /skill-name commands)")
+	flag.BoolVar(&opts.noContextFiles, "no-context-files", false, "disable AGENTS/CLAUDE context-file injection into the system prompt")
+	flag.StringArrayVar(&opts.pluginDirs, "plugin-dir", nil, "load plugins from an explicit directory (repeatable; absolute or cwd-relative)")
 	flag.BoolVar(&opts.noPromptTemplates, "no-prompt-templates", false, "disable prompt-template discovery (do not load ~/.pigo/{commands,prompts}, .pigo/prompts, config prompts, or --prompt-template); built-in slash commands are unaffected")
 	flag.StringVar(&opts.systemPrompt, "system-prompt", "", "system prompt to use instead of the default coding-assistant prompt (mirrors pi --system-prompt)")
 	flag.StringArrayVar(&opts.appendSystemPrompt, "append-system-prompt", nil, "append text or file contents to the system prompt; repeatable (mirrors pi --append-system-prompt)")
@@ -271,6 +277,15 @@ func applyFileConfig(opts *cliOptions, cfg config.FileConfig, changed func(strin
 	}
 	if cfg.NoSkills && !changed("no-skills") {
 		opts.noSkills = true
+	}
+	if cfg.ContextBuild.ContextFiles != nil && !changed("no-context-files") {
+		opts.noContextFiles = !*cfg.ContextBuild.ContextFiles
+	}
+	if len(cfg.ContextBuild.AppendSystemPrompt) > 0 && !changed("append-system-prompt") {
+		opts.appendSystemPrompt = cfg.ContextBuild.AppendSystemPrompt
+	}
+	if len(cfg.ContextBuild.PluginDirs) > 0 && !changed("plugin-dir") {
+		opts.pluginDirs = cfg.ContextBuild.PluginDirs
 	}
 	if cfg.Approve && !changed("approve") {
 		opts.approve = true
@@ -389,7 +404,7 @@ func dispatch(ctx context.Context, opts cliOptions, out, errOut io.Writer) int {
 			fmt.Fprintln(errOut, "pigo: no prompt (use -p \"...\" or positional args)")
 			return 2
 		}
-		env, err := run.SetupEnv(opts.model, opts.baseURL, opts.protocol, opts.provider, opts.apiKey, opts.noTools, opts.noSkills, opts.systemPrompt, opts.appendSystemPrompt, opts.memory.Memory.Enabled, run.NewToolPolicy(opts.allowedTools, opts.disallowedTools))
+		env, err := run.SetupEnv(opts.model, opts.baseURL, opts.protocol, opts.provider, opts.apiKey, opts.noTools, opts.noSkills, !opts.noContextFiles, opts.systemPrompt, opts.appendSystemPrompt, opts.pluginDirs, opts.memory.Memory.Enabled, run.NewToolPolicy(opts.allowedTools, opts.disallowedTools))
 		if err != nil {
 			fmt.Fprintf(errOut, "pigo: %v\n", err)
 			return setupExitCode(err)
@@ -417,23 +432,26 @@ func dispatch(ctx context.Context, opts cliOptions, out, errOut io.Writer) int {
 					return 1
 				}
 				if err := tui.RunHTTP(ctx, tui.Options{
-					Model:             opts.model,
-					ProviderName:      env.ProviderName,
-					Provider:          env.Provider,
-					BaseURL:           opts.baseURL,
-					APIKey:            env.APIKey,
-					Protocol:          opts.protocol,
-					Version:           version,
-					ThinkingLevel:     thinking,
-					Tools:             env.Tools,
-					SysPrompt:         env.SysPrompt,
-					ResumeID:          resumeID,
-					Approve:           opts.approve,
-					Skills:            env.Skills,
-					Plugins:           env.Plugins,
-					ConfigPrompts:     opts.configPrompts,
-					CliPrompts:        opts.promptTemplates,
-					NoPromptTemplates: opts.noPromptTemplates,
+					Model:              opts.model,
+					ProviderName:       env.ProviderName,
+					Provider:           env.Provider,
+					BaseURL:            opts.baseURL,
+					APIKey:             env.APIKey,
+					Protocol:           opts.protocol,
+					Version:            version,
+					ThinkingLevel:      thinking,
+					Tools:              env.Tools,
+					SysPrompt:          env.SysPrompt,
+					BaseInstruction:    env.BaseInstruction,
+					ContextFiles:       env.ContextFiles,
+					AppendInstructions: env.AppendInstructions,
+					ResumeID:           resumeID,
+					Approve:            opts.approve,
+					Skills:             env.Skills,
+					Plugins:            env.Plugins,
+					ConfigPrompts:      opts.configPrompts,
+					CliPrompts:         opts.promptTemplates,
+					NoPromptTemplates:  opts.noPromptTemplates,
 				}, cfg); err != nil {
 					fmt.Fprintf(errOut, "pigo: %v\n", err)
 					return 1
@@ -441,23 +459,26 @@ func dispatch(ctx context.Context, opts cliOptions, out, errOut io.Writer) int {
 				return 0
 			}
 			if err := tui.Run(tui.Options{
-				Model:             opts.model,
-				ProviderName:      env.ProviderName,
-				Provider:          env.Provider,
-				BaseURL:           opts.baseURL,
-				APIKey:            env.APIKey,
-				Protocol:          opts.protocol,
-				Version:           version,
-				ThinkingLevel:     thinking,
-				Tools:             env.Tools,
-				SysPrompt:         env.SysPrompt,
-				ResumeID:          resumeID,
-				Approve:           opts.approve,
-				Skills:            env.Skills,
-				Plugins:           env.Plugins,
-				ConfigPrompts:     opts.configPrompts,
-				CliPrompts:        opts.promptTemplates,
-				NoPromptTemplates: opts.noPromptTemplates,
+				Model:              opts.model,
+				ProviderName:       env.ProviderName,
+				Provider:           env.Provider,
+				BaseURL:            opts.baseURL,
+				APIKey:             env.APIKey,
+				Protocol:           opts.protocol,
+				Version:            version,
+				ThinkingLevel:      thinking,
+				Tools:              env.Tools,
+				SysPrompt:          env.SysPrompt,
+				BaseInstruction:    env.BaseInstruction,
+				ContextFiles:       env.ContextFiles,
+				AppendInstructions: env.AppendInstructions,
+				ResumeID:           resumeID,
+				Approve:            opts.approve,
+				Skills:             env.Skills,
+				Plugins:            env.Plugins,
+				ConfigPrompts:      opts.configPrompts,
+				CliPrompts:         opts.promptTemplates,
+				NoPromptTemplates:  opts.noPromptTemplates,
 			}); err != nil {
 				fmt.Fprintf(errOut, "pigo: %v\n", err)
 				return 1
@@ -477,23 +498,26 @@ func dispatch(ctx context.Context, opts cliOptions, out, errOut io.Writer) int {
 			return 0
 		}
 		if err := repl.Run(repl.Options{
-			Model:             opts.model,
-			ProviderName:      env.ProviderName,
-			Provider:          env.Provider,
-			BaseURL:           opts.baseURL,
-			APIKey:            env.APIKey,
-			Protocol:          opts.protocol,
-			ThinkingLevel:     thinking,
-			Tools:             env.Tools,
-			SysPrompt:         env.SysPrompt,
-			ResumeID:          resumeID,
-			Approve:           opts.approve,
-			Skills:            env.Skills,
-			Plugins:           env.Plugins,
-			ConfigPrompts:     opts.configPrompts,
-			CliPrompts:        opts.promptTemplates,
-			NoPromptTemplates: opts.noPromptTemplates,
-			Dream:             opts.dreamCfg,
+			Model:              opts.model,
+			ProviderName:       env.ProviderName,
+			Provider:           env.Provider,
+			BaseURL:            opts.baseURL,
+			APIKey:             env.APIKey,
+			Protocol:           opts.protocol,
+			ThinkingLevel:      thinking,
+			Tools:              env.Tools,
+			SysPrompt:          env.SysPrompt,
+			BaseInstruction:    env.BaseInstruction,
+			ContextFiles:       env.ContextFiles,
+			AppendInstructions: env.AppendInstructions,
+			ResumeID:           resumeID,
+			Approve:            opts.approve,
+			Skills:             env.Skills,
+			Plugins:            env.Plugins,
+			ConfigPrompts:      opts.configPrompts,
+			CliPrompts:         opts.promptTemplates,
+			NoPromptTemplates:  opts.noPromptTemplates,
+			Dream:              opts.dreamCfg,
 		}); err != nil {
 			fmt.Fprintf(errOut, "pigo: %v\n", err)
 			return 1
@@ -527,7 +551,7 @@ func dispatch(ctx context.Context, opts cliOptions, out, errOut io.Writer) int {
 		return headless.RunHTTPStream(ctx, cfg, opts.prompt, resumeID, out, errOut)
 	}
 
-	env, err := run.SetupEnv(opts.model, opts.baseURL, opts.protocol, opts.provider, opts.apiKey, opts.noTools, opts.noSkills, opts.systemPrompt, opts.appendSystemPrompt, opts.memory.Memory.Enabled, run.NewToolPolicy(opts.allowedTools, opts.disallowedTools))
+	env, err := run.SetupEnv(opts.model, opts.baseURL, opts.protocol, opts.provider, opts.apiKey, opts.noTools, opts.noSkills, !opts.noContextFiles, opts.systemPrompt, opts.appendSystemPrompt, opts.pluginDirs, opts.memory.Memory.Enabled, run.NewToolPolicy(opts.allowedTools, opts.disallowedTools))
 	if err != nil {
 		fmt.Fprintf(errOut, "pigo: %v\n", err)
 		return setupExitCode(err)

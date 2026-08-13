@@ -73,6 +73,7 @@ func (d *responsesDriver) StreamCompletion(ctx context.Context, req CompletionRe
 		// Early "cannot build the stream": reference the provider, never a value.
 		return nil, fmt.Errorf("%s: missing API key", d.name)
 	}
+	req.Context.Messages = TransformMessages(req.Context.Messages, modelForRequest(d.name, req.Model, d.models), normalizeResponsesToolCallID)
 
 	opts := make([]option.RequestOption, 0, len(d.clientOpts)+2)
 	if d.baseURL != "" {

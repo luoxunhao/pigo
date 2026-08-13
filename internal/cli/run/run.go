@@ -18,11 +18,13 @@ import (
 	"github.com/smallnest/pigo/internal/agenttool"
 	"github.com/smallnest/pigo/internal/builtinskills"
 	"github.com/smallnest/pigo/internal/cli/config"
+	"github.com/smallnest/pigo/internal/contextbuild"
 	"github.com/smallnest/pigo/internal/hooks"
 	"github.com/smallnest/pigo/internal/memory"
 	"github.com/smallnest/pigo/internal/plugin"
 	"github.com/smallnest/pigo/internal/provider"
 	"github.com/smallnest/pigo/internal/runtime"
+	"github.com/smallnest/pigo/internal/session"
 	"github.com/smallnest/pigo/internal/trust"
 )
 
@@ -41,6 +43,10 @@ type Env struct {
 	// AppendInstructions are the resolved --append-system-prompt texts so a
 	// shared ACP process can rebuild per-session prompts without re-resolving.
 	AppendInstructions []string
+	// BaseInstruction is the raw --system-prompt base text (may be empty).
+	// contextbuild layers tools/guidelines/context files/skills on top of it per
+	// request; Env.SysPrompt remains the pre-assembled legacy prompt.
+	BaseInstruction string
 
 	// Skills is the discovered skill set (loaded once here, empty under
 	// --no-skills). It is threaded into the REPL so each skill is registered as a
@@ -51,6 +57,11 @@ type Env struct {
 	// Plugins holds any loaded external plugins so the caller can Close them when
 	// the run ends. It is nil when no plugins were discovered.
 	Plugins *plugin.Manager
+
+	// ContextFiles enables per-directory AGENTS/CLAUDE context-file injection.
+	ContextFiles bool
+	// PluginDirs are the resolved --plugin-dir / config plugin_dirs roots.
+	PluginDirs []string
 
 	// Memory is the persistent memory store opened once for the run (issue #481),
 	// or nil when persistent memory is disabled (memory.enabled=false), tools are
@@ -75,7 +86,7 @@ type Env struct {
 // fully assembled tool set and then applied, so an unknown tool name is a usage
 // error rather than a silently ineffective boundary. It returns an error rather
 // than exiting so the caller owns exit-code mapping.
-func SetupEnv(model, baseURL, protocol, providerName, apiKey string, noTools, noSkills bool, systemPrompt string, appendSystemPrompt []string, memEnabled bool, policy ToolPolicy) (Env, error) {
+func SetupEnv(model, baseURL, protocol, providerName, apiKey string, noTools, noSkills, contextFiles bool, systemPrompt string, appendSystemPrompt []string, pluginDirs []string, memEnabled bool, policy ToolPolicy) (Env, error) {
 	cwd, _ := os.Getwd()
 	prov, resolvedName, resolvedKey, wireModel, err := resolveStartupProvider(model, baseURL, protocol, providerName, apiKey)
 	if err != nil {
@@ -106,7 +117,31 @@ func SetupEnv(model, baseURL, protocol, providerName, apiKey string, noTools, no
 	// disabling tools (--no-tools) skips plugin discovery entirely.
 	var mgr *plugin.Manager
 	if !noTools {
-		if m, err := plugin.Discover(PluginsDir(), os.Stderr, os.Stderr); err == nil {
+		mgr = &plugin.Manager{}
+		dirs := []string{PluginsDir()}
+		for _, dir := range pluginDirs {
+			if dir == "" {
+				continue
+			}
+			if !filepath.IsAbs(dir) {
+				dir = filepath.Join(cwd, dir)
+			}
+			dirs = append(dirs, filepath.Clean(dir))
+		}
+		seen := map[string]bool{}
+		for _, dir := range dirs {
+			if dir == "" || seen[dir] {
+				continue
+			}
+			seen[dir] = true
+			m, err := plugin.Discover(dir, os.Stderr, os.Stderr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "pigo: plugin discovery failed for %s: %v\n", dir, err)
+				continue
+			}
+			mgr.Merge(m)
+		}
+		if m := mgr; m != nil && len(m.Tools()) > 0 {
 			tools = append(tools, m.Tools()...)
 			for _, spec := range m.Subagents() {
 				tool, err := PluginSubagentTool(cwd, policy, model, resolvedName, prov, resolvedKey, spec, m.Tools())
@@ -115,9 +150,6 @@ func SetupEnv(model, baseURL, protocol, providerName, apiKey string, noTools, no
 				}
 				tools = append(tools, tool)
 			}
-			mgr = m
-		} else {
-			fmt.Fprintf(os.Stderr, "pigo: plugin discovery failed: %v\n", err)
 		}
 	}
 	// Enforce the --allowed-tools/--disallowed-tools boundary now that the set is
@@ -170,9 +202,67 @@ func SetupEnv(model, baseURL, protocol, providerName, apiKey string, noTools, no
 		SysPrompt:          sysPrompt,
 		Model:              model,
 		AppendInstructions: appends,
+		BaseInstruction:    systemPrompt,
 		Skills:             skills,
 		Plugins:            mgr,
 		Memory:             memStore,
+		ContextFiles:       contextFiles,
+		PluginDirs:         pluginDirs,
+	}, nil
+}
+
+// ContextBuildInput carries the session projection + run environment pieces
+// frontends need to assemble one contextbuild session.
+type ContextBuildInput struct {
+	Project            *session.ProjectLeaf
+	BaseInstruction    string
+	Cwd                string
+	ContextFiles       bool
+	AppendInstructions []string
+	Skills             []*runtime.Skill
+	AllTools           []agentcore.AgentTool
+	Plugins            *plugin.Manager
+	Reminders          *runtime.ReminderRegistry
+	Warn               io.Writer
+}
+
+// ContextBuild is the assembled per-session contextbuild state: the projected
+// session context, the injected deps, and the per-request options.
+type ContextBuild struct {
+	Ctx  *contextbuild.SessionContext
+	Deps contextbuild.BuildDeps
+	Req  contextbuild.RequestOptions
+}
+
+// NewContextBuild projects a ProjectLeaf into a contextbuild session and wires
+// the plugin declarations into a session-level registry. The returned
+// RequestBuilder seam is installed into runtime.LoopConfig by frontends.
+func NewContextBuild(in ContextBuildInput) (*ContextBuild, error) {
+	reg := contextbuild.NewRegistry()
+	if in.Plugins != nil {
+		contextbuild.RegisterPluginContributions(reg, in.Plugins, in.Warn)
+	}
+	sess, err := contextbuild.BuildSessionContext(in.Project, contextbuild.SessionBuildOptions{Registry: reg})
+	if err != nil {
+		return nil, err
+	}
+	return &ContextBuild{
+		Ctx: sess,
+		Deps: contextbuild.BuildDeps{
+			Registry:  reg,
+			Reminders: in.Reminders,
+			Convert:   contextbuild.ConvertToLlm,
+		},
+		Req: contextbuild.RequestOptions{
+			Cwd:                 in.Cwd,
+			BaseInstruction:     in.BaseInstruction,
+			AppendInstructions:  in.AppendInstructions,
+			ContextFilesEnabled: in.ContextFiles,
+			Skills:              in.Skills,
+			AllTools:            in.AllTools,
+			GlobalAgentDir:      ConfigDir(),
+			ReadFile:            os.ReadFile,
+		},
 	}, nil
 }
 
