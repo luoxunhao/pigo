@@ -70,3 +70,5 @@ book/images/*.pdf
 # ACP diagnostic proxy artifacts
 acp-wire.log
 cmd/acp-proxy/
+
+.worktrees/

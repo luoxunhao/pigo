@@ -44,6 +44,10 @@ _Avoid_: prompt queue, turn queue
 pigo's default context-window management behavior, enabled by resolved configuration whenever the model context window is known; it is not exposed as an ACP slash command.
 _Avoid_: autocompact command, manual compaction
 
+**Context building**:
+The pipeline that assembles a provider request's system prompt, session messages, tools, and per-turn dynamic context from persisted session state and project resources.
+_Avoid_: context management, context storage, context compaction
+
 **Startup info**:
 A plain-text assistant block emitted after `session/new` with pigo version, model/provider, cwd, and capability counts; suppressed by `PIGO_QUIET_STARTUP=true` and never emitted on `session/load`.
 _Avoid_: banner, splash, welcome message
@@ -87,3 +91,15 @@ _Avoid_: transcript reload, session restore
 **Export resource link**:
 An ACP `resource_link` content block with a `file://` URI emitted after `/export` so clients can open or download the exported session file.
 _Avoid_: export path, download link
+
+**EntryProjector**:
+A registered projection that converts a custom session entry into agent messages for the request context; at most one projector is registered per custom entry type.
+_Avoid_: custom message mapper, entry converter
+
+**TransformContext**:
+A per-request message-list transformation applied in registration order before conversion to provider messages; output is never written back to persisted history.
+_Avoid_: context hook, message preprocessor
+
+**Extension registry**:
+The session-scoped registry that collects EntryProjector and TransformContext seams from built-ins, hooks, and plugin declarations.
+_Avoid_: context plugin system, hook registry
