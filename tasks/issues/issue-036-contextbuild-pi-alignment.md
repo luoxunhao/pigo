@@ -2,7 +2,7 @@
 
 ## Description
 
-按 `tasks/spec-contextbuild-pi-alignment.md` 实施 contextbuild：新建 `internal/contextbuild`，统一切换全前端，按 07 验收标准建立 golden parity corpus。决策源为 `.scratch/contextbuild-pi-alignment/map.md` 与 `issues/01-09`。
+按 `tasks/spec/spec-015-contextbuild-pi-alignment.md` 实施 contextbuild：新建 `internal/contextbuild`，统一切换全前端，按 07 验收标准建立 golden parity corpus。决策源为 `.scratch/contextbuild-pi-alignment/map.md` 与 `issues/01-09`。
 
 ## Acceptance Criteria
 
