@@ -266,7 +266,7 @@ func TestAgentLoopPrepareNextTurnSwapsModel(t *testing.T) {
 	}
 }
 
-func TestAgentLoopLengthFailsToolCalls(t *testing.T) {
+func TestAgentLoopLengthEndsTurnWithoutToolExecution(t *testing.T) {
 	// Turn 1: tool call but truncated (length). Turn 2: end.
 	truncated := oneToolAssistant("c1", "echo")
 	truncated.StopReason = agentcore.StopReasonLength
@@ -281,15 +281,94 @@ func TestAgentLoopLengthFailsToolCalls(t *testing.T) {
 	if countKind(kinds, agentcore.EventToolExecutionEnd) != 0 {
 		t.Errorf("truncated message must not execute tools, got %v", kinds)
 	}
-	// A failed tool result must have been synthesized.
-	var foundFail bool
+	last := agentcore.LastAssistantOf(msgs)
+	if last == nil || last.StopReason != agentcore.StopReasonLength {
+		t.Fatalf("last = %+v, want length stop", last)
+	}
+	if len(last.ToolCalls()) != 0 {
+		t.Errorf("truncated tool calls must be dropped, got %+v", last.ToolCalls())
+	}
+}
+
+func TestAgentLoopLengthEndsTurnPreservingText(t *testing.T) {
+	p := &fauxProvider{
+		name:   "faux",
+		models: []provider.Model{{Provider: "faux", ID: "faux"}},
+		turns: []fauxTurn{
+			lengthTextToolTurn("partial html", "c1", "write", `{"path":"x"`),
+		},
+	}
+	cfg := newFauxRunCfg(p, echoTool("write", agentcore.ToolExecutionParallel, false))
+	agentCtx := &agentcore.AgentContext{Messages: agentcore.MessageList{agentcore.UserMessage{
+		RoleField: agentcore.RoleUser,
+		Content:   agentcore.ContentList{agentcore.NewTextContent("go")},
+	}}}
+
+	kinds, msgs := collectStream(t, agentLoop(context.Background(), agentCtx, cfg))
+	if p.callCount() != 1 {
+		t.Fatalf("provider calls = %d, want 1 (length ends the turn)", p.callCount())
+	}
+	if countKind(kinds, agentcore.EventToolExecutionEnd) != 0 {
+		t.Errorf("truncated tool call must not execute, got %v", kinds)
+	}
+	last := agentcore.LastAssistantOf(msgs)
+	if last == nil || last.StopReason != agentcore.StopReasonLength {
+		t.Fatalf("last = %+v, want length stop", last)
+	}
+	if got := agentcore.ContentToText(last.Content); got != "partial html" {
+		t.Errorf("preserved text = %q, want %q", got, "partial html")
+	}
+	if calls := last.ToolCalls(); len(calls) != 0 {
+		t.Errorf("truncated tool calls must be dropped, got %+v", calls)
+	}
+}
+
+func TestAgentLoopLengthDoesNotInjectShortReplyGuidance(t *testing.T) {
+	p := &fauxProvider{
+		name:   "faux",
+		models: []provider.Model{{Provider: "faux", ID: "faux"}},
+		turns: []fauxTurn{
+			lengthTextToolTurn("part one", "c1", "write", `{"path":"a"`),
+			lengthTextToolTurn("part two", "c2", "write", `{"path":"b"`),
+			lengthTextToolTurn("part three", "c3", "write", `{"path":"c"`),
+		},
+	}
+	cfg := newFauxRunCfg(p, echoTool("write", agentcore.ToolExecutionParallel, false))
+	served := 0
+	cfg.GetFollowUpMessages = func(context.Context, *agentcore.AgentContext) []agentcore.AgentMessage {
+		if served < 2 {
+			served++
+			return []agentcore.AgentMessage{agentcore.UserMessage{
+				RoleField: agentcore.RoleUser,
+				Content:   agentcore.ContentList{agentcore.NewTextContent("continue")},
+			}}
+		}
+		return nil
+	}
+	agentCtx := &agentcore.AgentContext{Messages: agentcore.MessageList{agentcore.UserMessage{
+		RoleField: agentcore.RoleUser,
+		Content:   agentcore.ContentList{agentcore.NewTextContent("go")},
+	}}}
+
+	_, msgs := collectStream(t, agentLoop(context.Background(), agentCtx, cfg))
+	if p.callCount() != 3 {
+		t.Fatalf("provider calls = %d, want 3 (each length ends then follow-up continues)", p.callCount())
+	}
 	for _, m := range msgs {
-		if tr, ok := m.(agentcore.ToolResultMessage); ok && tr.IsError && tr.ToolCallID == "c1" {
-			foundFail = true
+		if um, ok := m.(agentcore.UserMessage); ok {
+			if text := textContentOf(um.Content); strings.Contains(text, "invalid tool calls") {
+				t.Fatalf("short-reply guidance must not be injected for length turns: %q", text)
+			}
 		}
 	}
-	if !foundFail {
-		t.Errorf("expected a synthesized failed tool result for the truncated call")
+	last := agentcore.LastAssistantOf(msgs)
+	if last == nil || last.StopReason != agentcore.StopReasonLength {
+		t.Fatalf("last = %+v, want length stop", last)
+	}
+	for _, m := range p.requestAt(1).Context.Messages {
+		if a, ok := m.(agentcore.AssistantMessage); ok && len(a.ToolCalls()) > 0 {
+			t.Fatalf("truncated tool call leaked into the next request: %+v", a.ToolCalls())
+		}
 	}
 }
 
@@ -338,7 +417,24 @@ func lengthToolTurn(id, name, rawArgs string) fauxTurn {
 	}
 }
 
-func TestAgentLoopLengthSanitizesInvalidToolArgs(t *testing.T) {
+func lengthTextToolTurn(text, id, name, rawArgs string) fauxTurn {
+	partial := agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant}
+	withContent := partial
+	withContent.Content = agentcore.ContentList{
+		agentcore.NewTextContent(text),
+		agentcore.NewToolCallContent(id, name, json.RawMessage(rawArgs)),
+	}
+	final := withContent
+	final.StopReason = agentcore.StopReasonLength
+	return fauxTurn{
+		provider.StreamStartEvent{Partial: partial},
+		provider.StreamTextEvent{Partial: withContent},
+		provider.StreamToolCallEvent{Partial: withContent},
+		provider.StreamDoneEvent{Message: final},
+	}
+}
+
+func TestAgentLoopLengthDropsTruncatedToolCalls(t *testing.T) {
 	p := &fauxProvider{
 		name:   "faux",
 		models: []provider.Model{{Provider: "faux", ID: "faux"}},
@@ -351,91 +447,62 @@ func TestAgentLoopLengthSanitizesInvalidToolArgs(t *testing.T) {
 	agentCtx := &agentcore.AgentContext{Messages: agentcore.MessageList{agentcore.UserMessage{RoleField: agentcore.RoleUser}}}
 	collectStream(t, agentLoop(context.Background(), agentCtx, cfg))
 
-	if p.callCount() != 2 {
-		t.Fatalf("provider calls = %d, want 2", p.callCount())
+	if p.callCount() != 1 {
+		t.Fatalf("provider calls = %d, want 1 (length ends the turn)", p.callCount())
 	}
-	req := p.requestAt(1)
-	found := false
-	for _, m := range req.Context.Messages {
-		if a, ok := m.(agentcore.AssistantMessage); ok {
-			for _, tc := range a.ToolCalls() {
-				if tc.ID != "c1" {
-					continue
-				}
-				found = true
-				if got := string(tc.Arguments); got != "{}" {
-					t.Errorf("sanitized tool args = %q, want {}", got)
-				}
-			}
+	for _, m := range p.requestAt(0).Context.Messages {
+		if a, ok := m.(agentcore.AssistantMessage); ok && len(a.ToolCalls()) > 0 {
+			t.Fatalf("truncated tool call leaked into the next request: %+v", a.ToolCalls())
 		}
-	}
-	if !found {
-		t.Error("sanitized tool call not found in the next provider request")
 	}
 }
 
-func TestAgentLoopLengthInjectsShortReplyGuidance(t *testing.T) {
+func TestAgentLoopLengthEndsAfterOneTurn(t *testing.T) {
 	p := &fauxProvider{
 		name:   "faux",
 		models: []provider.Model{{Provider: "faux", ID: "faux"}},
 		turns: []fauxTurn{
 			lengthToolTurn("c1", "echo", `{"path":"x"`),
-			lengthToolTurn("c2", "echo", `{"path":"y"`),
-			lengthToolTurn("c3", "echo", `{"path":"z"`),
-			textTurn("concise summary"),
 		},
 	}
 	cfg := newFauxRunCfg(p, echoTool("echo", agentcore.ToolExecutionParallel, false))
 	agentCtx := &agentcore.AgentContext{Messages: agentcore.MessageList{agentcore.UserMessage{RoleField: agentcore.RoleUser}}}
 	_, msgs := collectStream(t, agentLoop(context.Background(), agentCtx, cfg))
 
-	if p.callCount() != 4 {
-		t.Fatalf("provider calls = %d, want 4 (guidance injected before the 4th turn)", p.callCount())
+	if p.callCount() != 1 {
+		t.Fatalf("provider calls = %d, want 1 (length ends the turn)", p.callCount())
 	}
-	req := p.requestAt(3)
-	found := false
-	for _, m := range req.Context.Messages {
+	last := agentcore.LastAssistantOf(msgs)
+	if last == nil || last.StopReason != agentcore.StopReasonLength {
+		t.Fatalf("last = %+v, want length stop", last)
+	}
+	for _, m := range msgs {
 		if um, ok := m.(agentcore.UserMessage); ok {
-			if text := textContentOf(um.Content); strings.Contains(text, "output token limit") {
-				found = true
+			if text := textContentOf(um.Content); strings.Contains(text, "invalid tool calls") {
+				t.Fatalf("short-reply guidance must not be injected: %q", text)
 			}
 		}
 	}
-	if !found {
-		t.Error("short-reply guidance was not injected after repeated truncation")
-	}
-	last, ok := msgs[len(msgs)-1].(agentcore.AssistantMessage)
-	if !ok || last.StopReason != agentcore.StopReasonEndTurn || textContentOf(last.Content) != "concise summary" {
-		t.Fatalf("last message = %T %+v, want the concise summary end_turn", msgs[len(msgs)-1], msgs[len(msgs)-1])
-	}
 }
 
-func TestAgentLoopLengthStopsAfterGuidanceExhausted(t *testing.T) {
+func TestAgentLoopLengthDoesNotEscalateToError(t *testing.T) {
 	p := &fauxProvider{
 		name:   "faux",
 		models: []provider.Model{{Provider: "faux", ID: "faux"}},
 		turns: []fauxTurn{
 			lengthToolTurn("c1", "echo", `{"path":"a"`),
-			lengthToolTurn("c2", "echo", `{"path":"b"`),
-			lengthToolTurn("c3", "echo", `{"path":"c"`),
-			lengthToolTurn("c4", "echo", `{"path":"d"`),
-			lengthToolTurn("c5", "echo", `{"path":"e"`),
-			lengthToolTurn("c6", "echo", `{"path":"f"`),
 		},
 	}
 	cfg := newFauxRunCfg(p, echoTool("echo", agentcore.ToolExecutionParallel, false))
 	agentCtx := &agentcore.AgentContext{Messages: agentcore.MessageList{agentcore.UserMessage{RoleField: agentcore.RoleUser}}}
 	_, msgs := collectStream(t, agentLoop(context.Background(), agentCtx, cfg))
 
-	if p.callCount() != 6 {
-		t.Fatalf("provider calls = %d, want 6 (two guidance rounds before giving up)", p.callCount())
+	if p.callCount() != 1 {
+		t.Fatalf("provider calls = %d, want 1 (length ends the turn)", p.callCount())
 	}
-	last, ok := msgs[len(msgs)-1].(agentcore.AssistantMessage)
-	if !ok || last.StopReason != agentcore.StopReasonError {
-		t.Fatalf("last message = %T %+v, want an error stop", msgs[len(msgs)-1], msgs[len(msgs)-1])
-	}
-	if !strings.Contains(last.ErrorMessage, "despite short-reply guidance") {
-		t.Errorf("error message = %q, want a short-reply guidance explanation", last.ErrorMessage)
+	last := agentcore.LastAssistantOf(msgs)
+	if last == nil || last.StopReason != agentcore.StopReasonLength {
+		t.Fatalf("last = %+v, want length stop", last)
 	}
 }
 
@@ -471,7 +538,7 @@ func TestAgentLoopInvalidArgsInjectsGuidance(t *testing.T) {
 	found := false
 	for _, m := range req.Context.Messages {
 		if um, ok := m.(agentcore.UserMessage); ok {
-			if text := textContentOf(um.Content); strings.Contains(text, "output token limit") && strings.Contains(text, "invalid tool calls") {
+			if text := textContentOf(um.Content); strings.Contains(text, "invalid tool calls") {
 				found = true
 			}
 		}
@@ -514,52 +581,35 @@ func TestAgentLoopInvalidArgsStopsAfterGuidanceExhausted(t *testing.T) {
 	}
 }
 
-func TestAgentLoopMixedLengthInvalidArgsInjectsGuidance(t *testing.T) {
+func TestAgentLoopLengthEndsBeforeInvalidArgs(t *testing.T) {
 	p := &fauxProvider{
 		name:   "faux",
 		models: []provider.Model{{Provider: "faux", ID: "faux"}},
 		turns: []fauxTurn{
 			lengthToolTurn("c1", "write", `{"path":"x"`),
 			toolCallTurn("c2", "write", `{}`),
-			lengthToolTurn("c3", "write", `{"path":"y"`),
-			textTurn("concise summary"),
 		},
 	}
 	cfg := newFauxRunCfg(p, invalidArgsTool("write"))
 	agentCtx := &agentcore.AgentContext{Messages: agentcore.MessageList{agentcore.UserMessage{RoleField: agentcore.RoleUser}}}
 	_, msgs := collectStream(t, agentLoop(context.Background(), agentCtx, cfg))
 
-	if p.callCount() != 4 {
-		t.Fatalf("provider calls = %d, want 4 (mixed degenerate turns still count)", p.callCount())
+	if p.callCount() != 1 {
+		t.Fatalf("provider calls = %d, want 1 (length ends before invalid args)", p.callCount())
 	}
-	req := p.requestAt(3)
-	found := false
-	for _, m := range req.Context.Messages {
-		if um, ok := m.(agentcore.UserMessage); ok {
-			if text := textContentOf(um.Content); strings.Contains(text, "invalid tool calls") {
-				found = true
-			}
-		}
-	}
-	if !found {
-		t.Error("mixed length/invalid-args turns must not reset the degenerate breaker")
-	}
-	last, ok := msgs[len(msgs)-1].(agentcore.AssistantMessage)
-	if !ok || last.StopReason != agentcore.StopReasonEndTurn {
-		t.Fatalf("last message = %T %+v, want recovery end_turn", msgs[len(msgs)-1], msgs[len(msgs)-1])
+	last := agentcore.LastAssistantOf(msgs)
+	if last == nil || last.StopReason != agentcore.StopReasonLength {
+		t.Fatalf("last = %+v, want length stop", last)
 	}
 }
 
-func TestAgentLoopLengthCounterResetsOnNormalTurn(t *testing.T) {
+func TestAgentLoopLengthFollowUpContinues(t *testing.T) {
 	p := &fauxProvider{
 		name:   "faux",
 		models: []provider.Model{{Provider: "faux", ID: "faux"}},
 		turns: []fauxTurn{
 			lengthToolTurn("c1", "echo", `{"path":"a"`),
 			textTurn("normal"),
-			lengthToolTurn("c2", "echo", `{"path":"b"`),
-			lengthToolTurn("c3", "echo", `{"path":"c"`),
-			lengthToolTurn("c4", "echo", `{"path":"d"`),
 		},
 	}
 	cfg := newFauxRunCfg(p, echoTool("echo", agentcore.ToolExecutionParallel, false))
@@ -572,12 +622,14 @@ func TestAgentLoopLengthCounterResetsOnNormalTurn(t *testing.T) {
 		return []agentcore.AgentMessage{agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("continue")}}}
 	}
 	agentCtx := &agentcore.AgentContext{Messages: agentcore.MessageList{agentcore.UserMessage{RoleField: agentcore.RoleUser}}}
-	collectStream(t, agentLoop(context.Background(), agentCtx, cfg))
+	_, msgs := collectStream(t, agentLoop(context.Background(), agentCtx, cfg))
 
-	// One length, one normal reset, then three consecutive lengths inject
-	// guidance before the fallback end_turn finishes the run.
-	if p.callCount() != 6 {
-		t.Fatalf("provider calls = %d, want 6 (counter reset on the normal turn)", p.callCount())
+	if p.callCount() != 2 {
+		t.Fatalf("provider calls = %d, want 2 (length then follow-up normal turn)", p.callCount())
+	}
+	last := agentcore.LastAssistantOf(msgs)
+	if last == nil || last.StopReason != agentcore.StopReasonEndTurn || textContentOf(last.Content) != "normal" {
+		t.Fatalf("last = %+v, want the normal end_turn", last)
 	}
 }
 

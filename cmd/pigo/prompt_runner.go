@@ -11,6 +11,7 @@ import (
 
 	"github.com/smallnest/pigo/internal/acp"
 	"github.com/smallnest/pigo/internal/agentcore"
+	"github.com/smallnest/pigo/internal/agenttool"
 	"github.com/smallnest/pigo/internal/cli"
 	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/cli/prompts"
@@ -73,6 +74,31 @@ type serveComponents struct {
 	compact httpapi.CompactFunc
 	dream   httpapi.DreamFunc
 	goal    httpapi.GoalFunc
+}
+
+type promptRunState struct {
+	model    string
+	provider string
+	thinking string
+}
+
+// resolvePromptRunState derives the provider-visible run state from lane.config,
+// falling back to process defaults only when the projection is incomplete.
+func resolvePromptRunState(proj *session.ProjectLeaf, fallbackModel, fallbackProvider, fallbackThinking string) promptRunState {
+	st := promptRunState{model: fallbackModel, provider: fallbackProvider, thinking: fallbackThinking}
+	if proj == nil {
+		return st
+	}
+	if proj.Model != "" {
+		st.model = proj.Model
+	}
+	if proj.Provider != "" {
+		st.provider = proj.Provider
+	}
+	if proj.ThinkingLevel != "" {
+		st.thinking = proj.ThinkingLevel
+	}
+	return st
 }
 
 func makePromptRunner(opts cliOptions) (*serveComponents, error) {
@@ -144,19 +170,8 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 		sessions: make(map[string]*serveEventState),
 		toolArgs: make(map[string]any),
 	}
+	var observations sync.Map
 	promptRun := func(ctx context.Context, run httpapi.PromptRun) (gen.PromptResponse, error) {
-		model := run.Model
-		if model == "" {
-			model = env.Model
-		}
-		thinking := run.ThinkingLevel
-		if thinking == "" {
-			thinking = opts.thinkingLevel
-		}
-		if thinking == "" {
-			thinking = string(agentcore.ThinkingMedium)
-		}
-
 		var history agentcore.MessageList
 		store, storeErr := sessionstore.OpenForWorkspace(pigoHome, run.Directory)
 		if storeErr != nil {
@@ -175,6 +190,10 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 		history = proj.Messages
 		curLeaf = proj.LeafID
 		isFirstPrompt := len(history) == 0
+		// lane.config is the runtime authority; prompt requests no longer carry
+		// model/thinking (rejected at the HTTP/ACP boundary).
+		st := resolvePromptRunState(proj, env.Model, runner.ProviderName, string(agentcore.ThinkingMedium))
+		model, providerName, thinking := st.model, st.provider, st.thinking
 		build, buildErr := clirun.NewContextBuild(clirun.ContextBuildInput{
 			Project:            proj,
 			BaseInstruction:    env.BaseInstruction,
@@ -191,7 +210,7 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 			return gen.PromptResponse{}, buildErr
 		}
 		build.Ctx.Model = model
-		build.Ctx.Provider = runner.ProviderName
+		build.Ctx.Provider = providerName
 		build.Ctx.ThinkingLevel = agentcore.ThinkingLevel(thinking)
 		rb := contextbuild.RequestBuilder(build.Ctx, build.Deps, build.Req)
 		var lastPrompt string
@@ -226,7 +245,11 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 			}
 			return err
 		}
-		msgs, last, err := runner.RunWithTools(ctx, run.Text, nil, history, env.SysPrompt, env.Tools, model, thinking, run.BeforeToolCall, onEvent, acp.TurnHooks{OnCompaction: onCompaction, RequestBuilder: requestBuilder})
+		// Observed-state is per session: a shared ACP process must not let one
+		// session's read authorize another session's edit.
+		obsAny, _ := observations.LoadOrStore(run.SessionID, agenttool.NewFileObservationRecorder())
+		sessionTools := agenttool.WithFileObservation(env.Tools, obsAny.(*agenttool.FileObservationRecorder))
+		msgs, last, err := runner.RunWithTools(ctx, run.Text, nil, history, env.SysPrompt, sessionTools, model, thinking, run.BeforeToolCall, onEvent, acp.TurnHooks{OnCompaction: onCompaction, RequestBuilder: requestBuilder})
 		if store != nil && (len(msgs) > 0 || err != nil) {
 			tail := msgs
 			if len(history) > 0 && len(msgs) >= len(history) {
@@ -234,7 +257,7 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 			}
 			header.ID = run.SessionID
 			header.Model = model
-			header.Provider = runner.ProviderName
+			header.Provider = providerName
 			if lastPrompt != "" {
 				header.SystemPrompt = lastPrompt
 			}

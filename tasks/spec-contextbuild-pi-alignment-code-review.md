@@ -141,3 +141,7 @@
 - parity corpus 全绿；`refresh.ps1` 可重新生成并 diff；未注册偏差 fail。
 - `session/load` 与 `session_info_update` 的 `laneConfig` 在 model/thinking 变更后立即反映。
 - REPL / TUI / headless / serve / ACP 回归通过（真实客户端验证按用户既有偏好另行执行）。
+
+## Backlog
+
+- K1: `activeToolNames` 更新路径暂不接入 `session/update`；`lane.config.ActiveToolNames` 保持 `nil`（= 全部工具）。后续出现真实需求时再实现；完整决策链见 `tasks/spec-lane-config-authority.md`。

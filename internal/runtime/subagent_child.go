@@ -181,18 +181,26 @@ func (s *ChildSession) ensurePersisted() error {
 		return st.SaveMetadata(meta)
 	}
 	now := time.Now().UTC()
+	seedCfg := s.NewRunConfig()
 	s.Header = session.SessionHeader{
 		Version:       session.SchemaVersion,
 		ID:            s.ID,
 		CreatedAt:     now,
 		UpdatedAt:     now,
+		Model:         seedCfg.LoopConfig.Model,
+		Provider:      seedCfg.LoopConfig.Provider,
 		SystemPrompt:  s.SystemPrompt,
 		Cwd:           s.Cwd,
 		ParentSession: s.ParentID,
 	}
-	meta = sstore.NewMetadata(s.ID, "Session", "pigo", "", s.Cwd)
+	laneCfg := &session.LaneConfig{
+		Model:         seedCfg.LoopConfig.Model,
+		Provider:      seedCfg.LoopConfig.Provider,
+		ThinkingLevel: string(seedCfg.LoopConfig.ThinkingLevel),
+	}
+	meta = sstore.NewMetadata(s.ID, "Session", "pigo", seedCfg.LoopConfig.Model, s.Cwd)
 	ApplySubagentMetadata(&meta, s.ParentID, s.ToolCallID, s.Type)
-	return st.Create(meta, s.Header, nil)
+	return st.CreateWithLaneConfig(meta, s.Header, nil, laneCfg)
 }
 
 func (s *ChildSession) persist() error {

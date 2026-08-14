@@ -403,10 +403,13 @@ func BuiltinTools(cwd string, disabled bool) []agentcore.AgentTool {
 	// A single recorder is shared by the write and edit tools so /rewind can roll
 	// back every mutation from a turn regardless of which tool made it.
 	snap := agenttool.NewFileSnapshotRecorder()
+	// A single observation recorder is shared by read/write/edit so a session's
+	// read authorizes later guarded mutations of the same file.
+	obs := agenttool.NewFileObservationRecorder()
 	return []agentcore.AgentTool{
-		&agenttool.ReadTool{Root: cwd, ExtraRoots: ReadableExtraRoots()},
-		&agenttool.WriteTool{Root: cwd, ExtraRoots: ReadableExtraRoots(), Snap: snap},
-		&agenttool.EditTool{Root: cwd, ExtraRoots: ReadableExtraRoots(), Snap: snap},
+		&agenttool.ReadTool{Root: cwd, ExtraRoots: ReadableExtraRoots(), Observe: obs},
+		&agenttool.WriteTool{Root: cwd, ExtraRoots: ReadableExtraRoots(), Snap: snap, Observe: obs},
+		&agenttool.EditTool{Root: cwd, ExtraRoots: ReadableExtraRoots(), Snap: snap, Observe: obs},
 		&agenttool.GrepTool{Root: cwd},
 		&agenttool.FindTool{Root: cwd},
 		&agenttool.BashTool{Dir: cwd},

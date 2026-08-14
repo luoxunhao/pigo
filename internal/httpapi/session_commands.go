@@ -100,7 +100,7 @@ func (s *SessionService) forkFrom(sourceID, directory, leafID string) (string, e
 	if err != nil {
 		return "", err
 	}
-	newHeader, path, err := store.ForkV4(sourceID, leafID, time.Now().UTC())
+	newHeader, laneCfg, path, err := store.ForkV4(sourceID, leafID, time.Now().UTC())
 	if err != nil {
 		return "", err
 	}
@@ -108,7 +108,7 @@ func (s *SessionService) forkFrom(sourceID, directory, leafID string) (string, e
 	meta.ParentSessionID = sourceID
 	meta.MessageCount = len(path)
 	meta.LastActiveAt = newHeader.UpdatedAt
-	if err := store.ImportV4Entries(meta, newHeader, path, nil); err != nil {
+	if err := store.ImportV4EntriesWithLaneConfig(meta, newHeader, path, nil, laneCfg); err != nil {
 		return "", err
 	}
 	return newHeader.ID, nil
@@ -303,14 +303,14 @@ func (s *SessionService) Import(directory, path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	newHeader, entries, facts, err := store.ImportV4(path, time.Now().UTC())
+	newHeader, laneCfg, entries, facts, err := store.ImportV4(path, time.Now().UTC())
 	if err != nil {
 		return "", err
 	}
 	meta := sessionstore.NewMetadata(newHeader.ID, "Session", "pigo", newHeader.Model, directory)
 	meta.ParentSessionID = newHeader.ParentSession
 	meta.LastActiveAt = newHeader.UpdatedAt
-	if err := store.ImportV4Entries(meta, newHeader, entries, facts); err != nil {
+	if err := store.ImportV4EntriesWithLaneConfig(meta, newHeader, entries, facts, laneCfg); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("imported %d entries from %s -> session %s", len(entries), path, newHeader.ID), nil

@@ -112,6 +112,12 @@ func (m *PromptManager) enqueue(sessionID string, req gen.PromptRequest) (*pendi
 	if req.Directory == "" {
 		return nil, InvalidParams("directory is required")
 	}
+	if req.Model != nil && *req.Model != "" {
+		return nil, InvalidParams("model must be configured through session/update, not prompt")
+	}
+	if req.ThinkingLevel != nil && *req.ThinkingLevel != "" {
+		return nil, InvalidParams("thinkingLevel must be configured through session/update, not prompt")
+	}
 	st := m.stateFor(sessionID)
 	st.mu.Lock()
 	if len(st.queue) >= promptQueueLimit {

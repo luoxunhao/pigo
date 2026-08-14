@@ -12,9 +12,9 @@
 // Per-turn hooks after each turn_end: getSteeringMessages (pulled after tool
 // execution and injected before the next turn), prepareNextTurn (may swap
 // context / model / thinkingLevel), shouldStopAfterTurn (true ⇒ agent_end +
-// exit). Two stop reasons are handled specially: length (the response was
-// truncated by the token cap) fails every tool call so the model resends
-// (failToolCallsFromTruncatedMessage); error / aborted end the run immediately.
+// exit). Two stop reasons are handled specially: length ends the turn while
+// preserving committed text and dropping truncated tool calls; error / aborted
+// end the run immediately.
 //
 // agentLoop starts a fresh run from a prompt already appended to the context.
 package runtime
@@ -39,17 +39,16 @@ func nowMillis() int64 { return time.Now().UnixMilli() }
 
 // maxConsecutiveLength bounds how many degenerate turns in a row may pass
 // before the run is steered or terminated. A degenerate turn is a response that
-// made no progress: it was truncated by the output token cap, or every tool
-// call failed argument validation / was synthesized from a truncated call. A
-// normal turn resets the counter.
+// made no progress: every tool call failed argument validation or was a legacy
+// truncated-call failure. A normal turn resets the counter.
 const maxConsecutiveLength = 3
 
 // maxForcedShortReplies bounds how many times pigo injects short-reply
-// guidance after repeated output-token truncation before giving up.
+// guidance after repeated degenerate tool calls before giving up.
 const maxForcedShortReplies = 1
 
-const shortReplyGuidance = "Your previous responses hit the output token limit or produced invalid tool calls repeatedly. " +
-	"Do not retry the long output or the failing call. Reply with a concise summary of at most 300 words and do not call tools."
+const shortReplyGuidance = "Your previous responses produced invalid tool calls repeatedly. " +
+	"Do not retry the failing call. Reply with a concise summary of at most 300 words and do not call tools."
 
 // maxUpstreamRetries bounds how many times a turn is retried after a transient
 // upstream rate-limit / overload error before the run fails. The backoff grows
@@ -235,6 +234,7 @@ func runLoop(ctx context.Context, agentCtx *agentcore.AgentContext, cfg RunConfi
 	}
 
 	for { // outer loop: pending / follow-up messages
+	innerLoop:
 		for { // inner loop: turns until no tool calls
 			if err := emit(agentcore.TurnStartEvent{}); err != nil {
 				finish()
@@ -250,52 +250,22 @@ func runLoop(ctx context.Context, agentCtx *agentcore.AgentContext, cfg RunConfi
 
 			switch assistant.StopReason {
 			case agentcore.StopReasonLength:
-				degenerateTurns++
-				guidance := ""
-				// Repair the stored assistant message before the next provider
-				// request: a truncated tool call can carry invalid JSON, which
-				// upstream would reject or hang on. Replace bad arguments with a
-				// minimal valid object while keeping id/name so the synthesized
-				// tool result still matches.
+				// Output-token truncation is a normal turn end, not a retryable
+				// failure: keep committed text, drop tool calls that may have
+				// been cut off mid-arguments, and let the caller continue.
+				assistant = stripTruncatedToolCalls(assistant)
 				if n := len(agentCtx.Messages); n > 0 {
-					if a, ok := agentCtx.Messages[n-1].(agentcore.AssistantMessage); ok {
-						agentCtx.Messages[n-1] = sanitizeTruncatedToolCalls(a)
-					}
+					agentCtx.Messages[n-1] = assistant
 				}
-				if degenerateTurns >= maxConsecutiveLength {
-					forcedShortReplies++
-					if forcedShortReplies > maxForcedShortReplies {
-						errMsg := agentcore.AssistantMessage{
-							RoleField:    agentcore.RoleAssistant,
-							StopReason:   agentcore.StopReasonError,
-							ErrorMessage: "run stopped after repeated truncated responses despite short-reply guidance (output token limit)",
-						}
-						agentCtx.Messages = append(agentCtx.Messages, errMsg)
-						_ = emit(agentcore.TurnEndEvent{Message: errMsg})
-						finish()
-						return
-					}
-					degenerateTurns = 0
-					guidance = shortReplyGuidance
-				}
-				// Truncated by the token cap: fail every tool call so the model
-				// resends, then continue feeding back.
-				toolResults := failToolCallsFromTruncatedMessage(agentCtx, assistant)
-				if err := emit(agentcore.TurnEndEvent{Message: assistant, ToolResults: toolResults}); err != nil {
+				if err := emit(agentcore.TurnEndEvent{Message: assistant}); err != nil {
 					finish()
 					return
 				}
-				if afterTurn(ctx, agentCtx, &cfg, true, emit, tel) {
+				if afterTurn(ctx, agentCtx, &cfg, false, emit, tel) {
 					finish()
 					return
 				}
-				if guidance != "" {
-					agentCtx.Messages = append(agentCtx.Messages, agentcore.UserMessage{
-						RoleField: agentcore.RoleUser,
-						Content:   agentcore.ContentList{agentcore.NewTextContent(guidance)},
-					})
-				}
-				continue
+				break innerLoop
 			case agentcore.StopReasonError, agentcore.StopReasonAborted:
 				if assistant.StopReason == agentcore.StopReasonError &&
 					isRetryableUpstreamError(assistant.ErrorMessage) &&
@@ -380,7 +350,7 @@ func runLoop(ctx context.Context, agentCtx *agentcore.AgentContext, cfg RunConfi
 					errMsg := agentcore.AssistantMessage{
 						RoleField:    agentcore.RoleAssistant,
 						StopReason:   agentcore.StopReasonError,
-						ErrorMessage: "run stopped after repeated degenerate tool calls despite short-reply guidance (invalid arguments or output token limit)",
+						ErrorMessage: "run stopped after repeated degenerate tool calls despite short-reply guidance (invalid arguments)",
 					}
 					agentCtx.Messages = append(agentCtx.Messages, errMsg)
 					_ = emit(agentcore.TurnEndEvent{Message: errMsg})
@@ -589,38 +559,11 @@ func applyTurnUpdate(agentCtx *agentcore.AgentContext, cfg *RunConfig, upd *Turn
 	}
 }
 
-// failToolCallsFromTruncatedMessage produces an error tool-result message for
-// every tool call in a truncated (stopReason=length) assistant message, telling
-// the model the response was cut off and to resend. The results are appended to
-// the context and returned. Mirrors pi's failToolCallsFromTruncatedMessage.
-func failToolCallsFromTruncatedMessage(agentCtx *agentcore.AgentContext, assistant agentcore.AssistantMessage) []agentcore.ToolResultMessage {
-	calls := assistant.ToolCalls()
-	if len(calls) == 0 {
-		return nil
-	}
-	results := make([]agentcore.ToolResultMessage, 0, len(calls))
-	for _, c := range calls {
-		results = append(results, agentcore.ToolResultMessage{
-			RoleField:  agentcore.RoleToolResult,
-			ToolCallID: c.ID,
-			ToolName:   c.Name,
-			Content: agentcore.ContentList{agentcore.NewTextContent(
-				"The previous response was truncated because it hit the output token limit, " +
-					"so this tool call was not executed. Please send a shorter response and retry.")},
-			IsError: true,
-		})
-	}
-	for _, r := range results {
-		agentCtx.Messages = append(agentCtx.Messages, r)
-	}
-	return results
-}
-
 // degenerateToolTurn reports whether every tool result in a turn represents a
-// no-progress failure: argument validation errors, unknown-tool calls, or the
-// synthetic failure produced for a truncated tool call. A turn that executed
-// any tool (even one that returned IsError for an ordinary command failure)
-// counts as progress and resets the degenerate-turn breaker.
+// no-progress failure: argument validation errors, unknown-tool calls, or a
+// legacy truncated-call failure. A turn that executed any tool (even one that
+// returned IsError for an ordinary command failure) counts as progress and
+// resets the degenerate-turn breaker.
 func degenerateToolTurn(results []agentcore.ToolResultMessage) bool {
 	if len(results) == 0 {
 		return false
@@ -644,25 +587,17 @@ func isDegenerateToolError(text string) bool {
 		strings.Contains(text, "The previous response was truncated because it hit the output token limit")
 }
 
-// sanitizeTruncatedToolCalls returns a copy of msg with any tool call whose
-// arguments are not valid JSON replaced by `{}`. Truncated assistant messages
-// must never carry malformed arguments into the next provider request.
-func sanitizeTruncatedToolCalls(msg agentcore.AssistantMessage) agentcore.AssistantMessage {
-	changed := false
+// stripTruncatedToolCalls returns a copy of msg without tool calls. A
+// stopReason=length response may cut arguments mid-JSON; keeping the calls
+// would either execute corrupted input or pollute the next request with an
+// unresolved tool batch, so they are dropped while committed text survives.
+func stripTruncatedToolCalls(msg agentcore.AssistantMessage) agentcore.AssistantMessage {
 	content := make(agentcore.ContentList, 0, len(msg.Content))
 	for _, c := range msg.Content {
-		if tc, ok := c.(agentcore.ToolCallContent); ok {
-			if !json.Valid(tc.Arguments) {
-				tc.Arguments = json.RawMessage(`{}`)
-				changed = true
-			}
-			content = append(content, tc)
+		if _, ok := c.(agentcore.ToolCallContent); ok {
 			continue
 		}
 		content = append(content, c)
-	}
-	if !changed {
-		return msg
 	}
 	msg.Content = content
 	return msg

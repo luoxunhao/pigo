@@ -124,6 +124,9 @@ func encodeOpenAIRequest(req CompletionRequest) ([]byte, error) {
 		"stream":         true,
 		"stream_options": map[string]any{"include_usage": true},
 	}
+	if maxTok := maxOutputTokensFor(req); maxTok > 0 {
+		body["max_tokens"] = maxTok
+	}
 	// Reasoning effort: when a thinking level is requested, forward it as the
 	// OpenAI `reasoning_effort` field. Reasoning models (o-series, DeepSeek-R1,
 	// GLM-thinking, …) read this to open their reasoning channel; omitting it

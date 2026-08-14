@@ -75,10 +75,6 @@ type SessionHeader struct {
 	// omit it and still load; a session with an empty Cwd is treated as
 	// unattributed and never matches a project-scoped distill.
 	Cwd string `json:"cwd,omitempty"`
-	// LaneConfig is the authoritative lane.config register for the main lane.
-	// It is written to the lane_config table on create/update and loaded back
-	// into ProjectLeaf.Config by Store.Projection.
-	LaneConfig *LaneConfig `json:"laneConfig,omitempty"`
 	// ContextFrom is the id of the session this one inherited its collapsed
 	// context from (#480, "infinite context"). Empty when the session started
 	// with no inherited checkpoint. Optional and additive: older schemas (v1/v2/v3)

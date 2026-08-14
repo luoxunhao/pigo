@@ -110,6 +110,11 @@ func (r *RuntimeRunner) RunWithTools(ctx context.Context, prompt string, images 
 			ToolExecutorConfig: agenttool.ToolExecutorConfig{Registry: reg, BeforeToolCall: beforeToolCall},
 		},
 	}
+	if r.ConfiguredModels != nil {
+		if entry, ok := r.ConfiguredModels.Find(model); ok && entry.MaxTokens > 0 {
+			cfg.LoopConfig.Extra = map[string]any{"max_tokens": entry.MaxTokens}
+		}
+	}
 	if hooks.RequestBuilder != nil {
 		cfg.LoopConfig.RequestBuilder = hooks.RequestBuilder
 	}

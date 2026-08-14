@@ -84,9 +84,14 @@ func newTestDeps(t *testing.T, p provider.Provider) (replDeps, *sessionstore.Sto
 		Name:   "echo",
 		Expand: func(args string) string { return "expanded: " + args },
 	})
+	header := session.SessionHeader{ID: session.NewID(time.Now().UTC()), Model: "faux", Provider: "faux"}
+	cfg := &session.LaneConfig{Model: "faux", Provider: "faux", ThinkingLevel: "medium"}
+	if err := store.CreateWithLaneConfig(sessionstore.NewMetadata(header.ID, "Session", "pigo", "faux", ""), header, nil, cfg); err != nil {
+		t.Fatalf("create test session: %v", err)
+	}
 	deps := replDeps{
 		store:    store,
-		header:   session.SessionHeader{ID: session.NewID(time.Now().UTC()), Model: "faux", Provider: "faux"},
+		header:   header,
 		agentCtx: &agentcore.AgentContext{},
 		live:     live,
 		reg:      agenttool.NewToolRegistry(),

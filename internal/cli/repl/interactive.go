@@ -140,6 +140,11 @@ func Run(opts Options) error {
 		history = msgs
 	} else {
 		agentCtx = &agentcore.AgentContext{Tools: opts.Tools}
+		laneCfg := &session.LaneConfig{
+			Model:         opts.Model,
+			Provider:      opts.ProviderName,
+			ThinkingLevel: string(opts.ThinkingLevel),
+		}
 		header = session.SessionHeader{
 			ID:           session.NewID(now),
 			CreatedAt:    now,
@@ -148,17 +153,20 @@ func Run(opts Options) error {
 			Provider:     opts.ProviderName,
 			SystemPrompt: opts.SysPrompt,
 			Cwd:          cwd,
-			LaneConfig: &session.LaneConfig{
-				Model:         opts.Model,
-				Provider:      opts.ProviderName,
-				ThinkingLevel: string(opts.ThinkingLevel),
-			},
 		}
 		proj = &session.ProjectLeaf{
 			Model:         opts.Model,
 			Provider:      opts.ProviderName,
 			ThinkingLevel: string(opts.ThinkingLevel),
-			Config:        header.LaneConfig,
+			Config:        laneCfg,
+		}
+		if err := store.CreateWithLaneConfig(
+			sessionstore.NewMetadata(header.ID, "Session", "pigo", opts.Model, cwd),
+			header,
+			nil,
+			laneCfg,
+		); err != nil {
+			return err
 		}
 	}
 	build, buildErr := run.NewContextBuild(run.ContextBuildInput{
@@ -190,6 +198,16 @@ func Run(opts Options) error {
 		Creds:         creds,
 		ThinkingLevel: opts.ThinkingLevel,
 		ContextWindow: cli.DefaultContextWindow,
+	}
+	live.PersistConfig = func() {
+		if err := cli.PersistLaneConfig(store, header.ID, live); err != nil {
+			fmt.Fprintf(os.Stderr, "pigo: persist lane config: %v\n", err)
+		}
+	}
+	if opts.ResumeID != "" {
+		if err := cli.ApplyProjectionToLive(live, proj, opts.BaseURL, opts.Protocol, opts.APIKey); err != nil {
+			return err
+		}
 	}
 
 	// Project trust (US-018, #134): load the persisted trust store for the

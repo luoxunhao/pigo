@@ -327,16 +327,20 @@ func BuildProjection(entries []V4Entry, lanes []LaneState, leafID string, facts 
 			mainConfig = l.Config
 		}
 	}
-	if len(entries) > 0 && mainConfig == nil {
+	if mainConfig == nil {
 		return nil, fmt.Errorf("session: lane.config missing for main lane")
 	}
-	if mainConfig != nil {
-		leaf.Config = mainConfig
-		leaf.Model = mainConfig.Model
-		leaf.Provider = mainConfig.Provider
-		if mainConfig.ThinkingLevel != "" {
-			leaf.ThinkingLevel = mainConfig.ThinkingLevel
-		}
+	if mainConfig.Model == "" && mainConfig.Provider == "" && mainConfig.ThinkingLevel == "" && len(mainConfig.ActiveToolNames) == 0 {
+		return nil, fmt.Errorf("session: lane.config empty for main lane")
+	}
+	if mainConfig.Model == "" {
+		return nil, fmt.Errorf("session: lane.config missing model for main lane")
+	}
+	leaf.Config = mainConfig
+	leaf.Model = mainConfig.Model
+	leaf.Provider = mainConfig.Provider
+	if mainConfig.ThinkingLevel != "" {
+		leaf.ThinkingLevel = mainConfig.ThinkingLevel
 	}
 
 	// Retained-tail projection: the newest compaction entry is self-contained.

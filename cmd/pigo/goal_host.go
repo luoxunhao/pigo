@@ -78,8 +78,10 @@ func (h *serveGoalHost) SetLastBtwBase(int)                 {}
 // a short terminal summary while the loop streams progress through out.
 func makeGoalFunc(opts cliOptions, env run.Env, pigoHome string, thinking agentcore.ThinkingLevel) httpapi.GoalFunc {
 	var mu sync.Mutex
+	var obsMu sync.Mutex
 	goals := make(map[string]*agenttool.GoalState)
 	running := make(map[string]bool)
+	obsBySession := make(map[string]*agenttool.FileObservationRecorder)
 	return func(ctx context.Context, sessionID, directory, args string, out io.Writer, beforeToolCall agentcore.BeforeToolCallFunc, steering func() []string) (string, error) {
 		store, err := sessionstore.OpenForWorkspace(pigoHome, directory)
 		if err != nil {
@@ -98,6 +100,15 @@ func makeGoalFunc(opts cliOptions, env run.Env, pigoHome string, thinking agentc
 		header.SystemPrompt = env.SysPrompt
 		header.Cwd = directory
 
+		obsMu.Lock()
+		obs := obsBySession[sessionID]
+		if obs == nil {
+			obs = agenttool.NewFileObservationRecorder()
+			obsBySession[sessionID] = obs
+		}
+		obsMu.Unlock()
+		sessionTools := agenttool.WithFileObservation(env.Tools, obs)
+
 		live := &cli.LiveConfig{
 			Model:         model,
 			ProviderName:  env.ProviderName,
@@ -108,7 +119,7 @@ func makeGoalFunc(opts cliOptions, env run.Env, pigoHome string, thinking agentc
 			ContextWindow: cli.DefaultContextWindow,
 		}
 		reg := agenttool.NewToolRegistry()
-		for _, tool := range env.Tools {
+		for _, tool := range sessionTools {
 			_ = reg.Register(tool)
 		}
 		creds := provider.NewCredentialStore(nil)
@@ -146,7 +157,7 @@ func makeGoalFunc(opts cliOptions, env run.Env, pigoHome string, thinking agentc
 		host := &serveGoalHost{
 			store:     store,
 			header:    header,
-			agentCtx:  &agentcore.AgentContext{SystemPrompt: env.SysPrompt, Messages: msgs, Tools: env.Tools},
+			agentCtx:  &agentcore.AgentContext{SystemPrompt: env.SysPrompt, Messages: msgs, Tools: sessionTools},
 			live:      live,
 			reg:       reg,
 			reminders: runtime.NewReminderRegistry(),

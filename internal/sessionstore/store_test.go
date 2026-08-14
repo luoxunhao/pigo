@@ -70,11 +70,12 @@ func TestCreateLoadListAppendDelete(t *testing.T) {
 		SystemPrompt: "you are pigo",
 		Cwd:          ws,
 	}
+	cfg := &session.LaneConfig{Model: "openrouter/free", Provider: "openrouter", ThinkingLevel: "medium"}
 	messages := agentcore.MessageList{
 		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("hi")}},
 		agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant, Content: agentcore.ContentList{agentcore.NewTextContent("hello")}},
 	}
-	if err := store.Create(meta, header, messages); err != nil {
+	if err := store.CreateWithLaneConfig(meta, header, messages, cfg); err != nil {
 		t.Fatal(err)
 	}
 
@@ -147,7 +148,8 @@ func TestProjectionWindowMatchesFullProjection(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	header := session.SessionHeader{ID: "win-sess", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), Model: "m", Cwd: ws}
-	if err := store.Create(NewMetadata("win-sess", "Window", "agentic", "m", ws), header, nil); err != nil {
+	cfg := &session.LaneConfig{Model: "m", Provider: "p", ThinkingLevel: "medium"}
+	if err := store.CreateWithLaneConfig(NewMetadata("win-sess", "Window", "agentic", "m", ws), header, nil, cfg); err != nil {
 		t.Fatal(err)
 	}
 	var msgs agentcore.MessageList
@@ -215,7 +217,8 @@ func TestHistoryWindowKeepsPreCompactionEntries(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	header := session.SessionHeader{ID: "hist-sess", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), Model: "m", Cwd: ws}
-	if err := store.Create(NewMetadata("hist-sess", "History", "agentic", "m", ws), header, nil); err != nil {
+	cfg := &session.LaneConfig{Model: "m", Provider: "p", ThinkingLevel: "medium"}
+	if err := store.CreateWithLaneConfig(NewMetadata("hist-sess", "History", "agentic", "m", ws), header, nil, cfg); err != nil {
 		t.Fatal(err)
 	}
 	var msgs agentcore.MessageList
@@ -441,11 +444,12 @@ func TestImportEntriesRoundTripsTree(t *testing.T) {
 	header := session.SessionHeader{ID: "imported-sess", CreatedAt: now, UpdatedAt: now, Model: "m", Provider: "p", Cwd: ws}
 	srcMeta := NewMetadata("src-sess", "Source", "pigo", "m", ws)
 	srcHeader := session.SessionHeader{ID: "src-sess", CreatedAt: now, UpdatedAt: now, Model: "m", Provider: "p", Cwd: ws}
+	srcCfg := &session.LaneConfig{Model: "m", Provider: "p", ThinkingLevel: "medium"}
 	msgs := agentcore.MessageList{
 		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("q")}},
 		agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant, Content: agentcore.ContentList{agentcore.NewTextContent("a")}},
 	}
-	if err := store.Create(srcMeta, srcHeader, msgs); err != nil {
+	if err := store.CreateWithLaneConfig(srcMeta, srcHeader, msgs, srcCfg); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := store.Entries("src-sess")
@@ -457,7 +461,7 @@ func TestImportEntriesRoundTripsTree(t *testing.T) {
 	meta.CreatedAt = header.CreatedAt
 	meta.LastActiveAt = header.UpdatedAt
 	meta.MessageCount = len(entries)
-	if err := store.ImportV4Entries(meta, header, entries, nil); err != nil {
+	if err := store.ImportV4EntriesWithLaneConfig(meta, header, entries, nil, srcCfg); err != nil {
 		t.Fatal(err)
 	}
 

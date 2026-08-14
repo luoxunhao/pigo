@@ -386,11 +386,17 @@ func (a *HTTPAdapter) sessionConfigOption(ctx context.Context, params json.RawMe
 
 func (a *HTTPAdapter) runPrompt(ctx context.Context, id RequestID, params json.RawMessage) {
 	var req struct {
-		SessionID string                   `json:"sessionId"`
-		Prompt    []map[string]interface{} `json:"prompt"`
+		SessionID     string                   `json:"sessionId"`
+		Prompt        []map[string]interface{} `json:"prompt"`
+		Model         *string                  `json:"model,omitempty"`
+		ThinkingLevel *string                  `json:"thinkingLevel,omitempty"`
 	}
 	if err := json.Unmarshal(params, &req); err != nil || req.SessionID == "" {
 		_ = a.transport.SendResponse(ctx, id, nil, NewError(CodeInvalidParams, "missing sessionId or prompt"))
+		return
+	}
+	if (req.Model != nil && *req.Model != "") || (req.ThinkingLevel != nil && *req.ThinkingLevel != "") {
+		_ = a.transport.SendResponse(ctx, id, nil, NewError(CodeInvalidParams, "model/thinkingLevel must be configured through session/update, not prompt"))
 		return
 	}
 	dir, ok := a.directory(req.SessionID)

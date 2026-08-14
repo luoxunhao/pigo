@@ -183,6 +183,11 @@ func newRunSessionWithStore(store *sessionstore.Store, opts Options) (*runSessio
 		// session is attributed to a project and a later /dream pass can distill it
 		// under the right scope, mirroring headless/REPL. An unresolvable cwd
 		// yields "" (session stays unattributed) rather than aborting.
+		laneCfg := &session.LaneConfig{
+			Model:         opts.Model,
+			Provider:      opts.ProviderName,
+			ThinkingLevel: string(opts.ThinkingLevel),
+		}
 		header = session.SessionHeader{
 			ID:           session.NewID(now),
 			CreatedAt:    now,
@@ -191,17 +196,20 @@ func newRunSessionWithStore(store *sessionstore.Store, opts Options) (*runSessio
 			Provider:     opts.ProviderName,
 			SystemPrompt: opts.SysPrompt,
 			Cwd:          cwd,
-			LaneConfig: &session.LaneConfig{
-				Model:         opts.Model,
-				Provider:      opts.ProviderName,
-				ThinkingLevel: string(opts.ThinkingLevel),
-			},
 		}
 		proj = &session.ProjectLeaf{
 			Model:         opts.Model,
 			Provider:      opts.ProviderName,
 			ThinkingLevel: string(opts.ThinkingLevel),
-			Config:        header.LaneConfig,
+			Config:        laneCfg,
+		}
+		if err := store.CreateWithLaneConfig(
+			sessionstore.NewMetadata(header.ID, "Session", "pigo", opts.Model, cwd),
+			header,
+			nil,
+			laneCfg,
+		); err != nil {
+			return nil, nil, err
 		}
 	}
 	build, buildErr := run.NewContextBuild(run.ContextBuildInput{
@@ -229,6 +237,16 @@ func newRunSessionWithStore(store *sessionstore.Store, opts Options) (*runSessio
 		Creds:         creds,
 		ThinkingLevel: opts.ThinkingLevel,
 		ContextWindow: cli.DefaultContextWindow,
+	}
+	live.PersistConfig = func() {
+		if err := cli.PersistLaneConfig(store, header.ID, live); err != nil {
+			fmt.Fprintf(os.Stderr, "pigo: persist lane config: %v\n", err)
+		}
+	}
+	if opts.ResumeID != "" {
+		if err := cli.ApplyProjectionToLive(live, proj, opts.BaseURL, opts.Protocol, opts.APIKey); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	// Project trust (US-018, #134): load the persisted trust store for the

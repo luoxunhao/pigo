@@ -34,6 +34,7 @@ func TestHTTPAdapterSessionLoadReplaysThinkingAndToolCalls(t *testing.T) {
 	defer store.Close()
 	now := time.Now().UTC()
 	header := session.SessionHeader{ID: "replay-sess", CreatedAt: now, UpdatedAt: now, Model: "m", Provider: "p", Cwd: workspace}
+	cfg := &session.LaneConfig{Model: "m", Provider: "p", ThinkingLevel: "medium"}
 	msgs := agentcore.MessageList{
 		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("hi")}},
 		agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant, Content: agentcore.ContentList{
@@ -46,7 +47,7 @@ func TestHTTPAdapterSessionLoadReplaysThinkingAndToolCalls(t *testing.T) {
 		},
 	}
 	meta := sessionstore.NewMetadata(header.ID, "Replay", "pigo", header.Model, workspace)
-	if err := store.Create(meta, header, msgs); err != nil {
+	if err := store.CreateWithLaneConfig(meta, header, msgs, cfg); err != nil {
 		t.Fatal(err)
 	}
 
@@ -158,6 +159,7 @@ func TestHTTPAdapterSessionLoadReplaysAllPagesInOrder(t *testing.T) {
 	defer store.Close()
 	now := time.Now().UTC()
 	header := session.SessionHeader{ID: "replay-pages", CreatedAt: now, UpdatedAt: now, Model: "m", Provider: "p", Cwd: workspace}
+	cfg := &session.LaneConfig{Model: "m", Provider: "p", ThinkingLevel: "medium"}
 	var msgs agentcore.MessageList
 	for i := 0; i < 125; i++ {
 		msgs = append(msgs, agentcore.UserMessage{
@@ -166,7 +168,7 @@ func TestHTTPAdapterSessionLoadReplaysAllPagesInOrder(t *testing.T) {
 		})
 	}
 	meta := sessionstore.NewMetadata(header.ID, "ReplayPages", "pigo", header.Model, workspace)
-	if err := store.Create(meta, header, msgs); err != nil {
+	if err := store.CreateWithLaneConfig(meta, header, msgs, cfg); err != nil {
 		t.Fatal(err)
 	}
 

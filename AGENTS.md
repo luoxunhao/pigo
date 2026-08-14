@@ -96,5 +96,6 @@ Zed 通过 `agent_servers.pigo` 使用 pigo：
 - hooks 先于 ACP permission 确认；被拦截的调用不发起 permission 请求，原因以工具错误结果返回。
 - `task` 子 Agent 继承 hooks 边界。示例见 `scripts/hooks/block-dangerous-commands.sh`。
 - pigo 默认不内置强制 deny 规则；hook 配置解析失败按 fail-closed 处理，不会静默禁用边界。
+- `read` / `write` / `edit` 共享会话级 observed-state：编辑已有文件或覆盖未读文件以 `FS_NOT_OBSERVED` 拒绝并提示先读；文件在读取后被外部修改时以 `FS_STALE_VERSION` 拒绝并要求重读（对齐 deepseek-harness）。
 
 修改 Zed 配置后重启 Zed（或重新加载配置），即可在 agent 列表中选择 pigo。

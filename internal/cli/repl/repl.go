@@ -842,7 +842,7 @@ func runForkClone(out io.Writer, deps *replDeps, line string) {
 		leafID = entries[users[n-1].idx].ParentID
 	}
 
-	newHeader, path, err := deps.store.ForkV4(deps.header.ID, leafID, time.Now().UTC())
+	newHeader, laneCfg, path, err := deps.store.ForkV4(deps.header.ID, leafID, time.Now().UTC())
 	if err != nil {
 		fmt.Fprintf(out, "pigo: fork failed: %v\n", err)
 		return
@@ -851,7 +851,7 @@ func runForkClone(out io.Writer, deps *replDeps, line string) {
 	meta.ParentSessionID = deps.header.ID
 	meta.MessageCount = len(path)
 	meta.LastActiveAt = newHeader.UpdatedAt
-	if err := deps.store.ImportV4Entries(meta, newHeader, path, nil); err != nil {
+	if err := deps.store.ImportV4EntriesWithLaneConfig(meta, newHeader, path, nil, laneCfg); err != nil {
 		fmt.Fprintf(out, "pigo: fork failed: %v\n", err)
 		return
 	}
@@ -1181,7 +1181,7 @@ func runImport(out io.Writer, deps *replDeps, line string) {
 		fmt.Fprintln(out, "usage: /import <path.jsonl>")
 		return
 	}
-	newHeader, entries, facts, err := deps.store.ImportV4(path, time.Now().UTC())
+	newHeader, laneCfg, entries, facts, err := deps.store.ImportV4(path, time.Now().UTC())
 	if err != nil {
 		fmt.Fprintf(out, "pigo: import failed: %v\n", err)
 		return
@@ -1189,7 +1189,7 @@ func runImport(out io.Writer, deps *replDeps, line string) {
 	meta := sessionstore.NewMetadata(newHeader.ID, "Session", "pigo", newHeader.Model, deps.cwd)
 	meta.ParentSessionID = newHeader.ParentSession
 	meta.LastActiveAt = newHeader.UpdatedAt
-	if err := deps.store.ImportV4Entries(meta, newHeader, entries, facts); err != nil {
+	if err := deps.store.ImportV4EntriesWithLaneConfig(meta, newHeader, entries, facts, laneCfg); err != nil {
 		fmt.Fprintf(out, "pigo: import failed: %v\n", err)
 		return
 	}

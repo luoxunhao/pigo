@@ -82,4 +82,19 @@ func TestBuildProjectionUsesRetainedTail(t *testing.T) {
 	}
 }
 
+func TestBuildProjectionRejectsMissingOrEmptyLaneConfig(t *testing.T) {
+	entries := []V4Entry{{
+		Type:      EntryTypeMessage,
+		ID:        "1",
+		Timestamp: time.Now().UTC(),
+		Message:   []byte(`{"role":"user","content":[{"type":"text","text":"hi"}]}`),
+	}}
+	if _, err := BuildProjection(entries, nil, "1", nil); err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("missing config error = %v, want missing", err)
+	}
+	if _, err := BuildProjection(entries, []LaneState{{Lane: "main", Config: &LaneConfig{}}}, "1", nil); err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("empty config error = %v, want empty", err)
+	}
+}
+
 func strPtr(s string) *string { return &s }

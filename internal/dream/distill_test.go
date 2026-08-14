@@ -57,7 +57,8 @@ func TestResolveSessionStoreSeesAllSQLiteSessions(t *testing.T) {
 	meta.CreatedAt = now
 	meta.LastActiveAt = now
 	projHeader := session.SessionHeader{ID: "proj-sess", CreatedAt: now, UpdatedAt: now, Model: "m", Provider: "p", Cwd: ws}
-	if err := proj.Create(meta, projHeader, msgs); err != nil {
+	projCfg := &session.LaneConfig{Model: "m", Provider: "p", ThinkingLevel: "medium"}
+	if err := proj.CreateWithLaneConfig(meta, projHeader, msgs, projCfg); err != nil {
 		t.Fatal(err)
 	}
 
@@ -65,7 +66,7 @@ func TestResolveSessionStoreSeesAllSQLiteSessions(t *testing.T) {
 	legacyMeta.CreatedAt = now
 	legacyMeta.LastActiveAt = now.Add(time.Hour)
 	legacyHeader := session.SessionHeader{ID: "legacy-sess", CreatedAt: now, UpdatedAt: now.Add(time.Hour), Model: "m", Provider: "p", Cwd: ws}
-	if err := proj.Create(legacyMeta, legacyHeader, msgs); err != nil {
+	if err := proj.CreateWithLaneConfig(legacyMeta, legacyHeader, msgs, projCfg); err != nil {
 		t.Fatal(err)
 	}
 

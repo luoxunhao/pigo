@@ -132,7 +132,7 @@ type headlessSession struct {
 // branch leaf) or creates a fresh session otherwise. It returns the prior
 // messages to seed into the context ahead of the new prompt, plus the session
 // state used to persist the run afterward. Fresh sessions are created in the
-func openHeadlessSession(resumeID, model, providerName, sysPrompt string) (agentcore.MessageList, headlessSession, error) {
+func openHeadlessSession(resumeID, model, providerName, sysPrompt string, thinking agentcore.ThinkingLevel) (agentcore.MessageList, headlessSession, error) {
 	proj, err := ProjectStore()
 	if err != nil {
 		return nil, headlessSession{}, err
@@ -165,13 +165,14 @@ func openHeadlessSession(resumeID, model, providerName, sysPrompt string) (agent
 		Provider:     providerName,
 		SystemPrompt: sysPrompt,
 		Cwd:          cwd,
-		LaneConfig: &session.LaneConfig{
-			Model:    model,
-			Provider: providerName,
-		},
+	}
+	laneCfg := &session.LaneConfig{
+		Model:         model,
+		Provider:      providerName,
+		ThinkingLevel: string(thinking),
 	}
 	meta := sessionstore.NewMetadata(header.ID, "Session", "pigo", model, cwd)
-	if err := proj.Create(meta, header, nil); err != nil {
+	if err := proj.CreateWithLaneConfig(meta, header, nil, laneCfg); err != nil {
 		return nil, headlessSession{}, err
 	}
 	return nil, headlessSession{store: proj, header: header, curLeaf: "", persisted: 0, model: model, provider: providerName}, nil

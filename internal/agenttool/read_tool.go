@@ -51,6 +51,10 @@ type ReadTool struct {
 	// to read it, so the read tool must permit those paths (they are otherwise
 	// outside the workspace and rejected).
 	ExtraRoots []string
+	// Observe, when non-nil, records the file's observed version after a
+	// successful read (or confirmed absence after a missing-file read). It is
+	// shared with the write/edit tools so read-before-edit stays session-scoped.
+	Observe *FileObservationRecorder
 }
 
 // readToolArgs is the decoded argument shape for ReadTool.
@@ -119,6 +123,7 @@ func (t *ReadTool) Execute(ctx context.Context, id string, args json.RawMessage,
 	info, err := os.Stat(full)
 	if err != nil {
 		if os.IsNotExist(err) {
+			t.Observe.RecordAbsent(full)
 			return errorResult(fmt.Sprintf("read: file %q does not exist", a.Path)), nil
 		}
 		return errorResult(fmt.Sprintf("read: cannot stat %q: %v", a.Path, err)), nil
@@ -137,6 +142,7 @@ func (t *ReadTool) Execute(ctx context.Context, id string, args json.RawMessage,
 	if truncated {
 		text += fmt.Sprintf("\n... (output truncated at %d lines; use offset to read more)", readToolMaxLines)
 	}
+	t.Observe.RecordPresent(full)
 	return agentcore.AgentToolResult{Content: agentcore.ContentList{agentcore.NewTextContent(text)}}, nil
 }
 
