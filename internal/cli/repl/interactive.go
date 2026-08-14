@@ -50,6 +50,14 @@ type Options struct {
 	ThinkingLevel agentcore.ThinkingLevel
 	Tools         []agentcore.AgentTool
 	SysPrompt     string
+	// BaseInstruction is the raw --system-prompt base text (may be empty).
+	// contextbuild layers tools/guidelines/context files/skills on top of it per
+	// request; SysPrompt remains the legacy pre-assembled prompt.
+	BaseInstruction string
+	// ContextFiles enables per-directory AGENTS/CLAUDE context-file injection.
+	ContextFiles bool
+	// AppendInstructions are the resolved --append-system-prompt texts.
+	AppendInstructions []string
 
 	// ResumeID, when non-empty, resumes an existing session: its messages seed
 	// the context and replayed transcript. Otherwise a fresh session is created.
@@ -113,6 +121,7 @@ func Run(opts Options) error {
 		header   session.SessionHeader
 		history  []agentcore.AgentMessage
 		curLeaf  string // active leaf id on resume; "" for a fresh session
+		proj     *session.ProjectLeaf
 	)
 	if opts.ResumeID != "" {
 		// Interactive resume always appends a fresh user message before running,
@@ -122,17 +131,20 @@ func Run(opts Options) error {
 		if err != nil {
 			return err
 		}
-		if proj, projErr := store.Projection(opts.ResumeID, ""); projErr == nil {
+		if p, projErr := store.Projection(opts.ResumeID, ""); projErr == nil {
+			proj = p
 			curLeaf = proj.LeafID
 		}
 		header = h
-		agentCtx = &agentcore.AgentContext{SystemPrompt: h.SystemPrompt, Messages: msgs, Tools: opts.Tools}
+		agentCtx = &agentcore.AgentContext{Messages: msgs, Tools: opts.Tools}
 		history = msgs
-		if agentCtx.SystemPrompt == "" {
-			agentCtx.SystemPrompt = opts.SysPrompt
-		}
 	} else {
-		agentCtx = &agentcore.AgentContext{SystemPrompt: opts.SysPrompt, Tools: opts.Tools}
+		agentCtx = &agentcore.AgentContext{Tools: opts.Tools}
+		laneCfg := &session.LaneConfig{
+			Model:         opts.Model,
+			Provider:      opts.ProviderName,
+			ThinkingLevel: string(opts.ThinkingLevel),
+		}
 		header = session.SessionHeader{
 			ID:           session.NewID(now),
 			CreatedAt:    now,
@@ -142,6 +154,35 @@ func Run(opts Options) error {
 			SystemPrompt: opts.SysPrompt,
 			Cwd:          cwd,
 		}
+		proj = &session.ProjectLeaf{
+			Model:         opts.Model,
+			Provider:      opts.ProviderName,
+			ThinkingLevel: string(opts.ThinkingLevel),
+			Config:        laneCfg,
+		}
+		if err := store.CreateWithLaneConfig(
+			sessionstore.NewMetadata(header.ID, "Session", "pigo", opts.Model, cwd),
+			header,
+			nil,
+			laneCfg,
+		); err != nil {
+			return err
+		}
+	}
+	build, buildErr := run.NewContextBuild(run.ContextBuildInput{
+		Project:            proj,
+		BaseInstruction:    opts.BaseInstruction,
+		Cwd:                cwd,
+		ContextFiles:       opts.ContextFiles,
+		AppendInstructions: opts.AppendInstructions,
+		Skills:             opts.Skills,
+		AllTools:           opts.Tools,
+		Plugins:            opts.Plugins,
+		Reminders:          run.TodoReminders(opts.Tools),
+		Warn:               os.Stderr,
+	})
+	if buildErr != nil {
+		return buildErr
 	}
 
 	// live holds the run configuration that a control command (e.g. /model) may
@@ -157,6 +198,16 @@ func Run(opts Options) error {
 		Creds:         creds,
 		ThinkingLevel: opts.ThinkingLevel,
 		ContextWindow: cli.DefaultContextWindow,
+	}
+	live.PersistConfig = func() {
+		if err := cli.PersistLaneConfig(store, header.ID, live); err != nil {
+			fmt.Fprintf(os.Stderr, "pigo: persist lane config: %v\n", err)
+		}
+	}
+	if opts.ResumeID != "" {
+		if err := cli.ApplyProjectionToLive(live, proj, opts.BaseURL, opts.Protocol, opts.APIKey); err != nil {
+			return err
+		}
 	}
 
 	// Project trust (US-018, #134): load the persisted trust store for the
@@ -218,27 +269,28 @@ func Run(opts Options) error {
 	maybeStartBackgroundDream(os.Stdout, dream.ResolveMemoryRoot(), cwd, opts.Dream)
 
 	return runREPL(os.Stdin, os.Stdout, replDeps{
-		store:     store,
-		header:    header,
-		agentCtx:  agentCtx,
-		live:      live,
-		reg:       reg,
-		reminders: run.TodoReminders(opts.Tools),
-		slash:     slash,
-		creds:     creds,
-		trust:     mgr,
-		cwd:       cwd,
-		in:        reader,
-		confirmMu: &sync.Mutex{},
-		curLeaf:   curLeaf,
-		persisted: len(history),
+		store:      store,
+		header:     header,
+		agentCtx:   agentCtx,
+		build:      build,
+		live:       live,
+		reg:        reg,
+		reminders:  run.TodoReminders(opts.Tools),
+		slash:      slash,
+		creds:      creds,
+		trust:      mgr,
+		cwd:        cwd,
+		in:         reader,
+		confirmMu:  &sync.Mutex{},
+		curLeaf:    curLeaf,
+		persisted:  len(history),
 		memoryRoot: run.MemoryRootFromTools(opts.Tools),
 		memstore:   run.MemoryStoreFromTools(opts.Tools),
 		snap:       run.SnapshotRecorderFromTools(opts.Tools),
 		jobs:       run.BashJobStoreFromTools(opts.Tools),
-		notifier:  plugin.NewEventNotifier(opts.Plugins, os.Stderr),
-		goal:      agenttool.NewGoalState(),
-		telemetry: cli.NewTelemetryHolder(),
+		notifier:   plugin.NewEventNotifier(opts.Plugins, os.Stderr),
+		goal:       agenttool.NewGoalState(),
+		telemetry:  cli.NewTelemetryHolder(),
 	})
 }
 

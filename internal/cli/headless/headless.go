@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/smallnest/pigo/internal/cli/run"
 	"github.com/smallnest/pigo/internal/cli/ui"
 	"github.com/smallnest/pigo/internal/compaction"
+	"github.com/smallnest/pigo/internal/contextbuild"
 	"github.com/smallnest/pigo/internal/plugin"
 	"github.com/smallnest/pigo/internal/provider"
 	"github.com/smallnest/pigo/internal/runtime"
@@ -58,11 +60,20 @@ func Run(ctx context.Context, p RunParams, out, errOut io.Writer) int {
 		return 1
 	}
 
+	// Resolve the effective reasoning-effort level through the layered config
+	// chain (default < global < project < env < --thinking-level flag). It seeds
+	// fresh lane.config and is overridden by the persisted projection on resume.
+	thinking, err := run.ResolveThinkingLevel(p.ThinkingLevel)
+	if err != nil {
+		fmt.Fprintf(errOut, "pigo: %v\n", err)
+		return 2
+	}
+
 	// Back the headless run with a session so its id appears in the first
 	// stream-json event and the run can be resumed with --resume/--continue,
 	// matching the interactive REPL and pi/Claude Code. A resumed session seeds
 	// its prior messages ahead of the new prompt.
-	priorMsgs, hs, err := openHeadlessSession(p.ResumeID, p.Model, env.ProviderName, env.SysPrompt)
+	priorMsgs, hs, err := openHeadlessSession(p.ResumeID, p.Model, env.ProviderName, env.SysPrompt, thinking)
 	if err != nil {
 		fmt.Fprintf(errOut, "pigo: %v\n", err)
 		return 1
@@ -70,24 +81,77 @@ func Run(ctx context.Context, p RunParams, out, errOut io.Writer) int {
 	isFirstPrompt := len(priorMsgs) == 0
 	messages := append(priorMsgs, agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: promptContent})
 	agentCtx := &agentcore.AgentContext{
-		SystemPrompt: hs.header.SystemPrompt,
-		Messages:     messages,
-		Tools:        env.Tools,
+		Messages: messages,
+		Tools:    env.Tools,
+	}
+	proj, projErr := hs.store.Projection(hs.header.ID, "")
+	if projErr != nil {
+		fmt.Fprintf(errOut, "pigo: %v\n", projErr)
+		return 1
+	}
+	build, buildErr := run.NewContextBuild(run.ContextBuildInput{
+		Project:            proj,
+		BaseInstruction:    env.BaseInstruction,
+		Cwd:                env.Cwd,
+		ContextFiles:       env.ContextFiles,
+		AppendInstructions: env.AppendInstructions,
+		Skills:             env.Skills,
+		AllTools:           env.Tools,
+		Plugins:            env.Plugins,
+		Reminders:          run.TodoReminders(env.Tools),
+		Warn:               errOut,
+	})
+	if buildErr != nil {
+		fmt.Fprintf(errOut, "pigo: %v\n", buildErr)
+		return 1
 	}
 
-	// Resolve the effective reasoning-effort level through the layered config
-	// chain (default < global < project < env < --thinking-level flag).
-	thinking, err := run.ResolveThinkingLevel(p.ThinkingLevel)
-	if err != nil {
-		fmt.Fprintf(errOut, "pigo: %v\n", err)
-		return 2
+	// lane.config is the runtime authority: use the projected model/provider/
+	// thinking for the run, resolving the provider when it differs from the
+	// process default.
+	runModel := p.Model
+	runProviderName := env.ProviderName
+	runProvider := env.Provider
+	runAPIKey := p.APIKey
+	if proj.Config != nil {
+		if proj.Model != "" {
+			runModel = proj.Model
+		}
+		if proj.Provider != "" {
+			runProviderName = proj.Provider
+		}
+		if proj.ThinkingLevel != "" {
+			thinking = agentcore.ThinkingLevel(proj.ThinkingLevel)
+		}
+		if proj.Provider != "" && proj.Provider != env.ProviderName {
+			prov, name, key, _, rerr := provider.ResolveConfiguredModel(runModel, "", "", proj.Provider, p.APIKey, os.Getenv)
+			if rerr != nil {
+				fmt.Fprintf(errOut, "pigo: %v\n", rerr)
+				return 2
+			}
+			runProvider = prov
+			runProviderName = name
+			runAPIKey = key
+		}
 	}
 
 	// Resolve the API key by provider name from the environment (never logged).
 	// An explicit --api-key overrides env/config for the resolved provider.
 	creds := provider.NewCredentialStore(nil)
-	creds.SetOverride(env.ProviderName, p.APIKey)
-	runCfg := run.NewConfig(p.Model, env.ProviderName, thinking, env.Provider, creds, run.ToolRegistry(env.Tools), run.TodoReminders(env.Tools))
+	creds.SetOverride(runProviderName, runAPIKey)
+	runCfg := run.NewConfig(runModel, runProviderName, thinking, runProvider, creds, run.ToolRegistry(env.Tools), run.TodoReminders(env.Tools))
+	build.Ctx.ThinkingLevel = thinking
+	build.Ctx.Model = runModel
+	build.Ctx.Provider = runProviderName
+	build.Deps.Reminders = runCfg.Reminders
+	rb := contextbuild.RequestBuilder(build.Ctx, build.Deps, build.Req)
+	runCfg.LoopConfig.RequestBuilder = func(ctx context.Context, msgs agentcore.MessageList) (provider.LlmContext, error) {
+		llm, err := rb(ctx, msgs)
+		if err == nil && llm.SystemPrompt != "" {
+			hs.header.SystemPrompt = llm.SystemPrompt
+		}
+		return llm, err
+	}
 	runCfg.SessionID = hs.header.ID
 	runCfg.OnCompaction = func(ctx context.Context, res *compaction.CompactionResult) error {
 		if res == nil {

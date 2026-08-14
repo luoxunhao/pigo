@@ -57,7 +57,19 @@ type LoopConfig struct {
 
 	// Extra is forwarded to StreamConfig.Extra.
 	Extra map[string]any
+
+	// RequestBuilder, when non-nil, replaces the manual system-prompt/tools
+	// assembly below with the frontend's contextbuild pipeline. It receives the
+	// live message list and returns the complete provider-visible request.
+	// A returned error becomes a terminal assistant message, matching the
+	// no-request-failure contract.
+	RequestBuilder RequestBuilderFunc
 }
+
+// RequestBuilderFunc builds one provider-visible request from the live message
+// list. It is the runtime seam frontends use to wire contextbuild into the loop
+// without the runtime package depending on contextbuild.
+type RequestBuilderFunc func(ctx context.Context, msgs agentcore.MessageList) (provider.LlmContext, error)
 
 // streamAssistantResponse runs one assistant turn: it builds the request from
 // agentCtx, streams the provider response, back-fills the partial into
@@ -66,6 +78,20 @@ type LoopConfig struct {
 // identical to pi. It never returns an error for a request failure — such
 // failures arrive as a terminal assistant message with stopReason error/aborted.
 func streamAssistantResponse(ctx context.Context, agentCtx *agentcore.AgentContext, cfg LoopConfig, emit agentcore.EmitFunc) (agentcore.AssistantMessage, error) {
+	// 0. contextbuild request seam: when set, the frontend owns system-prompt
+	// assembly, tool resolution, transforms, and LLM conversion.
+	if cfg.RequestBuilder != nil {
+		llm, buildErr := cfg.RequestBuilder(ctx, agentCtx.Messages)
+		if buildErr != nil {
+			msg := newErrorAssistantMessage(cfg, buildErr)
+			agentCtx.Messages = append(agentCtx.Messages, msg)
+			if err := emit(ctx, agentcore.MessageEndEvent{Message: msg}); err != nil {
+				return agentcore.AssistantMessage{}, err
+			}
+			return msg, nil
+		}
+		return streamShapedResponse(ctx, agentCtx, cfg, llm, emit)
+	}
 	// 1. transformContext (optional, must not error).
 	msgs := agentCtx.Messages
 	if cfg.TransformContext != nil {
@@ -81,6 +107,13 @@ func streamAssistantResponse(ctx context.Context, agentCtx *agentcore.AgentConte
 		Messages:     msgs,
 		Tools:        agentCtx.Tools,
 	}
+	return streamShapedResponse(ctx, agentCtx, cfg, llm, emit)
+}
+
+// streamShapedResponse runs the shared stream path once the provider-visible
+// LlmContext is known: resolve the API key, build the provider stream, and
+// back-fill the partial assistant message into the context.
+func streamShapedResponse(ctx context.Context, agentCtx *agentcore.AgentContext, cfg LoopConfig, llm provider.LlmContext, emit agentcore.EmitFunc) (agentcore.AssistantMessage, error) {
 	// 4. resolve API key dynamically, fall back to static.
 	key := cfg.APIKey
 	if cfg.GetAPIKey != nil {

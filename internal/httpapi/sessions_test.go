@@ -16,6 +16,7 @@ import (
 	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/compaction"
 	"github.com/smallnest/pigo/internal/httpapi/gen"
+	"github.com/smallnest/pigo/internal/sessionstore"
 )
 
 func TestSessionCreateAndList(t *testing.T) {
@@ -389,5 +390,138 @@ func TestSessionUpdateConfigAndMode(t *testing.T) {
 	}
 	if _, apiErr := svc.SetMode(created.SessionId, gen.SetModeRequest{Directory: workspace, ModeId: "plan"}); apiErr == nil || apiErr.Code != CodeModeNotFound {
 		t.Fatalf("unknown mode error = %v", apiErr)
+	}
+}
+
+func TestSessionUpdateConfigReflectsLaneConfigAndStatus(t *testing.T) {
+	pigoHome := t.TempDir()
+	cleanupStores(t)
+	workspace := filepath.Join(t.TempDir(), "ws")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.SaveFileConfig(cfgPath, config.FileConfig{
+		Model: "test/old",
+		Models: []config.ModelConfig{
+			{
+				Provider: "test", ModelID: "old", Name: "Old",
+				BaseURL: "http://localhost", Protocol: "openai",
+			},
+			{
+				Provider: "test", ModelID: "new", Name: "New",
+				BaseURL: "http://localhost", Protocol: "openai",
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewSessionServiceWithConfig(pigoHome, cfgPath)
+	created, apiErr := svc.Create(gen.NewSessionRequest{Directory: workspace})
+	if apiErr != nil {
+		t.Fatalf("Create: %v", apiErr)
+	}
+
+	model := "test/new"
+	thinking := "high"
+	if _, apiErr := svc.UpdateConfig(created.SessionId, gen.UpdateSessionRequest{
+		Directory:     workspace,
+		Model:         &model,
+		ThinkingLevel: &thinking,
+	}); apiErr != nil {
+		t.Fatalf("UpdateConfig: %v", apiErr)
+	}
+
+	status, apiErr := svc.Status(created.SessionId, workspace)
+	if apiErr != nil {
+		t.Fatalf("Status: %v", apiErr)
+	}
+	if status.Model == nil || *status.Model != "test/new" {
+		got := "<nil>"
+		if status.Model != nil {
+			got = *status.Model
+		}
+		t.Fatalf("status model = %q, want test/new", got)
+	}
+	if status.ThinkingLevel == nil || *status.ThinkingLevel != "high" {
+		got := "<nil>"
+		if status.ThinkingLevel != nil {
+			got = *status.ThinkingLevel
+		}
+		t.Fatalf("status thinking = %q, want high", got)
+	}
+
+	loaded, apiErr := svc.Load(created.SessionId, gen.LoadSessionRequest{Directory: workspace})
+	if apiErr != nil {
+		t.Fatalf("Load: %v", apiErr)
+	}
+	if loaded.LaneConfig == nil {
+		t.Fatal("loaded laneConfig is nil")
+	}
+	if got := (*loaded.LaneConfig)["model"]; got != "test/new" {
+		t.Fatalf("loaded lane model = %v, want test/new", got)
+	}
+	if got := (*loaded.LaneConfig)["thinkingLevel"]; got != "high" {
+		t.Fatalf("loaded lane thinking = %v, want high", got)
+	}
+}
+
+func TestUpdateConfigDoesNotPersistCustomThinking(t *testing.T) {
+	pigoHome := t.TempDir()
+	cleanupStores(t)
+	workspace := filepath.Join(t.TempDir(), "ws")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := config.SaveFileConfig(cfgPath, config.FileConfig{
+		Model: "test/provider",
+		Models: []config.ModelConfig{
+			{
+				Provider: "test", ModelID: "provider", Name: "Provider",
+				BaseURL: "http://localhost", Protocol: "openai",
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewSessionServiceWithConfig(pigoHome, cfgPath)
+	created, apiErr := svc.Create(gen.NewSessionRequest{Directory: workspace})
+	if apiErr != nil {
+		t.Fatalf("Create: %v", apiErr)
+	}
+	thinking := "high"
+	if _, apiErr := svc.UpdateConfig(created.SessionId, gen.UpdateSessionRequest{
+		Directory:     workspace,
+		ThinkingLevel: &thinking,
+	}); apiErr != nil {
+		t.Fatalf("UpdateConfig: %v", apiErr)
+	}
+	store, err := sessionstore.OpenForWorkspace(pigoHome, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	meta, err := store.LoadMetadata(created.SessionId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	custom := map[string]any{}
+	if len(meta.CustomMetadata) > 0 {
+		if err := json.Unmarshal(meta.CustomMetadata, &custom); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, ok := custom["thinkingLevel"]; ok {
+		t.Fatalf("customMetadata still contains thinkingLevel: %s", meta.CustomMetadata)
+	}
+	lanes, err := store.Lanes(created.SessionId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range lanes {
+		if l.Lane == "main" && (l.Config == nil || l.Config.ThinkingLevel != "high") {
+			t.Fatalf("lane config thinking = %+v, want high", l.Config)
+		}
 	}
 }

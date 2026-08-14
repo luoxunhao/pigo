@@ -1,6 +1,6 @@
 # SPEC: Remote Control（手机端远程控制 CLI 会话）
 
-> Technical specification derived from: `tasks/prd-remote-control.md`
+> Technical specification derived from: `tasks/prd/prd-025-remote-control.md`
 > Generated: 2026-07-31 | Target branch: master | Commit: ad9c8b5
 
 ## 1. Summary
@@ -9,7 +9,7 @@
 This SPEC specifies how to add a `/remote-control` built-in slash command that starts an in-process WebSocket-based web server, letting a phone on the same LAN mirror the CLI session output, inject prompts, and approve/reject risky tool calls. It covers the server, the pairing/auth flow, the REPL input/output seam that bridges terminal and remote, and lifecycle cleanup. It does not cover cloud relay, PWA, or multi-client control (see Non-Goals in the PRD).
 
 ### 1.2 PRD Reference
-- Source: `tasks/prd-remote-control.md`
+- Source: `tasks/prd/prd-025-remote-control.md`
 - User Stories covered: US-001 … US-008
 - Functional Requirements covered: FR-1 … FR-19
 

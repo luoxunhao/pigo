@@ -174,7 +174,7 @@ Use this exact HTML structure:
 | `docs/` directory does not exist | Auto-create it |
 | Notes file already exists for this Issue | Ask: "Update existing notes or overwrite?" — default to update (append new items) |
 | No deviations or open questions | Write "None — implementation followed the spec as written." |
-| Spec/PRD file not found | Note in Open Questions: "No PRD found at tasks/prd-*.md — verify against original requirements." |
+| Spec/PRD file not found | Note in Open Questions: "No PRD found at tasks/prd/prd-*.md — verify against original requirements." |
 
 ## Checklist
 

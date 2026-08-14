@@ -78,6 +78,12 @@ const DefaultWorkspaceHost = "localhost"
 //go:embed migrations/001_initial.sql
 var migration001 string
 
+//go:embed migrations/002_lane_config.sql
+var migration002 string
+
+//go:embed migrations/003_remove_legacy_lane_config_fields.sql
+var migration003 string
+
 var (
 	dbMu sync.Mutex
 	dbs  = map[string]*sql.DB{}
@@ -232,21 +238,36 @@ func applyMigrations(db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("sessionstore: read migrations: %w", err)
 	}
-	if version >= 1 {
-		return nil
+	migrations := []struct {
+		version int
+		sql     string
+	}{
+		{1, migration001},
+		{2, migration002},
+		{3, migration003},
 	}
-	tx, err := db.Begin()
-	if err != nil {
-		return err
+	for _, m := range migrations {
+		if version >= m.version {
+			continue
+		}
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(m.sql); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("sessionstore: apply migration %03d: %w", m.version, err)
+		}
+		if _, err := tx.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)`, m.version, time.Now().UTC().Format(time.RFC3339)); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		version = m.version
 	}
-	defer tx.Rollback()
-	if _, err := tx.Exec(migration001); err != nil {
-		return fmt.Errorf("sessionstore: apply migration 001: %w", err)
-	}
-	if _, err := tx.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES(1, ?)`, time.Now().UTC().Format(time.RFC3339)); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return nil
 }
 
 func normalize(meta *Metadata) {
@@ -350,7 +371,7 @@ func CloseAll() {
 	dbMu.Unlock()
 }
 
-func (s *Store) upsertSessionTx(tx *sql.Tx, meta Metadata, header session.SessionHeader) error {
+func (s *Store) upsertSessionTx(tx *sql.Tx, meta Metadata, header session.SessionHeader, laneConfig *session.LaneConfig) error {
 	meta.SchemaVersion = SchemaVersion
 	normalize(&meta)
 	if header.ID == "" {
@@ -394,6 +415,19 @@ func (s *Store) upsertSessionTx(tx *sql.Tx, meta Metadata, header session.Sessio
 	if _, err := tx.Exec(`INSERT OR IGNORE INTO lanes(session_id, lane, leaf_id, open_operation_id) VALUES(?,'main',NULL,NULL)`, header.ID); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO lane_config(session_id, lane, config) VALUES(?,'main','{}')`, header.ID); err != nil {
+		return err
+	}
+	if laneConfig != nil {
+		raw, err := json.Marshal(laneConfig)
+		if err != nil {
+			return fmt.Errorf("sessionstore: encode lane config: %w", err)
+		}
+		if _, err := tx.Exec(`INSERT INTO lane_config(session_id, lane, config) VALUES(?, 'main', ?)
+			ON CONFLICT(session_id, lane) DO UPDATE SET config=excluded.config`, header.ID, string(raw)); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -430,8 +464,18 @@ func nullable(s string) any {
 }
 
 // Create writes a new session (sessions/sequences/stats/main lane) and claims
-// a writer lease in the same transaction.
+// a writer lease in the same transaction. It creates an empty main-lane config;
+// use CreateWithLaneConfig to persist a full lane config.
 func (s *Store) Create(meta Metadata, header session.SessionHeader, messages agentcore.MessageList) error {
+	return s.create(meta, header, messages, nil)
+}
+
+// CreateWithLaneConfig writes a new session with an explicit main-lane config.
+func (s *Store) CreateWithLaneConfig(meta Metadata, header session.SessionHeader, messages agentcore.MessageList, laneConfig *session.LaneConfig) error {
+	return s.create(meta, header, messages, laneConfig)
+}
+
+func (s *Store) create(meta Metadata, header session.SessionHeader, messages agentcore.MessageList, laneConfig *session.LaneConfig) error {
 	if meta.SessionID == "" && header.ID == "" {
 		return errors.New("sessionstore: session id must not be empty")
 	}
@@ -455,7 +499,7 @@ func (s *Store) Create(meta Metadata, header session.SessionHeader, messages age
 		if exists > 0 {
 			return fmt.Errorf("sessionstore: session %q already exists", id)
 		}
-		if err := s.upsertSessionTx(tx, meta, header); err != nil {
+		if err := s.upsertSessionTx(tx, meta, header, laneConfig); err != nil {
 			return err
 		}
 		if len(messages) > 0 {
@@ -503,7 +547,19 @@ func titleFromUserText(text string) string {
 }
 
 // ImportV4Entries materializes v4 typed entries and facts into SQLite.
+// ImportV4Entries materializes v4 typed entries and facts into SQLite without
+// a lane config.
 func (s *Store) ImportV4Entries(meta Metadata, header session.SessionHeader, entries []session.V4Entry, facts []session.V4Fact) error {
+	return s.importV4Entries(meta, header, entries, facts, nil)
+}
+
+// ImportV4EntriesWithLaneConfig materializes v4 typed entries and facts into
+// SQLite together with an explicit main-lane config.
+func (s *Store) ImportV4EntriesWithLaneConfig(meta Metadata, header session.SessionHeader, entries []session.V4Entry, facts []session.V4Fact, laneConfig *session.LaneConfig) error {
+	return s.importV4Entries(meta, header, entries, facts, laneConfig)
+}
+
+func (s *Store) importV4Entries(meta Metadata, header session.SessionHeader, entries []session.V4Entry, facts []session.V4Fact, laneConfig *session.LaneConfig) error {
 	if header.ID == "" {
 		header.ID = meta.SessionID
 	}
@@ -519,7 +575,7 @@ func (s *Store) ImportV4Entries(meta Metadata, header session.SessionHeader, ent
 		if exists > 0 {
 			return fmt.Errorf("sessionstore: session %q already exists", header.ID)
 		}
-		if err := s.upsertSessionTx(tx, meta, header); err != nil {
+		if err := s.upsertSessionTx(tx, meta, header, laneConfig); err != nil {
 			return err
 		}
 		if err := s.insertV4EntriesTx(tx, header.ID, "", entries); err != nil {
@@ -659,7 +715,7 @@ func (s *Store) appendV4Entries(sessionID string, header session.SessionHeader, 
 			return err
 		}
 		if exists == 0 {
-			if err := s.upsertSessionTx(tx, meta, header); err != nil {
+			if err := s.upsertSessionTx(tx, meta, header, nil); err != nil {
 				return err
 			}
 		} else {
@@ -837,7 +893,7 @@ func (s *Store) rebuildBranchCacheTx(tx *sql.Tx, sessionID string) error {
 // Delete removes a session and its dependencies.
 func (s *Store) Delete(sessionID string) error {
 	return s.withLease(sessionID, func(tx *sql.Tx) error {
-		for _, table := range []string{"branch_entries", "branch_tips", "facts", "lanes", "lane_moves", "records", "entries", "writer_leases", "session_stats", "session_sequences"} {
+		for _, table := range []string{"branch_entries", "branch_tips", "facts", "lanes", "lane_config", "lane_moves", "records", "entries", "writer_leases", "session_stats", "session_sequences"} {
 			if _, err := tx.Exec(`DELETE FROM `+table+` WHERE session_id=?`, sessionID); err != nil {
 				return err
 			}
@@ -984,7 +1040,9 @@ func (s *Store) Facts(sessionID string) ([]session.V4Fact, error) {
 
 // Lanes returns the session's lane states.
 func (s *Store) Lanes(sessionID string) ([]session.LaneState, error) {
-	rows, err := s.db.Query(`SELECT lane, leaf_id FROM lanes WHERE session_id=? ORDER BY CASE lane WHEN 'main' THEN 0 ELSE 1 END, lane`, sessionID)
+	rows, err := s.db.Query(`SELECT l.lane, l.leaf_id, COALESCE(lc.config,'') FROM lanes l
+		LEFT JOIN lane_config lc ON lc.session_id=l.session_id AND lc.lane=l.lane
+		WHERE l.session_id=? ORDER BY CASE l.lane WHEN 'main' THEN 0 ELSE 1 END, l.lane`, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -993,16 +1051,34 @@ func (s *Store) Lanes(sessionID string) ([]session.LaneState, error) {
 	for rows.Next() {
 		var lane string
 		var leaf sql.NullString
-		if err := rows.Scan(&lane, &leaf); err != nil {
+		var config string
+		if err := rows.Scan(&lane, &leaf, &config); err != nil {
 			return nil, err
 		}
 		ls := session.LaneState{Lane: lane}
 		if leaf.Valid {
 			ls.LeafID = &leaf.String
 		}
+		if config != "" {
+			var cfg session.LaneConfig
+			if json.Unmarshal([]byte(config), &cfg) == nil {
+				ls.Config = &cfg
+			}
+		}
 		out = append(out, ls)
 	}
 	return out, rows.Err()
+}
+
+// SetLaneConfig upserts the authoritative config for a lane.
+func (s *Store) SetLaneConfig(sessionID, lane string, cfg session.LaneConfig) error {
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("sessionstore: encode lane config: %w", err)
+	}
+	_, err = s.db.Exec(`INSERT INTO lane_config(session_id, lane, config) VALUES(?,?,?)
+		ON CONFLICT(session_id, lane) DO UPDATE SET config=excluded.config`, sessionID, lane, string(raw))
+	return err
 }
 
 // MainLeaf returns the main lane's leaf id.
@@ -1423,7 +1499,7 @@ func (s *Store) Save(header session.SessionHeader, messages agentcore.MessageLis
 			return err
 		}
 		if exists := 0; tx.QueryRow(`SELECT COUNT(*) FROM sessions WHERE id=?`, header.ID).Scan(&exists) == nil && exists == 0 {
-			if err := s.upsertSessionTx(tx, meta, header); err != nil {
+			if err := s.upsertSessionTx(tx, meta, header, nil); err != nil {
 				return err
 			}
 		} else {
@@ -1447,15 +1523,15 @@ func (s *Store) Save(header session.SessionHeader, messages agentcore.MessageLis
 // ForkV4 creates a new session whose contents are the root-to-leaf path in the
 // source session, copied verbatim as typed v4 entries. The new session gets a
 // fresh uuidv7 id and records sourceID as its parent.
-func (s *Store) ForkV4(sourceID, leafID string, now time.Time) (session.SessionHeader, []session.V4Entry, error) {
+func (s *Store) ForkV4(sourceID, leafID string, now time.Time) (session.SessionHeader, *session.LaneConfig, []session.V4Entry, error) {
 	entries, err := s.Entries(sourceID)
 	if err != nil {
-		return session.SessionHeader{}, nil, err
+		return session.SessionHeader{}, nil, nil, err
 	}
 	path := session.PathToLeafV4(entries, leafID)
 	src, err := s.Header(sourceID)
 	if err != nil {
-		return session.SessionHeader{}, nil, err
+		return session.SessionHeader{}, nil, nil, err
 	}
 	newHeader := session.SessionHeader{
 		ID:            session.NewID(now),
@@ -1467,7 +1543,22 @@ func (s *Store) ForkV4(sourceID, leafID string, now time.Time) (session.SessionH
 		ParentSession: sourceID,
 		Cwd:           src.Cwd,
 	}
-	return newHeader, path, nil
+	lanes, err := s.Lanes(sourceID)
+	if err != nil {
+		return session.SessionHeader{}, nil, nil, err
+	}
+	var laneCfg *session.LaneConfig
+	for _, l := range lanes {
+		if l.Lane == "main" && l.Config != nil {
+			cfg := *l.Config
+			laneCfg = &cfg
+			break
+		}
+	}
+	if laneCfg == nil || (laneCfg.Model == "" && laneCfg.Provider == "" && laneCfg.ThinkingLevel == "" && len(laneCfg.ActiveToolNames) == 0) {
+		return session.SessionHeader{}, nil, nil, fmt.Errorf("sessionstore: source session %s has no lane config", sourceID)
+	}
+	return newHeader, laneCfg, path, nil
 }
 
 func (s *Store) Export(id, outPath string) (int, error) {
@@ -1499,6 +1590,9 @@ func (s *Store) Export(id, outPath string) (int, error) {
 	if leaf != "" {
 		v4Header.LeafID = &leaf
 	}
+	if lanes, err := s.Lanes(id); err == nil {
+		v4Header.Lanes = lanes
+	}
 	f, err := os.Create(outPath)
 	if err != nil {
 		return 0, err
@@ -1526,15 +1620,15 @@ func (s *Store) Export(id, outPath string) (int, error) {
 
 // ImportV4 reads a v4 JSONL export and returns a fresh header, typed entries,
 // and facts without writing them.
-func (s *Store) ImportV4(inPath string, now time.Time) (session.SessionHeader, []session.V4Entry, []session.V4Fact, error) {
+func (s *Store) ImportV4(inPath string, now time.Time) (session.SessionHeader, *session.LaneConfig, []session.V4Entry, []session.V4Fact, error) {
 	f, err := os.Open(inPath)
 	if err != nil {
-		return session.SessionHeader{}, nil, nil, err
+		return session.SessionHeader{}, nil, nil, nil, err
 	}
 	defer f.Close()
 	src, entries, facts, err := session.ReadV4JSONL(f)
 	if err != nil {
-		return session.SessionHeader{}, nil, nil, err
+		return session.SessionHeader{}, nil, nil, nil, err
 	}
 	newHeader := session.SessionHeader{
 		ID:            session.NewID(now),
@@ -1546,5 +1640,16 @@ func (s *Store) ImportV4(inPath string, now time.Time) (session.SessionHeader, [
 		ParentSession: src.ID,
 		Cwd:           src.Cwd,
 	}
-	return newHeader, entries, facts, nil
+	var laneCfg *session.LaneConfig
+	for _, lane := range src.Lanes {
+		if lane.Lane == "main" && lane.Config != nil {
+			cfg := *lane.Config
+			laneCfg = &cfg
+			break
+		}
+	}
+	if laneCfg == nil || (laneCfg.Model == "" && laneCfg.Provider == "" && laneCfg.ThinkingLevel == "" && len(laneCfg.ActiveToolNames) == 0) {
+		return session.SessionHeader{}, nil, nil, nil, fmt.Errorf("sessionstore: import %s has no main lane config", inPath)
+	}
+	return newHeader, laneCfg, entries, facts, nil
 }

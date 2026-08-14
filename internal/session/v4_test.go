@@ -69,7 +69,8 @@ func TestBuildProjectionUsesRetainedTail(t *testing.T) {
 		RetainedTail: []json.RawMessage{[]byte(`{"role":"user","content":[{"type":"text","text":"kept"}]}`)},
 	}
 	recent := V4Entry{Type: EntryTypeMessage, ID: "3", ParentID: "2", Timestamp: now, Message: []byte(`{"role":"assistant","content":[{"type":"text","text":"new"}]}`)}
-	proj, err := BuildProjection([]V4Entry{old, comp, recent}, []LaneState{{Lane: "main", LeafID: strPtr("3")}}, "3", nil)
+	cfg := &LaneConfig{Model: "m", Provider: "p", ThinkingLevel: "medium"}
+	proj, err := BuildProjection([]V4Entry{old, comp, recent}, []LaneState{{Lane: "main", LeafID: strPtr("3"), Config: cfg}}, "3", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,6 +79,21 @@ func TestBuildProjectionUsesRetainedTail(t *testing.T) {
 	}
 	if _, ok := proj.Messages[0].(agentcore.CompactionMessage); !ok {
 		t.Fatalf("first message = %T, want compaction", proj.Messages[0])
+	}
+}
+
+func TestBuildProjectionRejectsMissingOrEmptyLaneConfig(t *testing.T) {
+	entries := []V4Entry{{
+		Type:      EntryTypeMessage,
+		ID:        "1",
+		Timestamp: time.Now().UTC(),
+		Message:   []byte(`{"role":"user","content":[{"type":"text","text":"hi"}]}`),
+	}}
+	if _, err := BuildProjection(entries, nil, "1", nil); err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("missing config error = %v, want missing", err)
+	}
+	if _, err := BuildProjection(entries, []LaneState{{Lane: "main", Config: &LaneConfig{}}}, "1", nil); err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("empty config error = %v, want empty", err)
 	}
 }
 

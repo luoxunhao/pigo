@@ -72,7 +72,8 @@ func (s *SessionService) Create(req gen.NewSessionRequest) (gen.Session, *APIErr
 	if model == "" {
 		return gen.Session{}, &APIError{Status: http.StatusConflict, Code: CodeModelNotConfigured, Message: "no default model configured"}
 	}
-	if _, ok := cfg.FindModel(model); !ok {
+	entry, ok := cfg.FindModel(model)
+	if !ok {
 		return gen.Session{}, &APIError{Status: http.StatusBadRequest, Code: CodeModelNotFound, Message: "unknown modelId: " + model}
 	}
 	store, err := s.storeFor(req.Directory)
@@ -92,8 +93,13 @@ func (s *SessionService) Create(req gen.NewSessionRequest) (gen.Session, *APIErr
 		Model:     model,
 		Cwd:       req.Directory,
 	}
+	laneCfg := &session.LaneConfig{
+		Model:         model,
+		Provider:      entry.Provider,
+		ThinkingLevel: "medium",
+	}
 	meta := sessionstore.NewMetadata(id, title, "pigo", model, req.Directory)
-	if err := store.Create(meta, header, nil); err != nil {
+	if err := store.CreateWithLaneConfig(meta, header, nil, laneCfg); err != nil {
 		return gen.Session{}, Internal(err.Error())
 	}
 	mode := "build"
@@ -214,16 +220,30 @@ func (s *SessionService) Load(sessionID string, req gen.LoadSessionRequest) (gen
 	if cfgErr != nil {
 		return gen.SessionLoadResult{}, Internal(cfgErr.Error())
 	}
+	proj, projErr := store.Projection(sessionID, "")
+	if projErr != nil {
+		return gen.SessionLoadResult{}, Internal(projErr.Error())
+	}
+	var sysPrompt *string
+	if meta.Header != nil && meta.Header.SystemPrompt != "" {
+		sysPrompt = &meta.Header.SystemPrompt
+	}
+	displayModel := proj.Model
+	if displayModel == "" {
+		displayModel = meta.ModelName
+	}
 	return gen.SessionLoadResult{
 		SessionId:     sessionID,
 		Directory:     req.Directory,
-		ConfigOptions: sessionConfigOptions(cfg, meta.ModelName, "build"),
+		ConfigOptions: sessionConfigOptions(cfg, displayModel, "build", proj.ThinkingLevel),
 		Messages:      messages,
 		HasMore:       win.Start > 0,
 		NextCursor:    next,
 		CurrentLeafId: optString(win.LeafID),
 		CurrentLane:   optString(win.Lane),
 		Lanes:         lanesToGen(win.Lanes),
+		LaneConfig:    laneConfigFromProj(proj),
+		SystemPrompt:  sysPrompt,
 	}, nil
 }
 
@@ -332,6 +352,10 @@ func (s *SessionService) Status(sessionID, directory string) (gen.SessionStatusR
 	}
 	mode = sessionMode(meta)
 	queued := 0
+	var sysPrompt *string
+	if meta.Header != nil && meta.Header.SystemPrompt != "" {
+		sysPrompt = &meta.Header.SystemPrompt
+	}
 	return gen.SessionStatusResult{
 		SessionId:     sessionID,
 		Status:        "idle",
@@ -342,7 +366,24 @@ func (s *SessionService) Status(sessionID, directory string) (gen.SessionStatusR
 		CurrentLeafId: optString(proj.LeafID),
 		CurrentLane:   optString(proj.Lane),
 		Lanes:         lanesToGen(proj.Lanes),
+		LaneConfig:    laneConfigFromProj(proj),
+		SystemPrompt:  sysPrompt,
 	}, nil
+}
+
+func laneConfigFromProj(proj *session.ProjectLeaf) *map[string]any {
+	if proj == nil {
+		return nil
+	}
+	cfg := map[string]any{
+		"model":         proj.Model,
+		"provider":      proj.Provider,
+		"thinkingLevel": proj.ThinkingLevel,
+	}
+	if proj.Config != nil && len(proj.Config.ActiveToolNames) > 0 {
+		cfg["activeToolNames"] = proj.Config.ActiveToolNames
+	}
+	return &cfg
 }
 
 // UpdateConfig updates session-level model, thinking level, or mode.
@@ -369,11 +410,8 @@ func (s *SessionService) UpdateConfig(sessionID string, req gen.UpdateSessionReq
 		meta.ModelName = *req.Model
 	}
 	custom := readSessionCustom(meta)
-	if req.ThinkingLevel != nil && *req.ThinkingLevel != "" {
-		if !validThinkingLevel(*req.ThinkingLevel) {
-			return gen.ConfigOptionsResult{}, InvalidParams("unknown thinking level: " + *req.ThinkingLevel)
-		}
-		custom["thinkingLevel"] = *req.ThinkingLevel
+	if req.ThinkingLevel != nil && *req.ThinkingLevel != "" && !validThinkingLevel(*req.ThinkingLevel) {
+		return gen.ConfigOptionsResult{}, InvalidParams("unknown thinking level: " + *req.ThinkingLevel)
 	}
 	if req.Mode != nil && *req.Mode != "" {
 		if !s.modeKnown(*req.Mode) {
@@ -382,11 +420,39 @@ func (s *SessionService) UpdateConfig(sessionID string, req gen.UpdateSessionReq
 		custom["mode"] = *req.Mode
 	}
 	meta.CustomMetadata = writeSessionCustom(custom)
+	lanes, lanesErr := store.Lanes(sessionID)
+	if lanesErr != nil {
+		return gen.ConfigOptionsResult{}, Internal(lanesErr.Error())
+	}
+	mainCfg := &session.LaneConfig{Model: meta.ModelName, ThinkingLevel: "medium"}
+	for _, l := range lanes {
+		if l.Lane == "main" && l.Config != nil {
+			cfgCopy := *l.Config
+			mainCfg = &cfgCopy
+			break
+		}
+	}
+	if req.Model != nil && *req.Model != "" {
+		entry, _ := cfg.FindModel(*req.Model)
+		mainCfg.Model = *req.Model
+		mainCfg.Provider = entry.Provider
+	}
+	if req.ThinkingLevel != nil && *req.ThinkingLevel != "" {
+		mainCfg.ThinkingLevel = *req.ThinkingLevel
+	}
+	if err := store.SetLaneConfig(sessionID, "main", *mainCfg); err != nil {
+		return gen.ConfigOptionsResult{}, Internal(err.Error())
+	}
+	if meta.Header != nil {
+		meta.Header.Model = meta.ModelName
+		meta.Header.Provider = mainCfg.Provider
+		meta.Header.UpdatedAt = time.Now().UTC()
+	}
 	if err := store.SaveMetadata(meta); err != nil {
 		return gen.ConfigOptionsResult{}, Internal(err.Error())
 	}
 	mode := sessionMode(meta)
-	thinking := sessionThinking(meta)
+	thinking := mainCfg.ThinkingLevel
 	model := meta.ModelName
 	return gen.ConfigOptionsResult{ConfigOptions: sessionConfigOptions(cfg, model, mode, thinking)}, nil
 }
@@ -455,14 +521,6 @@ func sessionMode(meta sessionstore.Metadata) string {
 		return v
 	}
 	return "build"
-}
-
-func sessionThinking(meta sessionstore.Metadata) string {
-	custom := readSessionCustom(meta)
-	if v, ok := custom["thinkingLevel"].(string); ok && v != "" {
-		return v
-	}
-	return "medium"
 }
 
 func knownMode(mode string) bool {

@@ -21,7 +21,7 @@ import (
 //go:embed web
 var spaFiles embed.FS
 
-// Default configuration values (see tasks/spec-remote-control.md §3.2).
+// Default configuration values (see tasks/spec/spec-011-remote-control.md §3.2).
 const (
 	defaultPairTTL = 10 * time.Minute
 	cookieName     = "pigo_rc"

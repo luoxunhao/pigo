@@ -2,7 +2,7 @@
 // (US-001). It is the alt-screen counterpart to the line-based REPL in
 // internal/cli/repl: cmd/pigo's dispatch launches it via Run when there is no
 // prompt, stdout is a TTY, and --no-tui is not set; otherwise the REPL path is
-// used. See tasks/spec-tui-agent.md (Sections 2.1, 4.2, 5.2) for the design.
+// used. See tasks/spec/spec-014-tui-agent.md (Sections 2.1, 4.2, 5.2) for the design.
 //
 // This node is the skeleton: a root Model (Init/Update/View) built on Bubble
 // Tea v2 (charm.land/bubbletea/v2) that renders an empty shell — a placeholder

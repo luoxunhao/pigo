@@ -11,12 +11,14 @@ import (
 
 	"github.com/smallnest/pigo/internal/acp"
 	"github.com/smallnest/pigo/internal/agentcore"
+	"github.com/smallnest/pigo/internal/agenttool"
 	"github.com/smallnest/pigo/internal/cli"
 	"github.com/smallnest/pigo/internal/cli/config"
 	"github.com/smallnest/pigo/internal/cli/prompts"
 	"github.com/smallnest/pigo/internal/cli/repl"
-	"github.com/smallnest/pigo/internal/cli/run"
+	clirun "github.com/smallnest/pigo/internal/cli/run"
 	"github.com/smallnest/pigo/internal/compaction"
+	"github.com/smallnest/pigo/internal/contextbuild"
 	"github.com/smallnest/pigo/internal/dream"
 	"github.com/smallnest/pigo/internal/httpapi"
 	"github.com/smallnest/pigo/internal/httpapi/gen"
@@ -74,8 +76,33 @@ type serveComponents struct {
 	goal    httpapi.GoalFunc
 }
 
+type promptRunState struct {
+	model    string
+	provider string
+	thinking string
+}
+
+// resolvePromptRunState derives the provider-visible run state from lane.config,
+// falling back to process defaults only when the projection is incomplete.
+func resolvePromptRunState(proj *session.ProjectLeaf, fallbackModel, fallbackProvider, fallbackThinking string) promptRunState {
+	st := promptRunState{model: fallbackModel, provider: fallbackProvider, thinking: fallbackThinking}
+	if proj == nil {
+		return st
+	}
+	if proj.Model != "" {
+		st.model = proj.Model
+	}
+	if proj.Provider != "" {
+		st.provider = proj.Provider
+	}
+	if proj.ThinkingLevel != "" {
+		st.thinking = proj.ThinkingLevel
+	}
+	return st
+}
+
 func makePromptRunner(opts cliOptions) (*serveComponents, error) {
-	env, err := run.SetupEnv(
+	env, err := clirun.SetupEnv(
 		opts.model,
 		opts.baseURL,
 		opts.protocol,
@@ -83,10 +110,12 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 		opts.apiKey,
 		opts.noTools,
 		opts.noSkills,
+		!opts.noContextFiles,
 		opts.systemPrompt,
 		opts.appendSystemPrompt,
+		opts.pluginDirs,
 		opts.memory.Memory.Enabled,
-		run.NewToolPolicy(opts.allowedTools, opts.disallowedTools),
+		clirun.NewToolPolicy(opts.allowedTools, opts.disallowedTools),
 	)
 	if err != nil {
 		return nil, err
@@ -141,19 +170,8 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 		sessions: make(map[string]*serveEventState),
 		toolArgs: make(map[string]any),
 	}
+	var observations sync.Map
 	promptRun := func(ctx context.Context, run httpapi.PromptRun) (gen.PromptResponse, error) {
-		model := run.Model
-		if model == "" {
-			model = env.Model
-		}
-		thinking := run.ThinkingLevel
-		if thinking == "" {
-			thinking = opts.thinkingLevel
-		}
-		if thinking == "" {
-			thinking = string(agentcore.ThinkingMedium)
-		}
-
 		var history agentcore.MessageList
 		store, storeErr := sessionstore.OpenForWorkspace(pigoHome, run.Directory)
 		if storeErr != nil {
@@ -172,6 +190,37 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 		history = proj.Messages
 		curLeaf = proj.LeafID
 		isFirstPrompt := len(history) == 0
+		// lane.config is the runtime authority; prompt requests no longer carry
+		// model/thinking (rejected at the HTTP/ACP boundary).
+		st := resolvePromptRunState(proj, env.Model, runner.ProviderName, string(agentcore.ThinkingMedium))
+		model, providerName, thinking := st.model, st.provider, st.thinking
+		build, buildErr := clirun.NewContextBuild(clirun.ContextBuildInput{
+			Project:            proj,
+			BaseInstruction:    env.BaseInstruction,
+			Cwd:                run.Directory,
+			ContextFiles:       env.ContextFiles,
+			AppendInstructions: env.AppendInstructions,
+			Skills:             env.Skills,
+			AllTools:           env.Tools,
+			Plugins:            env.Plugins,
+			Reminders:          clirun.TodoReminders(env.Tools),
+			Warn:               os.Stderr,
+		})
+		if buildErr != nil {
+			return gen.PromptResponse{}, buildErr
+		}
+		build.Ctx.Model = model
+		build.Ctx.Provider = providerName
+		build.Ctx.ThinkingLevel = agentcore.ThinkingLevel(thinking)
+		rb := contextbuild.RequestBuilder(build.Ctx, build.Deps, build.Req)
+		var lastPrompt string
+		requestBuilder := func(ctx context.Context, msgs agentcore.MessageList) (provider.LlmContext, error) {
+			llm, err := rb(ctx, msgs)
+			if err == nil {
+				lastPrompt = llm.SystemPrompt
+			}
+			return llm, err
+		}
 
 		var partialText, partialThought string
 		onEvent := func(ev agentcore.AgentEvent) {
@@ -185,14 +234,22 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 			}
 			mapper.publish(run.SessionID, run.MessageID, run.Publish, ev)
 		}
+		compacted := false
 		onCompaction := func(ctx context.Context, res *compaction.CompactionResult) error {
 			if store == nil || res == nil {
 				return nil
 			}
 			_, err := store.AppendCompaction(run.SessionID, header, res)
+			if err == nil {
+				compacted = true
+			}
 			return err
 		}
-		msgs, last, err := runner.RunWithTools(ctx, run.Text, nil, history, env.SysPrompt, env.Tools, model, thinking, run.BeforeToolCall, onEvent, acp.TurnHooks{OnCompaction: onCompaction})
+		// Observed-state is per session: a shared ACP process must not let one
+		// session's read authorize another session's edit.
+		obsAny, _ := observations.LoadOrStore(run.SessionID, agenttool.NewFileObservationRecorder())
+		sessionTools := agenttool.WithFileObservation(env.Tools, obsAny.(*agenttool.FileObservationRecorder))
+		msgs, last, err := runner.RunWithTools(ctx, run.Text, nil, history, env.SysPrompt, sessionTools, model, thinking, run.BeforeToolCall, onEvent, acp.TurnHooks{OnCompaction: onCompaction, RequestBuilder: requestBuilder})
 		if store != nil && (len(msgs) > 0 || err != nil) {
 			tail := msgs
 			if len(history) > 0 && len(msgs) >= len(history) {
@@ -200,8 +257,10 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 			}
 			header.ID = run.SessionID
 			header.Model = model
-			header.Provider = runner.ProviderName
-			header.SystemPrompt = env.SysPrompt
+			header.Provider = providerName
+			if lastPrompt != "" {
+				header.SystemPrompt = lastPrompt
+			}
 			header.Cwd = run.Directory
 			header.UpdatedAt = time.Now().UTC()
 			if err != nil {
@@ -230,7 +289,7 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 					updateSessionMeta(store, run.SessionID, model, header.UpdatedAt)
 				}
 			} else if len(msgs) > 0 {
-				if len(msgs) < len(history) {
+				if compacted {
 					if saveErr := store.Save(header, msgs); saveErr != nil {
 						return gen.PromptResponse{}, saveErr
 					}
@@ -291,7 +350,7 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 			if modelID == "" {
 				modelID = env.Model
 			}
-			model := provider.Model{Provider: runner.ProviderName, ID: run.WireModel(modelID), ContextWindow: live.ContextWindow}
+			model := provider.Model{Provider: runner.ProviderName, ID: clirun.WireModel(modelID), ContextWindow: live.ContextWindow}
 			stream := provider.StreamFnFromProvider(runner.Provider)
 			scfg := provider.StreamConfig{APIKey: env.APIKey}
 			res, compactErr := compaction.Compact(ctx, stream, model, msgs, compaction.DefaultCompactionSettings, -1, nil, "", scfg)
@@ -316,7 +375,7 @@ func makePromptRunner(opts cliOptions) (*serveComponents, error) {
 		},
 		dream: func(ctx context.Context, args string) (string, error) {
 			dryRun := strings.Contains(args, "--dry-run")
-			thinking, thinkErr := run.ResolveThinkingLevel(opts.thinkingLevel)
+			thinking, thinkErr := clirun.ResolveThinkingLevel(opts.thinkingLevel)
 			if thinkErr != nil {
 				return "", thinkErr
 			}

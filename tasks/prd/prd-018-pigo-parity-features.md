@@ -242,7 +242,7 @@ pigo 是用 Go 复刻的 pi coding agent。当前 pigo 已具备 agent loop、7 
 
 - 图像生成（image generation）——本次仅做图像输入。
 - 完整移植 pi 的多进程 supervisor/IPC 编排器；仅做可选的 process 隔离。
-- 富 TUI（编辑器组件、fuzzy、kill-ring 等）——pigo 已刻意移除（见 `prd-remove-tui.md`），维持行式 REPL。
+- 富 TUI（编辑器组件、fuzzy、kill-ring 等）——pigo 已刻意移除（见 `tasks/prd/prd-026-remove-tui.md`），维持行式 REPL。
 - `/share`（GitHub gist 分享）、`/scoped-models`、themes 主题系统、telemetry 遥测、`/changelog`、`/reload` 热重载——不在本轮九项内。
 - 与 pi 会话文件的 wire 级兼容——pigo 自有 schema（见现有 session.go 说明）。
 

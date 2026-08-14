@@ -38,18 +38,18 @@ Find the input PRD in one of these ways:
 ```
 Provide the PRD to convert:
 
-A. File path (e.g., tasks/prd-priority-system.md)
+A. File path (e.g., tasks/prd/prd-001-priority-system.md)
 B. GitHub Issue URL
 C. Paste PRD content directly
-D. Auto-detect: scan tasks/ directory for recent PRDs
+D. Auto-detect: scan tasks/prd/ directory for recent PRDs
 ```
 
 If auto-detecting, list available PRDs and let the user choose:
 
 ```
-Found PRDs in tasks/:
-  1. tasks/prd-priority-system.md (2024-03-15)
-  2. tasks/prd-user-auth.md (2024-03-10)
+Found PRDs in tasks/prd/:
+  1. tasks/prd/prd-001-priority-system.md (2024-03-15)
+  2. tasks/prd/prd-002-user-auth.md (2024-03-10)
 
 Which PRD should I convert? [1/2]
 ```
@@ -332,9 +332,8 @@ Ask user for save location:
 ```
 Where should I save the SPEC?
 
-A. tasks/spec-[feature-name].md (alongside PRD, recommended)
-B. docs/spec-[feature-name].md
-C. Custom path: [specify]
+A. tasks/spec/spec-NNN-[feature-name].md (alongside PRD, recommended)
+B. Custom path: [specify]
 ```
 
 ---

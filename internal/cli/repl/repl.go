@@ -36,6 +36,7 @@ import (
 	"github.com/smallnest/pigo/internal/cli/ui"
 	"github.com/smallnest/pigo/internal/clipboard"
 	"github.com/smallnest/pigo/internal/compaction"
+	"github.com/smallnest/pigo/internal/contextbuild"
 	"github.com/smallnest/pigo/internal/hooks"
 	"github.com/smallnest/pigo/internal/memory"
 	"github.com/smallnest/pigo/internal/plugin"
@@ -52,6 +53,7 @@ type replDeps struct {
 	store    *sessionstore.Store
 	header   session.SessionHeader
 	agentCtx *agentcore.AgentContext
+	build    *run.ContextBuild
 	live     *cli.LiveConfig
 	reg      *agenttool.ToolRegistry
 	// reminders holds the per-turn system-reminder providers (US-002). It is nil
@@ -625,6 +627,23 @@ func streamRun(ctx context.Context, out io.Writer, deps *replDeps, prompt string
 			return err
 		},
 	}
+	// contextbuild owns per-request assembly: sync the live lane state (model
+	// switches via /model) and hook-provided reminders, then install the request
+	// seam into the loop.
+	if deps.build != nil {
+		deps.build.Ctx.Model = deps.live.Model
+		deps.build.Ctx.Provider = deps.live.ProviderName
+		deps.build.Ctx.ThinkingLevel = deps.live.ThinkingLevel
+		deps.build.Deps.Reminders = deps.reminders
+		rb := contextbuild.RequestBuilder(deps.build.Ctx, deps.build.Deps, deps.build.Req)
+		cfg.LoopConfig.RequestBuilder = func(ctx context.Context, msgs agentcore.MessageList) (provider.LlmContext, error) {
+			llm, err := rb(ctx, msgs)
+			if err == nil && llm.SystemPrompt != "" {
+				deps.header.SystemPrompt = llm.SystemPrompt
+			}
+			return llm, err
+		}
+	}
 	// Per-turn wiring of the tool-execution + Stop seams (PreToolUse/PostToolUse/
 	// Stop) onto this turn's freshly-built cfg; a nil dispatcher is a no-op so the
 	// hot path pays nothing when no hooks are configured (FR-18).
@@ -823,7 +842,7 @@ func runForkClone(out io.Writer, deps *replDeps, line string) {
 		leafID = entries[users[n-1].idx].ParentID
 	}
 
-	newHeader, path, err := deps.store.ForkV4(deps.header.ID, leafID, time.Now().UTC())
+	newHeader, laneCfg, path, err := deps.store.ForkV4(deps.header.ID, leafID, time.Now().UTC())
 	if err != nil {
 		fmt.Fprintf(out, "pigo: fork failed: %v\n", err)
 		return
@@ -832,7 +851,7 @@ func runForkClone(out io.Writer, deps *replDeps, line string) {
 	meta.ParentSessionID = deps.header.ID
 	meta.MessageCount = len(path)
 	meta.LastActiveAt = newHeader.UpdatedAt
-	if err := deps.store.ImportV4Entries(meta, newHeader, path, nil); err != nil {
+	if err := deps.store.ImportV4EntriesWithLaneConfig(meta, newHeader, path, nil, laneCfg); err != nil {
 		fmt.Fprintf(out, "pigo: fork failed: %v\n", err)
 		return
 	}
@@ -1162,7 +1181,7 @@ func runImport(out io.Writer, deps *replDeps, line string) {
 		fmt.Fprintln(out, "usage: /import <path.jsonl>")
 		return
 	}
-	newHeader, entries, facts, err := deps.store.ImportV4(path, time.Now().UTC())
+	newHeader, laneCfg, entries, facts, err := deps.store.ImportV4(path, time.Now().UTC())
 	if err != nil {
 		fmt.Fprintf(out, "pigo: import failed: %v\n", err)
 		return
@@ -1170,7 +1189,7 @@ func runImport(out io.Writer, deps *replDeps, line string) {
 	meta := sessionstore.NewMetadata(newHeader.ID, "Session", "pigo", newHeader.Model, deps.cwd)
 	meta.ParentSessionID = newHeader.ParentSession
 	meta.LastActiveAt = newHeader.UpdatedAt
-	if err := deps.store.ImportV4Entries(meta, newHeader, entries, facts); err != nil {
+	if err := deps.store.ImportV4EntriesWithLaneConfig(meta, newHeader, entries, facts, laneCfg); err != nil {
 		fmt.Fprintf(out, "pigo: import failed: %v\n", err)
 		return
 	}

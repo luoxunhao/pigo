@@ -126,6 +126,37 @@ func TestRuntimeRunnerCustomProviderUsesRegistryEndpoint(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunnerForwardsConfiguredMaxTokens(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, customOpenAISSE)
+	}))
+	defer srv.Close()
+
+	models := newConfiguredModels(t, config.ModelConfig{
+		Provider: "custom-gw", ModelID: "m1", Name: "M1",
+		BaseURL: srv.URL, APIKey: "sk-custom", Protocol: "openai",
+		MaxTokens: 32000,
+	})
+	runner := &RuntimeRunner{
+		Provider:         fakeProvider{},
+		ProviderName:     "fake",
+		Model:            "custom-gw/m1",
+		ConfiguredModels: models,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, _, err := runner.Run(ctx, "hi", nil, nil, "sys", "custom-gw/m1", "", nil, func(agentcore.AgentEvent) {}, TurnHooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gotBody["max_tokens"]; got != float64(32000) {
+		t.Fatalf("max_tokens = %v, want 32000", got)
+	}
+}
+
 const customOpenAISSE = `data: {"id":"c1","model":"m1","choices":[{"delta":{"content":"Hello"}}]}
 
 data: {"id":"c1","model":"m1","choices":[{"delta":{},"finish_reason":"stop"}]}

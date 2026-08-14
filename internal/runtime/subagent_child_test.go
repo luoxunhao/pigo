@@ -212,16 +212,13 @@ func TestChildSessionErrorWithContentSurfacesDiagnostic(t *testing.T) {
 	}
 }
 
-func TestChildSessionLengthRecoversWithGuidance(t *testing.T) {
+func TestChildSessionLengthPreservesCommittedText(t *testing.T) {
 	reg := NewRegistry()
 	child := &fauxProvider{
 		name:   "faux-child",
 		models: []provider.Model{{Provider: "faux-child", ID: "child"}},
 		turns: []fauxTurn{
-			lengthToolTurn("c1", "write", `{"path":"report.md"`),
-			lengthToolTurn("c2", "write", `{"path":"report.md"`),
-			lengthToolTurn("c3", "write", `{"path":"report.md"`),
-			textTurn("concise summary <<DONE>>"),
+			lengthTextToolTurn("partial report <<DONE>>", "c1", "write", `{"path":"report.md"`),
 		},
 	}
 	tool := NewSubAgentTool(SubAgentSpec{
@@ -239,10 +236,10 @@ func TestChildSessionLengthRecoversWithGuidance(t *testing.T) {
 		t.Fatalf("Execute err = %v", err)
 	}
 	if res.IsError {
-		t.Fatalf("child must recover after short-reply guidance: %+v", res)
+		t.Fatalf("child length stop with committed text must be a result: %+v", res)
 	}
-	if got := agentcore.ContentToText(res.Content); !strings.Contains(got, "concise summary") {
-		t.Errorf("result = %q, want the concise summary", got)
+	if got := agentcore.ContentToText(res.Content); !strings.Contains(got, "partial report") {
+		t.Errorf("result = %q, want the preserved partial report", got)
 	}
 }
 

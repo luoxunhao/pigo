@@ -1,0 +1,135 @@
+{
+  "name": "convert",
+  "piCommit": "fc09a0c63f08e133112f3d44f6591e1a0aa7fcc1",
+  "deviations": [
+    {
+      "code": "wire-shaping",
+      "scope": "provider transform",
+      "piCommit": "fc09a0c63f08e133112f3d44f6591e1a0aa7fcc1",
+      "reason": "Go provider abstraction: model-aware wire shaping lives in provider.TransformMessages, not contextbuild"
+    },
+    {
+      "code": "storage-metadata",
+      "scope": "metadata",
+      "piCommit": "fc09a0c63f08e133112f3d44f6591e1a0aa7fcc1",
+      "reason": "id/timestamp/usage/cost are excluded from the parity comparison"
+    }
+  ],
+  "input": {
+    "model": "deepseek/deepseek-v4-pro",
+    "provider": "deepseek",
+    "thinkingLevel": "medium",
+    "leafId": "5",
+    "entries": [
+      {
+        "type": "message",
+        "id": "1",
+        "timestamp": "2026-08-14T00:00:00Z",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "hello"
+            }
+          ]
+        }
+      },
+      {
+        "type": "compaction",
+        "id": "2",
+        "parentId": "1",
+        "timestamp": "2026-08-14T00:01:00Z",
+        "summary": "summarized"
+      },
+      {
+        "type": "branch_summary",
+        "id": "3",
+        "parentId": "2",
+        "timestamp": "2026-08-14T00:02:00Z",
+        "summary": "branch came back"
+      },
+      {
+        "type": "custom",
+        "id": "4",
+        "parentId": "3",
+        "timestamp": "2026-08-14T00:03:00Z",
+        "customType": "note",
+        "content": "custom note"
+      },
+      {
+        "type": "message",
+        "id": "5",
+        "parentId": "4",
+        "timestamp": "2026-08-14T00:04:00Z",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "mediaType": "image/png",
+                "data": "aGVsbG8="
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "projectors": {
+      "note": {
+        "content": "custom note",
+        "display": false
+      }
+    },
+    "baseInstruction": "You are a parity agent.",
+    "cwd": "E:/parity/project",
+    "blockImages": true
+  },
+  "expected": {
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "The conversation history before this point was compacted into the following summary:\n\n\u003csummary\u003e\nsummarized\n\u003c/summary\u003e"
+          }
+        ],
+        "timestamp": 1786665660000
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "The following is a summary of a branch that this conversation came back from:\n\n\u003csummary\u003e\nbranch came back\u003c/summary\u003e"
+          }
+        ],
+        "timestamp": 1786665720000
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "custom note"
+          }
+        ],
+        "timestamp": 1786665780000
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "(image omitted: model does not support images)"
+          }
+        ],
+        "timestamp": 0
+      }
+    ],
+    "systemPrompt": "You are a parity agent.\n\n# Guidelines\n- Prefer precise, minimal changes and verify your work with the available tools.\n- Keep the user informed of progress and never claim an action was taken unless it was.\n\nEnvironment:\n- Working directory: E:/parity/project\n- OS: windows/amd64\n"
+  }
+}

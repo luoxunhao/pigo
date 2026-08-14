@@ -115,6 +115,29 @@ func TestOpenRouterMissingKeyIsEarlyError(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleForwardsMaxTokens(t *testing.T) {
+	cs := newCaptureServer(t, openaiToolCallSSE)
+	p := NewOpenRouterProvider(cs.srv.URL, []Model{{Provider: "openrouter", ID: "openai/gpt-4o"}})
+
+	stream, err := p.StreamCompletion(context.Background(), CompletionRequest{
+		Model: "openai/gpt-4o",
+		Context: LlmContext{
+			Messages: agentcore.MessageList{agentcore.UserMessage{
+				RoleField: agentcore.RoleUser,
+				Content:   agentcore.ContentList{agentcore.NewTextContent("hi")},
+			}},
+		},
+		Config: StreamConfig{APIKey: "sk-test", Extra: map[string]any{"max_tokens": 32000}},
+	})
+	if err != nil {
+		t.Fatalf("StreamCompletion: %v", err)
+	}
+	drainStream(t, stream)
+	if got := cs.body["max_tokens"]; got != float64(32000) {
+		t.Fatalf("max_tokens = %v, want 32000", got)
+	}
+}
+
 // TestOllamaProviderNoAuth verifies the local Ollama provider sends no
 // Authorization header and still streams through OpenAIDecoder.
 func TestOllamaProviderNoAuth(t *testing.T) {

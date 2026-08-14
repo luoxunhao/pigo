@@ -1,6 +1,6 @@
 # SPEC: 持久记忆系统 + 无限上下文
 
-> Technical specification derived from: tasks/prd-persistent-memory-infinite-context.md
+> Technical specification derived from: tasks/prd/prd-013-persistent-memory-infinite-context.md
 > Generated: 2026-08-01 | Target branch: master | Commit: d3100e8
 
 ## 1. Summary
@@ -11,7 +11,7 @@
 
 ### 1.2 PRD Reference
 
-- Source: `tasks/prd-persistent-memory-infinite-context.md`
+- Source: `tasks/prd/prd-013-persistent-memory-infinite-context.md`
 - User Stories covered: US-001 ~ US-011
 - Functional Requirements covered: FR-1 ~ FR-20
 

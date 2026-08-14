@@ -32,6 +32,7 @@ import (
 	"strings"
 
 	"github.com/smallnest/pigo/internal/agentcore"
+	"github.com/smallnest/pigo/internal/agenttool"
 	"github.com/smallnest/pigo/internal/jsonrpc"
 )
 
@@ -380,6 +381,9 @@ func (t *SubAgentTool) executeGoroutine(ctx context.Context, id, prompt, descrip
 	if len(tools) == 0 && runCfg.Batch.ToolExecutorConfig.Registry != nil {
 		tools = runCfg.Batch.ToolExecutorConfig.Registry.List()
 	}
+	// A delegated agent is its own owner: give it a fresh observed-state
+	// recorder so reads from one sub-agent call never authorize another's edits.
+	tools = agenttool.WithFileObservation(tools, agenttool.NewFileObservationRecorder())
 	childCtx := &agentcore.AgentContext{
 		SystemPrompt: t.spec.SystemPrompt,
 		Messages: agentcore.MessageList{
@@ -504,6 +508,7 @@ func (t *SubAgentTool) executeChildSession(ctx context.Context, id, prompt, desc
 			tools = cfg.Batch.ToolExecutorConfig.Registry.List()
 		}
 	}
+	tools = agenttool.WithFileObservation(tools, agenttool.NewFileObservationRecorder())
 	child := t.registry.CreateOrGet(parentID, id, t.spec.Name, t.spec.SystemPrompt, tools, factory, nil, t.spec.Cwd)
 
 	parentEmit := agentcore.ProgressEmitterFromContext(ctx)

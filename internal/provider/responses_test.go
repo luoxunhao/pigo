@@ -164,6 +164,40 @@ func TestResponsesDriverPostsToResponsesEndpoint(t *testing.T) {
 	}
 }
 
+func TestResponsesDriverForwardsMaxOutputTokens(t *testing.T) {
+	var gotBody string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Body != nil {
+			b, _ := io.ReadAll(r.Body)
+			gotBody = string(b)
+		}
+		return sseResponse(completedFrame("ok", "resp_1", "gpt-4o", 3, 2)), nil
+	})
+	d := newResponsesTestDriver("https://api.openai.test/v1", rt)
+
+	req := CompletionRequest{
+		Model:   "gpt-4o",
+		Context: LlmContext{Messages: agentcore.MessageList{userMsg("hello")}},
+		Config: StreamConfig{
+			APIKey: "sk-test",
+			Extra:  map[string]any{"max_tokens": 32000},
+		},
+	}
+	stream, err := d.StreamCompletion(context.Background(), req)
+	if err != nil {
+		t.Fatalf("StreamCompletion returned early error: %v", err)
+	}
+	drain(t, stream)
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(gotBody), &payload); err != nil {
+		t.Fatalf("request body not valid JSON: %v", err)
+	}
+	if got := payload["max_output_tokens"]; got != float64(32000) {
+		t.Fatalf("max_output_tokens = %v, want 32000", got)
+	}
+}
+
 // The driver must emit incremental text partials as deltas arrive, and each
 // partial must carry the text accumulated so far (not just the latest delta), so
 // the terminal message equals the concatenation the caller already rendered.

@@ -315,10 +315,10 @@ func TestFauxSeamSixHooks(t *testing.T) {
 }
 
 // TestFauxSeamTruncationProtection verifies that a truncated (stopReason=length)
-// tool-call turn is protected: the tool is NOT executed and a synthesized failed
-// tool result is fed back, all through the seam.
+// tool-call turn is protected: the tool is NOT executed, the call is dropped,
+// and the turn ends with the length stop preserved, all through the seam.
 func TestFauxSeamTruncationProtection(t *testing.T) {
-	// Turn 1: a tool call that arrives truncated. Turn 2: end.
+	// Turn 1: a tool call that arrives truncated.
 	truncPartial := agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant, Content: agentcore.ContentList{agentcore.NewToolCallContent("t1", "echo", json.RawMessage(`{}`))}}
 	truncFinal := truncPartial
 	truncFinal.StopReason = agentcore.StopReasonLength
@@ -341,14 +341,15 @@ func TestFauxSeamTruncationProtection(t *testing.T) {
 	if countKind(kinds, agentcore.EventToolExecutionEnd) != 0 {
 		t.Errorf("truncated tool call must not execute, got %v", kinds)
 	}
-	var foundFail bool
-	for _, m := range msgs {
-		if tr, ok := m.(agentcore.ToolResultMessage); ok && tr.IsError && tr.ToolCallID == "t1" {
-			foundFail = true
-		}
+	if p.callCount() != 1 {
+		t.Fatalf("provider calls = %d, want 1 (length ends the turn)", p.callCount())
 	}
-	if !foundFail {
-		t.Errorf("expected a synthesized failed tool result for the truncated call, got %+v", msgs)
+	last := agentcore.LastAssistantOf(msgs)
+	if last == nil || last.StopReason != agentcore.StopReasonLength {
+		t.Fatalf("last = %+v, want length stop", last)
+	}
+	if len(last.ToolCalls()) != 0 {
+		t.Errorf("truncated tool calls must be dropped, got %+v", last.ToolCalls())
 	}
 }
 

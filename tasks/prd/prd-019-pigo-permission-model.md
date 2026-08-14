@@ -155,7 +155,7 @@ ask 不会悄悄执行本应确认的调用。
 - [ ] README 新增"权限模型"章节，说明三档、配置、切换、与 trust/hooks 的优先级
 - [ ] `config.toml.example` 新增 `permission_mode` 与 `--approve` 别名说明
 - [ ] CHANGELOG `[Unreleased]` 增加 Added 条目
-- [ ] 新增 `tasks/spec-permission-model.md` 技术设计文档
+- [ ] 新增 `tasks/spec/spec-008-permission-model.md` 技术设计文档
 - [ ] `docs/harness-capability-matrix.md` 安全护栏现状更新，移除"无统一策略入口"过期描述
 
 ### US-011: 真实客户端端到端验证

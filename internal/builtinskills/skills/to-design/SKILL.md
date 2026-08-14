@@ -42,7 +42,7 @@ If the team just needs the concrete contract to code against, use `/prd-to-spec`
 ```
 Provide the PRD (or idea) to design from:
 
-A. File path (e.g., tasks/prd-priority-system.md)
+A. File path (e.g., tasks/prd/prd-001-priority-system.md)
 B. GitHub Issue URL
 C. Paste content directly
 D. Just describe the idea — I'll design from the conversation
@@ -201,9 +201,8 @@ Present the doc and steer feedback to the sections that matter most:
 ```
 设计文档保存到哪里？
 
-A. tasks/design-[feature-name].md（紧挨 PRD，推荐）
-B. docs/design/[feature-name].md
-C. 自定义路径：[指定]
+A. docs/design/[feature-name].md（推荐）
+B. 自定义路径：[指定]
 ```
 
 ---

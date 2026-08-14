@@ -82,6 +82,7 @@ func (d *openAICompatDriver) StreamCompletion(ctx context.Context, req Completio
 		// Early "cannot build the stream": reference the provider, never a value.
 		return nil, fmt.Errorf("%s: missing API key", d.name)
 	}
+	req.Context.Messages = TransformMessages(req.Context.Messages, modelForRequest(d.name, req.Model, d.models), nil)
 	if err := checkImageSupport(d.name, req.Model, d.models, req.Context.Messages); err != nil {
 		return nil, err
 	}
@@ -123,6 +124,9 @@ func encodeOpenAIRequest(req CompletionRequest) ([]byte, error) {
 		"stream":         true,
 		"stream_options": map[string]any{"include_usage": true},
 	}
+	if maxTok := maxOutputTokensFor(req); maxTok > 0 {
+		body["max_tokens"] = maxTok
+	}
 	// Reasoning effort: when a thinking level is requested, forward it as the
 	// OpenAI `reasoning_effort` field. Reasoning models (o-series, DeepSeek-R1,
 	// GLM-thinking, …) read this to open their reasoning channel; omitting it
@@ -162,10 +166,6 @@ func encodeOpenAIMessage(m agentcore.Message) []map[string]any {
 	switch msg := m.(type) {
 	case agentcore.UserMessage:
 		return []map[string]any{{"role": "user", "content": openAIUserContent(msg.Content)}}
-	case agentcore.CompactionMessage:
-		// A compaction checkpoint stands in for compacted history as user text.
-		u := msg.AsUserMessage()
-		return []map[string]any{{"role": "user", "content": openAIUserContent(u.Content)}}
 	case agentcore.AssistantMessage:
 		entry := map[string]any{"role": "assistant"}
 		text := agentcore.ContentToText(msg.Content)
@@ -293,6 +293,7 @@ func (d *anthropicCompatDriver) StreamCompletion(ctx context.Context, req Comple
 	if strings.TrimSpace(req.Config.APIKey) == "" {
 		return nil, fmt.Errorf("%s: missing API key", d.name)
 	}
+	req.Context.Messages = TransformMessages(req.Context.Messages, modelForRequest(d.name, req.Model, d.models), normalizeAnthropicToolCallID)
 	if err := checkImageSupport(d.name, req.Model, d.models, req.Context.Messages); err != nil {
 		return nil, err
 	}
@@ -410,9 +411,6 @@ func encodeAnthropicMessage(m agentcore.Message) map[string]any {
 	switch msg := m.(type) {
 	case agentcore.UserMessage:
 		return map[string]any{"role": "user", "content": anthropicUserContent(msg.Content)}
-	case agentcore.CompactionMessage:
-		u := msg.AsUserMessage()
-		return map[string]any{"role": "user", "content": anthropicUserContent(u.Content)}
 	case agentcore.AssistantMessage:
 		var blocks []map[string]any
 		// Thinking blocks must precede tool_use in the same assistant turn:

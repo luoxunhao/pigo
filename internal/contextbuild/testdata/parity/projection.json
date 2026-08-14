@@ -1,0 +1,179 @@
+{
+  "name": "projection",
+  "piCommit": "fc09a0c63f08e133112f3d44f6591e1a0aa7fcc1",
+  "deviations": [
+    {
+      "code": "wire-shaping",
+      "scope": "provider transform",
+      "piCommit": "fc09a0c63f08e133112f3d44f6591e1a0aa7fcc1",
+      "reason": "Go provider abstraction: model-aware wire shaping lives in provider.TransformMessages, not contextbuild"
+    },
+    {
+      "code": "extension-events",
+      "scope": "hooks/plugins",
+      "piCommit": "fc09a0c63f08e133112f3d44f6591e1a0aa7fcc1",
+      "reason": "pigo uses a session-level Registry plus declarative plugin manifests instead of pi's event system"
+    },
+    {
+      "code": "storage-metadata",
+      "scope": "metadata",
+      "piCommit": "fc09a0c63f08e133112f3d44f6591e1a0aa7fcc1",
+      "reason": "id/timestamp/usage/cost are excluded from the parity comparison"
+    }
+  ],
+  "input": {
+    "model": "deepseek/deepseek-v4-pro",
+    "provider": "deepseek",
+    "thinkingLevel": "medium",
+    "activeToolNames": [
+      "read"
+    ],
+    "leafId": "5",
+    "entries": [
+      {
+        "type": "message",
+        "id": "1",
+        "timestamp": "2026-08-14T00:00:00Z",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            }
+          ]
+        }
+      },
+      {
+        "type": "compaction",
+        "id": "2",
+        "parentId": "1",
+        "timestamp": "2026-08-14T00:01:00Z",
+        "summary": "compacted history",
+        "retainedTail": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "kept"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "message",
+        "id": "3",
+        "parentId": "2",
+        "timestamp": "2026-08-14T00:02:00Z",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "new"
+            }
+          ],
+          "stopReason": "end_turn"
+        }
+      },
+      {
+        "type": "message",
+        "id": "4",
+        "parentId": "3",
+        "timestamp": "2026-08-14T00:03:00Z",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "failed turn"
+            }
+          ],
+          "stopReason": "error",
+          "errorMessage": "boom"
+        }
+      },
+      {
+        "type": "custom",
+        "id": "5",
+        "parentId": "4",
+        "timestamp": "2026-08-14T00:04:00Z",
+        "customType": "note",
+        "content": "projector note"
+      }
+    ],
+    "projectors": {
+      "note": {
+        "content": "projector note",
+        "display": true
+      }
+    },
+    "baseInstruction": "You are a parity agent.",
+    "cwd": "E:/parity/project",
+    "tools": [
+      {
+        "name": "read",
+        "description": "read files",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "expected": {
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "The conversation history before this point was compacted into the following summary:\n\n\u003csummary\u003e\ncompacted history\n\u003c/summary\u003e"
+          }
+        ],
+        "timestamp": 1786665660000
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "kept"
+          }
+        ],
+        "timestamp": 0
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "new"
+          }
+        ],
+        "stopReason": "end_turn",
+        "timestamp": 0
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "projector note"
+          }
+        ],
+        "timestamp": 1786665840000
+      }
+    ],
+    "systemPrompt": "You are a parity agent.\n\n# Available tools\n- read: read files\n\n\n# Guidelines\n- Prefer precise, minimal changes and verify your work with the available tools.\n- Keep the user informed of progress and never claim an action was taken unless it was.\n\nEnvironment:\n- Working directory: E:/parity/project\n- OS: windows/amd64\n",
+    "tools": [
+      "read"
+    ]
+  }
+}

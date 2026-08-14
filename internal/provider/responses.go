@@ -73,6 +73,7 @@ func (d *responsesDriver) StreamCompletion(ctx context.Context, req CompletionRe
 		// Early "cannot build the stream": reference the provider, never a value.
 		return nil, fmt.Errorf("%s: missing API key", d.name)
 	}
+	req.Context.Messages = TransformMessages(req.Context.Messages, modelForRequest(d.name, req.Model, d.models), normalizeResponsesToolCallID)
 
 	opts := make([]option.RequestOption, 0, len(d.clientOpts)+2)
 	if d.baseURL != "" {
@@ -305,6 +306,9 @@ func buildResponsesParams(req CompletionRequest) responses.ResponseNewParams {
 		// Requesting a summary makes the API return the model's reasoning so pigo
 		// can render it as a thinking block, matching the chat driver.
 		params.Reasoning = shared.ReasoningParam{Effort: effort, Summary: shared.ReasoningSummaryAuto}
+	}
+	if maxTok := maxOutputTokensFor(req); maxTok > 0 {
+		params.MaxOutputTokens = openai.Int(int64(maxTok))
 	}
 	if tools := buildResponsesTools(req.Context.Tools); len(tools) > 0 {
 		params.Tools = tools

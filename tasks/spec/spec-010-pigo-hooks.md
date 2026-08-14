@@ -1,6 +1,6 @@
 # SPEC: pigo Hooks(用户可扩展的生命周期钩子)
 
-> Technical specification derived from: `tasks/prd-pigo-hooks.md`
+> Technical specification derived from: `tasks/prd/prd-017-pigo-hooks.md`
 > Generated: 2026-07-30 | Target branch: master | Commit: 48e3a37
 
 ## 1. Summary
@@ -9,7 +9,7 @@
 本 SPEC 定义 pigo 用户级 Hook 系统的技术实现:一个新的 `internal/hooks` 叶子包(配置类型、matcher、shell runner、协议解析、事件分发),以及把它**组合(compose)** 进现有 seam 的装配逻辑。范围覆盖 PRD 的 9 个 hook 点与隔离/协议要求。不覆盖沙箱、非 shell 类型、远程分发(见 PRD Non-Goals)。
 
 ### 1.2 PRD Reference
-- Source: `tasks/prd-pigo-hooks.md`
+- Source: `tasks/prd/prd-017-pigo-hooks.md`
 - User Stories: US-001 ~ US-015
 - Functional Requirements: FR-1 ~ FR-18
 

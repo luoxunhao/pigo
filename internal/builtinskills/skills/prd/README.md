@@ -8,7 +8,7 @@ Generate structured Product Requirements Documents (PRD) for new features. Focus
 - Generates a well-structured PRD with user stories, numbered functional requirements, non-goals, success metrics, and more
 - Enforces verifiable acceptance criteria (observable / testable / verifiable)
 - Supports user review and adjustment before saving
-- Saves output to `tasks/prd-[feature-name].md`
+- Saves output to `tasks/prd/prd-NNN-[feature-name].md`
 - Bilingual (Chinese & English) edge case handling
 
 ## Workflow

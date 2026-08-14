@@ -10,7 +10,7 @@
 // introduces the data + a lookup, so it does not change existing behavior.
 //
 // Data source: the PRD "Technical Considerations" table
-// (tasks/prd-provider-env-parity.md), derived from pi's env-api-keys.ts and the
+// (tasks/prd/prd-024-provider-env-parity.md), derived from pi's env-api-keys.ts and the
 // per-provider *.models.ts files.
 //
 // Security: the registry holds only env var NAMES, never secret values. Keys are

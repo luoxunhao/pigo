@@ -26,7 +26,6 @@ const (
 	EntryTypeCompaction         = "compaction"
 	EntryTypeBranchSummary      = "branch_summary"
 	EntryTypeCustom             = "custom"
-	EntryTypeCustomMessage      = "custom_message"
 	EntryTypeLabel              = "label"
 	EntryTypeSessionInfo        = "session_info"
 )
@@ -46,6 +45,7 @@ type V4Header struct {
 	AdditionalDirectories []string `json:"additionalDirectories,omitempty"`
 	ParentSessionID      string    `json:"parentSessionId,omitempty"`
 	LeafID               *string   `json:"leafId,omitempty"`
+	Lanes                []LaneState `json:"lanes,omitempty"`
 }
 
 // V4Entry is one typed session entry in v4 JSONL and in the SQLite payload.
@@ -86,7 +86,7 @@ type V4Fact struct {
 // IsMessageEntry reports whether the entry projects into agent context.
 func (e V4Entry) IsMessageEntry() bool {
 	switch e.Type {
-	case EntryTypeMessage, EntryTypeCustomMessage, EntryTypeBranchSummary, EntryTypeCompaction:
+	case EntryTypeMessage, EntryTypeBranchSummary, EntryTypeCompaction:
 		return true
 	default:
 		return false
@@ -107,15 +107,10 @@ func (e V4Entry) MessageValue() (agentcore.Message, error) {
 				Timestamp:    e.Timestamp.UnixMilli(),
 			}, nil
 		case EntryTypeBranchSummary:
-			return agentcore.UserMessage{
-				RoleField: agentcore.RoleUser,
-				Content:   agentcore.ContentList{agentcore.NewTextContent(e.Summary)},
-				Timestamp: e.Timestamp.UnixMilli(),
-			}, nil
-		case EntryTypeCustomMessage:
-			return agentcore.UserMessage{
-				RoleField: agentcore.RoleUser,
-				Content:   agentcore.ContentList{agentcore.NewTextContent(e.Content)},
+			return agentcore.BranchSummaryMessage{
+				RoleField: agentcore.RoleBranchSummary,
+				Summary:   e.Summary,
+				FromID:    e.TargetID,
 				Timestamp: e.Timestamp.UnixMilli(),
 			}, nil
 		default:
@@ -143,8 +138,9 @@ func NewV4Entry(id, parentID string, ts time.Time, msg agentcore.Message) (V4Ent
 
 // LaneState is the persisted lane/leaf pair used by projection and ACP meta.
 type LaneState struct {
-	Lane   string  `json:"lane"`
-	LeafID *string `json:"leafId,omitempty"`
+	Lane   string      `json:"lane"`
+	LeafID *string     `json:"leafId,omitempty"`
+	Config *LaneConfig `json:"config,omitempty"`
 }
 
 // ProjectLeaf is the unified root-to-leaf projection used by every front-end.
@@ -155,8 +151,10 @@ type ProjectLeaf struct {
 	Entries       []V4Entry
 	Messages      agentcore.MessageList
 	Model         string
+	Provider      string
 	ThinkingLevel string
 	Labels        map[string]string
+	Config        *LaneConfig
 }
 
 // V4TreeLine pairs one v4 entry with its rendered display line.
@@ -245,8 +243,6 @@ func v4TreeKind(e V4Entry) string {
 		return "compaction"
 	case EntryTypeBranchSummary:
 		return "branch_summary"
-	case EntryTypeCustomMessage:
-		return "custom_message"
 	case EntryTypeCustom:
 		return "custom"
 	case EntryTypeLabel:
@@ -266,8 +262,6 @@ func v4TreeSummary(e V4Entry) string {
 	switch e.Type {
 	case EntryTypeCompaction, EntryTypeBranchSummary:
 		return oneLine(e.Summary)
-	case EntryTypeCustomMessage:
-		return oneLine(e.Content)
 	case EntryTypeModelChange:
 		return e.ModelID
 	case EntryTypeThinkingChange:
@@ -326,28 +320,27 @@ func BuildProjection(entries []V4Entry, lanes []LaneState, leafID string, facts 
 		Labels:        labels,
 		ThinkingLevel: "medium",
 	}
+	var mainConfig *LaneConfig
 	for _, l := range lanes {
 		if l.Lane == "main" {
 			leaf.Lane = l.Lane
+			mainConfig = l.Config
 		}
 	}
-	for _, e := range path {
-		switch e.Type {
-		case EntryTypeModelChange:
-			if e.ModelID != "" {
-				leaf.Model = e.ModelID
-			}
-		case EntryTypeThinkingChange:
-			if e.ThinkingLevel != "" {
-				leaf.ThinkingLevel = e.ThinkingLevel
-			}
-		case EntryTypeMessage:
-			if msg, err := e.MessageValue(); err == nil {
-				if a, ok := msg.(agentcore.AssistantMessage); ok && a.Model != "" {
-					leaf.Model = a.Model
-				}
-			}
-		}
+	if mainConfig == nil {
+		return nil, fmt.Errorf("session: lane.config missing for main lane")
+	}
+	if mainConfig.Model == "" && mainConfig.Provider == "" && mainConfig.ThinkingLevel == "" && len(mainConfig.ActiveToolNames) == 0 {
+		return nil, fmt.Errorf("session: lane.config empty for main lane")
+	}
+	if mainConfig.Model == "" {
+		return nil, fmt.Errorf("session: lane.config missing model for main lane")
+	}
+	leaf.Config = mainConfig
+	leaf.Model = mainConfig.Model
+	leaf.Provider = mainConfig.Provider
+	if mainConfig.ThinkingLevel != "" {
+		leaf.ThinkingLevel = mainConfig.ThinkingLevel
 	}
 
 	// Retained-tail projection: the newest compaction entry is self-contained.

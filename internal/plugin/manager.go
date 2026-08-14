@@ -22,6 +22,15 @@ type Manager struct {
 	plugins []*Plugin
 }
 
+// Merge appends another manager's plugins to this one. It is used when
+// discovery spans multiple roots (default plugins dir + explicit plugin_dirs).
+func (m *Manager) Merge(other *Manager) {
+	if m == nil || other == nil {
+		return
+	}
+	m.plugins = append(m.plugins, other.plugins...)
+}
+
 // Discover finds and loads every plugin under dir. A plugin is any executable
 // regular file directly inside dir (non-executable files and subdirectories are
 // ignored). Each plugin is launched and handshaked; a failure is written to

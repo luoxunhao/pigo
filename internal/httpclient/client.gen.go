@@ -265,29 +265,33 @@ type SessionListResult struct {
 
 // SessionLoadResult defines model for SessionLoadResult.
 type SessionLoadResult struct {
-	ConfigOptions []ConfigOption `json:"configOptions"`
-	CurrentLane   *string        `json:"currentLane,omitempty"`
-	CurrentLeafId *string        `json:"currentLeafId,omitempty"`
-	Directory     string         `json:"directory"`
-	HasMore       bool           `json:"hasMore"`
-	Lanes         *[]LaneState   `json:"lanes,omitempty"`
-	Messages      []Message      `json:"messages"`
-	NextCursor    *string        `json:"nextCursor,omitempty"`
-	SessionId     string         `json:"sessionId"`
+	ConfigOptions []ConfigOption  `json:"configOptions"`
+	CurrentLane   *string         `json:"currentLane,omitempty"`
+	CurrentLeafId *string         `json:"currentLeafId,omitempty"`
+	Directory     string          `json:"directory"`
+	HasMore       bool            `json:"hasMore"`
+	LaneConfig    *map[string]any `json:"laneConfig,omitempty"`
+	Lanes         *[]LaneState    `json:"lanes,omitempty"`
+	Messages      []Message       `json:"messages"`
+	NextCursor    *string         `json:"nextCursor,omitempty"`
+	SessionId     string          `json:"sessionId"`
+	SystemPrompt  *string         `json:"systemPrompt,omitempty"`
 }
 
 // SessionStatusResult defines model for SessionStatusResult.
 type SessionStatusResult struct {
-	ContextUsage  *ContextUsage `json:"contextUsage,omitempty"`
-	CurrentLane   *string       `json:"currentLane,omitempty"`
-	CurrentLeafId *string       `json:"currentLeafId,omitempty"`
-	Lanes         *[]LaneState  `json:"lanes,omitempty"`
-	Mode          *string       `json:"mode,omitempty"`
-	Model         *string       `json:"model,omitempty"`
-	QueuedCount   *int          `json:"queuedCount,omitempty"`
-	SessionId     string        `json:"sessionId"`
-	Status        string        `json:"status"`
-	ThinkingLevel *string       `json:"thinkingLevel,omitempty"`
+	ContextUsage  *ContextUsage   `json:"contextUsage,omitempty"`
+	CurrentLane   *string         `json:"currentLane,omitempty"`
+	CurrentLeafId *string         `json:"currentLeafId,omitempty"`
+	LaneConfig    *map[string]any `json:"laneConfig,omitempty"`
+	Lanes         *[]LaneState    `json:"lanes,omitempty"`
+	Mode          *string         `json:"mode,omitempty"`
+	Model         *string         `json:"model,omitempty"`
+	QueuedCount   *int            `json:"queuedCount,omitempty"`
+	SessionId     string          `json:"sessionId"`
+	Status        string          `json:"status"`
+	SystemPrompt  *string         `json:"systemPrompt,omitempty"`
+	ThinkingLevel *string         `json:"thinkingLevel,omitempty"`
 }
 
 // SessionSummary defines model for SessionSummary.

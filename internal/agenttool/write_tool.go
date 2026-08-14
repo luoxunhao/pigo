@@ -27,6 +27,11 @@ type WriteTool struct {
 	// Snap, when non-nil, records the file's prior content before it is written so
 	// the /rewind command can roll the change back. It is shared with the edit tool.
 	Snap *FileSnapshotRecorder
+	// Observe, when non-nil, enforces read-before-overwrite: an existing file
+	// must have been read by this session at the current version before it can
+	// be replaced, while unseen or observed-absent paths may only be created.
+	// It is shared with the read/edit tools.
+	Observe *FileObservationRecorder
 }
 
 // writeToolArgs is the decoded argument shape for WriteTool.
@@ -43,7 +48,7 @@ func (t *WriteTool) Name() string { return "write" }
 // Description implements AgentTool.
 func (t *WriteTool) Description() string {
 	return "Create or overwrite a file at the given path, creating parent " +
-		"directories as needed. Overwriting an existing file is reported."
+		"directories as needed. Overwriting an existing file is reported; read it first."
 }
 
 // Schema implements AgentTool.
@@ -101,6 +106,13 @@ func (t *WriteTool) Execute(ctx context.Context, id string, args json.RawMessage
 		overwrote = true
 	}
 
+	// Read-before-write gate: reject overwriting an unread existing file and
+	// reject replacing a file whose version changed since this session's read.
+	createOnly, obsErr := t.Observe.CheckWrite(full, a.Path)
+	if obsErr != nil {
+		return observationResult(obsErr), nil
+	}
+
 	// Create parent directories as needed.
 	if dir := filepath.Dir(full); dir != "" {
 		if err := os.MkdirAll(dir, dirPerm); err != nil {
@@ -110,9 +122,36 @@ func (t *WriteTool) Execute(ctx context.Context, id string, args json.RawMessage
 
 	// Snapshot the prior state before mutating so /rewind can restore it.
 	t.Snap.Record(full)
-	if err := os.WriteFile(full, []byte(a.Content), filePerm); err != nil {
+	// Re-check after directory creation so an external change between the first
+	// check and the mutation is still caught; the create path also uses O_EXCL
+	// so a concurrent creator is never silently overwritten.
+	createOnly, obsErr = t.Observe.CheckWrite(full, a.Path)
+	if obsErr != nil {
+		return observationResult(obsErr), nil
+	}
+	if createOnly {
+		f, openErr := os.OpenFile(full, os.O_WRONLY|os.O_CREATE|os.O_EXCL, filePerm)
+		if openErr != nil {
+			if os.IsExist(openErr) {
+				return observationResult(&observationError{
+					code: fsNotObserved,
+					msg:  fmt.Sprintf("cannot overwrite existing %q without reading it first — read the file, then retry", a.Path),
+				}), nil
+			}
+			return errorResult(fmt.Sprintf("write: cannot create %q: %v", a.Path, openErr)), nil
+		}
+		_, werr := f.WriteString(a.Content)
+		cerr := f.Close()
+		if werr != nil {
+			return errorResult(fmt.Sprintf("write: cannot write %q: %v", a.Path, werr)), nil
+		}
+		if cerr != nil {
+			return errorResult(fmt.Sprintf("write: cannot close %q: %v", a.Path, cerr)), nil
+		}
+	} else if err := os.WriteFile(full, []byte(a.Content), filePerm); err != nil {
 		return errorResult(fmt.Sprintf("write: cannot write %q: %v", a.Path, err)), nil
 	}
+	t.Observe.RecordPresent(full)
 	verb := "Created"
 	if overwrote {
 		verb = "Overwrote"

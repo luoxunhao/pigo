@@ -1,6 +1,6 @@
 # SPEC: `/dream` — 记忆固结（Memory Consolidation）
 
-> Technical specification derived from: `tasks/prd-dream-memory-consolidation.md`
+> Technical specification derived from: `tasks/prd/prd-006-dream-memory-consolidation.md`
 > Generated: 2026-08-01 | Target branch: `master` | Base commit: `81c2e7d`
 
 ## 1. Summary
@@ -9,7 +9,7 @@
 本 SPEC 描述 `/dream` 记忆固结功能的技术实现：一个在**独立子进程**中运行的、由 LLM 驱动的记忆固结 Agent，读取「当前 project + global」scope 的记忆文件与近期会话 JSONL，执行去重、路径校验、合并、剔除过期/矛盾条目、压缩，并回写紧凑当前态、重建 FTS 索引。覆盖手动 `/dream`（含 `--dry-run`）、会话启动时的到期后台触发、`[dream]` 配置表、状态与并发锁，以及文档更新。不涉及记忆云同步、embedding 检索、备份回滚栈。
 
 ### 1.2 PRD Reference
-- Source: `tasks/prd-dream-memory-consolidation.md`
+- Source: `tasks/prd/prd-006-dream-memory-consolidation.md`
 - User Stories covered: US-001 ~ US-009
 - Functional Requirements covered: FR-1 ~ FR-18
 

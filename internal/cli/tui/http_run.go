@@ -158,15 +158,11 @@ func (s *runSession) httpStartRun(prompt string) (chan tea.Msg, tea.Cmd) {
 	if err != nil {
 		content = agentcore.ContentList{agentcore.NewTextContent(prompt)}
 	}
-	model := s.live.Model
-	thinking := string(s.live.ThinkingLevel)
 	ctx, cancel := context.WithCancel(context.Background())
 	s.httpCancel = cancel
 	resp, err := s.httpClient.PromptSessionAsyncWithResponse(ctx, s.header.ID, httpclient.PromptSessionAsyncJSONRequestBody{
-		Directory:     s.httpDir,
-		Prompt:        contentToDomainBlocks(content),
-		Model:         &model,
-		ThinkingLevel: &thinking,
+		Directory: s.httpDir,
+		Prompt:    contentToDomainBlocks(content),
 	})
 	if err != nil || resp.JSON202 == nil {
 		cancel()

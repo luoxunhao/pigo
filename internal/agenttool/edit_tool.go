@@ -27,6 +27,10 @@ type EditTool struct {
 	// Snap, when non-nil, records the file's prior content before it is edited so
 	// the /rewind command can roll the change back. It is shared with the write tool.
 	Snap *FileSnapshotRecorder
+	// Observe, when non-nil, enforces read-before-edit: the file must have been
+	// read by this session at the current version before a replacement is
+	// allowed. It is shared with the read/write tools.
+	Observe *FileObservationRecorder
 }
 
 // editToolArgs is the decoded argument shape for EditTool.
@@ -43,7 +47,7 @@ func (t *EditTool) Name() string { return "edit" }
 // Description implements AgentTool.
 func (t *EditTool) Description() string {
 	return "Replace an exact string in a file. old_string must be unique unless " +
-		"replace_all is set. Returns a diff of the change."
+		"replace_all is set. Returns a diff of the change. Read a file before editing it."
 }
 
 // Schema implements AgentTool.
@@ -93,6 +97,9 @@ func (t *EditTool) Execute(ctx context.Context, id string, args json.RawMessage,
 	if err != nil {
 		return errorResult("edit: " + err.Error()), nil
 	}
+	if obsErr := t.Observe.CheckEdit(full, a.Path); obsErr != nil {
+		return observationResult(obsErr), nil
+	}
 	data, err := os.ReadFile(full)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -101,6 +108,11 @@ func (t *EditTool) Execute(ctx context.Context, id string, args json.RawMessage,
 		return errorResult(fmt.Sprintf("edit: cannot read %q: %v", a.Path, err)), nil
 	}
 	original := string(data)
+	// Re-check after the read so a file that changed between the first check and
+	// the mutation is never edited against stale observed content.
+	if obsErr := t.Observe.CheckEdit(full, a.Path); obsErr != nil {
+		return observationResult(obsErr), nil
+	}
 
 	count := strings.Count(original, a.OldString)
 	if count == 0 {
@@ -122,6 +134,7 @@ func (t *EditTool) Execute(ctx context.Context, id string, args json.RawMessage,
 	if err := os.WriteFile(full, []byte(updated), filePerm); err != nil {
 		return errorResult(fmt.Sprintf("edit: cannot write %q: %v", a.Path, err)), nil
 	}
+	t.Observe.RecordPresent(full)
 
 	diff := unifiedDiff(a.Path, original, updated)
 	replaced := 1

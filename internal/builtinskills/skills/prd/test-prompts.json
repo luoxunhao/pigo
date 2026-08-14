@@ -22,6 +22,6 @@
   {
     "id": 5,
     "prompt": "给任务列表加一个优先级功能的PRD，包含前端展示",
-    "expected": "含UI改动的用户故事，验收标准必须包含'Verify in a browser (e.g., via the run skill)'一项；生成后展示PRD供用户review，确认后保存到 tasks/prd-*.md"
+    "expected": "含UI改动的用户故事，验收标准必须包含'Verify in a browser (e.g., via the run skill)'一项；生成后展示PRD供用户review，确认后保存到 tasks/prd/prd-*.md"
   }
 ]

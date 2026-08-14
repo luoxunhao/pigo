@@ -1,6 +1,6 @@
 # SPEC: pigo 三级权限模型（Permission Model）
 
-> Technical specification derived from: tasks/prd-pigo-permission-model.md
+> Technical specification derived from: tasks/prd/prd-019-pigo-permission-model.md
 > Generated: 2026-08-07
 
 ## Problem Statement

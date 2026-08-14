@@ -239,11 +239,22 @@ func (a *HTTPAdapter) sessionLoad(ctx context.Context, params json.RawMessage) (
 		a.sendAvailableCommands(req.Cwd, req.SessionID)
 		a.refreshTree(context.Background(), req.SessionID, req.Cwd)
 	})
-	return map[string]any{
+	result := map[string]any{
 		"sessionId":     req.SessionID,
 		"configOptions": resp.JSON200.ConfigOptions,
 		"modes":         a.modesState(),
-	}, nil
+	}
+	if resp.JSON200.LaneConfig != nil || resp.JSON200.SystemPrompt != nil {
+		pigo := map[string]any{}
+		if resp.JSON200.LaneConfig != nil {
+			pigo["laneConfig"] = *resp.JSON200.LaneConfig
+		}
+		if resp.JSON200.SystemPrompt != nil {
+			pigo["systemPrompt"] = *resp.JSON200.SystemPrompt
+		}
+		result["_meta"] = map[string]any{"pigo": pigo}
+	}
+	return result, nil
 }
 
 func (a *HTTPAdapter) sessionList(ctx context.Context, params json.RawMessage) (any, *Error) {
@@ -375,11 +386,17 @@ func (a *HTTPAdapter) sessionConfigOption(ctx context.Context, params json.RawMe
 
 func (a *HTTPAdapter) runPrompt(ctx context.Context, id RequestID, params json.RawMessage) {
 	var req struct {
-		SessionID string                   `json:"sessionId"`
-		Prompt    []map[string]interface{} `json:"prompt"`
+		SessionID     string                   `json:"sessionId"`
+		Prompt        []map[string]interface{} `json:"prompt"`
+		Model         *string                  `json:"model,omitempty"`
+		ThinkingLevel *string                  `json:"thinkingLevel,omitempty"`
 	}
 	if err := json.Unmarshal(params, &req); err != nil || req.SessionID == "" {
 		_ = a.transport.SendResponse(ctx, id, nil, NewError(CodeInvalidParams, "missing sessionId or prompt"))
+		return
+	}
+	if (req.Model != nil && *req.Model != "") || (req.ThinkingLevel != nil && *req.ThinkingLevel != "") {
+		_ = a.transport.SendResponse(ctx, id, nil, NewError(CodeInvalidParams, "model/thinkingLevel must be configured through session/update, not prompt"))
 		return
 	}
 	dir, ok := a.directory(req.SessionID)
@@ -980,6 +997,12 @@ func (a *HTTPAdapter) refreshTree(ctx context.Context, sessionID, directory stri
 		"currentLeafId": st.CurrentLeafID,
 		"currentLane":   st.CurrentLane,
 		"lanes":         st.Lanes,
+	}
+	if resp.JSON200.LaneConfig != nil {
+		update["laneConfig"] = *resp.JSON200.LaneConfig
+	}
+	if resp.JSON200.SystemPrompt != nil {
+		update["systemPrompt"] = *resp.JSON200.SystemPrompt
 	}
 	payload := sessionUpdatePayload(sessionID, update)
 	a.attachTreeMeta(sessionID, payload, nil)

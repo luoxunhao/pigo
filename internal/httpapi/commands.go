@@ -274,12 +274,9 @@ func (c *CommandService) Execute(ctx context.Context, sessionID string, req gen.
 		if apiErr != nil {
 			return gen.PromptResponse{}, apiErr
 		}
-		model, thinking := c.sessionOptions(created.SessionId, req.Directory)
 		resp, apiErr := c.prompts.SubmitSync(created.SessionId, gen.PromptRequest{
-			Directory:     req.Directory,
-			Prompt:        []map[string]interface{}{{"type": "text", "text": args}},
-			Model:         &model,
-			ThinkingLevel: &thinking,
+			Directory: req.Directory,
+			Prompt:    []map[string]interface{}{{"type": "text", "text": args}},
 		})
 		if apiErr != nil {
 			return gen.PromptResponse{}, apiErr
@@ -344,12 +341,9 @@ func (c *CommandService) Execute(ctx context.Context, sessionID string, req gen.
 	if c.prompts == nil {
 		return gen.PromptResponse{}, Internal("prompt runner is not configured")
 	}
-	model, thinking := c.sessionOptions(sessionID, req.Directory)
 	resp, apiErr := c.prompts.SubmitSync(sessionID, gen.PromptRequest{
-		Directory:     req.Directory,
-		Prompt:        []map[string]interface{}{{"type": "text", "text": outcome.Prompt}},
-		Model:         &model,
-		ThinkingLevel: &thinking,
+		Directory: req.Directory,
+		Prompt:    []map[string]interface{}{{"type": "text", "text": outcome.Prompt}},
 	})
 	if apiErr != nil {
 		return gen.PromptResponse{}, apiErr
@@ -363,22 +357,6 @@ func (c *CommandService) Execute(ctx context.Context, sessionID string, req gen.
 		}
 	}
 	return resp, nil
-}
-
-func (c *CommandService) sessionOptions(sessionID, directory string) (string, string) {
-	status, apiErr := c.sessions.Status(sessionID, directory)
-	if apiErr != nil {
-		return "", ""
-	}
-	model := ""
-	if status.Model != nil {
-		model = *status.Model
-	}
-	thinking := ""
-	if status.ThinkingLevel != nil {
-		thinking = *status.ThinkingLevel
-	}
-	return model, thinking
 }
 
 func hintInput(hint string) *struct {

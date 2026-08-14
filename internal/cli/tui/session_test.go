@@ -33,8 +33,9 @@ func saveSession(t *testing.T, store *sessionstore.Store, msgs agentcore.Message
 		Model:     "test-model",
 		Provider:  "test-provider",
 	}
-	if err := store.Save(header, msgs); err != nil {
-		t.Fatalf("Save: %v", err)
+	cfg := &session.LaneConfig{Model: "test-model", Provider: "test-provider", ThinkingLevel: "medium"}
+	if err := store.CreateWithLaneConfig(sessionstore.NewMetadata(header.ID, "Session", "pigo", "test-model", ""), header, msgs, cfg); err != nil {
+		t.Fatalf("CreateWithLaneConfig: %v", err)
 	}
 	return header.ID
 }

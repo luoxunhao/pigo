@@ -28,7 +28,7 @@ func TestOpenHeadlessSessionFresh(t *testing.T) {
 	t.Setenv("PIGO_HOME", t.TempDir())
 	cleanupStores(t)
 
-	prior, hs, err := openHeadlessSession("", "faux-model", "faux", "sys prompt")
+	prior, hs, err := openHeadlessSession("", "faux-model", "faux", "sys prompt", agentcore.ThinkingMedium)
 	if err != nil {
 		t.Fatalf("openHeadlessSession fresh: %v", err)
 	}
@@ -62,6 +62,22 @@ func TestOpenHeadlessSessionFresh(t *testing.T) {
 	}
 }
 
+func TestOpenHeadlessSessionPersistsThinking(t *testing.T) {
+	t.Setenv("PIGO_HOME", t.TempDir())
+	cleanupStores(t)
+	_, hs, err := openHeadlessSession("", "m", "p", "s", agentcore.ThinkingHigh)
+	if err != nil {
+		t.Fatalf("openHeadlessSession: %v", err)
+	}
+	proj, err := hs.store.Projection(hs.header.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proj.ThinkingLevel != string(agentcore.ThinkingHigh) {
+		t.Fatalf("projected thinking = %q, want high", proj.ThinkingLevel)
+	}
+}
+
 // TestOpenHeadlessSessionResume verifies that resuming seeds the prior messages
 // and that a subsequent run appends only the new tail as a branch, so the
 // session grows rather than being rewritten.
@@ -70,7 +86,7 @@ func TestOpenHeadlessSessionResume(t *testing.T) {
 	cleanupStores(t)
 
 	// First run: create and persist a session.
-	_, hs1, err := openHeadlessSession("", "faux-model", "faux", "sys")
+	_, hs1, err := openHeadlessSession("", "faux-model", "faux", "sys", agentcore.ThinkingMedium)
 	if err != nil {
 		t.Fatalf("first openHeadlessSession: %v", err)
 	}
@@ -81,7 +97,7 @@ func TestOpenHeadlessSessionResume(t *testing.T) {
 	sessID := hs1.header.ID
 
 	// Second run: resume the session id.
-	prior, hs2, err := openHeadlessSession(sessID, "faux-model", "faux", "sys")
+	prior, hs2, err := openHeadlessSession(sessID, "faux-model", "faux", "sys", agentcore.ThinkingMedium)
 	if err != nil {
 		t.Fatalf("resume openHeadlessSession: %v", err)
 	}
@@ -114,7 +130,7 @@ func TestOpenHeadlessSessionResume(t *testing.T) {
 func TestHeadlessPersistNoop(t *testing.T) {
 	t.Setenv("PIGO_HOME", t.TempDir())
 	cleanupStores(t)
-	_, hs, err := openHeadlessSession("", "m", "p", "s")
+	_, hs, err := openHeadlessSession("", "m", "p", "s", agentcore.ThinkingMedium)
 	if err != nil {
 		t.Fatalf("openHeadlessSession: %v", err)
 	}
@@ -142,7 +158,7 @@ func TestHeadlessPersistNoop(t *testing.T) {
 func TestHeadlessPersistCompactionShrink(t *testing.T) {
 	t.Setenv("PIGO_HOME", t.TempDir())
 	cleanupStores(t)
-	_, hs, err := openHeadlessSession("", "m", "p", "s")
+	_, hs, err := openHeadlessSession("", "m", "p", "s", agentcore.ThinkingMedium)
 	if err != nil {
 		t.Fatalf("openHeadlessSession: %v", err)
 	}
@@ -172,7 +188,7 @@ func TestHeadlessLegacySessionNotReadable(t *testing.T) {
 	cleanupStores(t)
 	now := time.Now().UTC()
 	id := session.NewID(now)
-	if _, _, err := openHeadlessSession(id, "m", "p", "s"); err == nil {
+	if _, _, err := openHeadlessSession(id, "m", "p", "s", agentcore.ThinkingMedium); err == nil {
 		t.Fatalf("resume of absent/legacy session %q should fail", id)
 	}
 }

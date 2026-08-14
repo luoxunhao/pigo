@@ -26,6 +26,29 @@ func TestPromptManagerSync(t *testing.T) {
 	}
 }
 
+func TestPromptManagerRejectsConfigFields(t *testing.T) {
+	broker := NewEventBroker()
+	mgr := NewPromptManager(func(_ context.Context, _ PromptRun) (gen.PromptResponse, error) {
+		return gen.PromptResponse{MessageId: "msg-1", StopReason: "end_turn"}, nil
+	}, broker)
+	model := "test/model"
+	if _, apiErr := mgr.SubmitSync("s1", gen.PromptRequest{
+		Directory: "E:/project/foo",
+		Model:     &model,
+		Prompt:    []map[string]interface{}{{"type": "text", "text": "hi"}},
+	}); apiErr == nil || apiErr.Code != CodeInvalidParams {
+		t.Fatalf("model in prompt error = %v, want InvalidParams", apiErr)
+	}
+	thinking := "high"
+	if _, apiErr := mgr.SubmitSync("s1", gen.PromptRequest{
+		Directory:     "E:/project/foo",
+		ThinkingLevel: &thinking,
+		Prompt:        []map[string]interface{}{{"type": "text", "text": "hi"}},
+	}); apiErr == nil || apiErr.Code != CodeInvalidParams {
+		t.Fatalf("thinkingLevel in prompt error = %v, want InvalidParams", apiErr)
+	}
+}
+
 func TestPromptManagerCancelClearsQueue(t *testing.T) {
 	broker := NewEventBroker()
 	started := make(chan struct{})

@@ -265,9 +265,8 @@ Ask user for save location:
 ```
 Where should I save the SPEC?
 
-A. docs/SPEC.md (recommended)
-B. SPEC.md (project root)
-C. Custom path: [specify]
+A. tasks/spec/spec-NNN-[task-name].md (recommended)
+B. Custom path: [specify]
 ```
 
 ---

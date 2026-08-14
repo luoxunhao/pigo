@@ -249,6 +249,9 @@ func RegisterLiveCommands(reg *runtime.SlashRegistry, live *cli.LiveConfig) {
 				live.Creds.ClearOverride(providerName)
 				live.Creds.SetOverride(providerName, apiKey)
 			}
+			if live.PersistConfig != nil {
+				live.PersistConfig()
+			}
 			return fmt.Sprintf("model switched to %s (provider: %s)", id, providerName)
 		},
 	})
@@ -273,6 +276,9 @@ func RegisterLiveCommands(reg *runtime.SlashRegistry, live *cli.LiveConfig) {
 			return fmt.Sprintf("think: invalid level %q (want off|minimal|low|medium|high|xhigh|max)", lvl)
 		}
 		live.ThinkingLevel = v
+		if live.PersistConfig != nil {
+			live.PersistConfig()
+		}
 		return fmt.Sprintf("think level set to %s (applies to the next turn)", v)
 	}
 	reg.AddBuiltin(runtime.SlashCommand{

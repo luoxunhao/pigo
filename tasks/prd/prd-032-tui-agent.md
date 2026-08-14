@@ -8,7 +8,7 @@ pigo 目前的交互建立在一个**行式 REPL**（`internal/cli/repl`）之�
 
 技术栈选定 **Bubble Tea + Lipgloss**（charmbracelet 生态，Go TUI 事实标准，Elm 架构）。TUI 复用现有 agent 内核，通过订阅 `internal/agentcore` 已有的 `AgentEvent` 事件流驱动渲染，不重写内核逻辑。
 
-> **历史背景（重要）：** pigo 曾有一个基于 `charm.land/bubbletea/v2` 的全屏 TUI（`internal/tui`，约 3000 行），因逻辑复杂在 `prd-remove-tui.md` 中被整体删除，回退为行式 REPL。删除时记录的两个致命缺陷（见 `prd-tui-enhancement.md`）本次必须从设计上规避：
+> **历史背景（重要）：** pigo 曾有一个基于 `charm.land/bubbletea/v2` 的全屏 TUI（`internal/tui`，约 3000 行），因逻辑复杂在 `tasks/prd/prd-026-remove-tui.md` 中被整体删除，回退为行式 REPL。删除时记录的两个致命缺陷（见 `tasks/prd/prd-033-tui-enhancement.md`）本次必须从设计上规避：
 > 1. **中文/CJK 无法输入**（`handleKey` 只在 `len(s)==1` 时追加按键，多字节 UTF-8 被静默丢弃）。
 > 2. **无宽度感知渲染**（拼字符串不区分双宽字符，换行/截断/光标对齐错位）。
 >

@@ -23,12 +23,13 @@ func TestCompactionPersistsAndReopens(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	header := session.SessionHeader{ID: "compact-sess", CreatedAt: now, UpdatedAt: now, Model: "m", Provider: "p", Cwd: ws}
+	cfg := &session.LaneConfig{Model: "m", Provider: "p", ThinkingLevel: "medium"}
 	msgs := agentcore.MessageList{
 		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("q1")}},
 		agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant, Content: agentcore.ContentList{agentcore.NewTextContent("a1")}},
 		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("q2")}},
 	}
-	if err := st.Create(NewMetadata(header.ID, "S", "pigo", "m", ws), header, msgs); err != nil {
+	if err := st.CreateWithLaneConfig(NewMetadata(header.ID, "S", "pigo", "m", ws), header, msgs, cfg); err != nil {
 		t.Fatal(err)
 	}
 	res := &compaction.CompactionResult{
@@ -81,7 +82,7 @@ func TestImportV4RejectsLegacyVersion(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := st.ImportV4(path, time.Now().UTC()); err == nil {
+	if _, _, _, _, err := st.ImportV4(path, time.Now().UTC()); err == nil {
 		t.Fatal("ImportV4 must reject v1 input")
 	}
 }
@@ -98,12 +99,13 @@ func TestLaneMovePersistsAcrossStoreOpen(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	header := session.SessionHeader{ID: "lane-sess", CreatedAt: now, UpdatedAt: now, Model: "m", Provider: "p", Cwd: ws}
+	cfg := &session.LaneConfig{Model: "m", Provider: "p", ThinkingLevel: "medium"}
 	msgs := agentcore.MessageList{
 		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("q1")}},
 		agentcore.AssistantMessage{RoleField: agentcore.RoleAssistant, Content: agentcore.ContentList{agentcore.NewTextContent("a1")}},
 		agentcore.UserMessage{RoleField: agentcore.RoleUser, Content: agentcore.ContentList{agentcore.NewTextContent("q2")}},
 	}
-	if err := st.Create(NewMetadata(header.ID, "S", "pigo", "m", ws), header, msgs); err != nil {
+	if err := st.CreateWithLaneConfig(NewMetadata(header.ID, "S", "pigo", "m", ws), header, msgs, cfg); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := st.Entries(header.ID)

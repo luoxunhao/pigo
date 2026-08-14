@@ -17,7 +17,7 @@ Analyze a codebase to find violations of software architecture principles, anti-
 1. Understand the scope — ask what part of the project to analyze (full project, specific module, or recent changes)
 2. Scan the codebase using `find`, `grep`, and `Agent` (Explore subagent) to gather evidence
 3. Identify architectural smells and anti-patterns
-4. Generate a detailed markdown report saved to `tasks/smell-report-[timestamp].md`
+4. Generate a detailed markdown report saved to `docs/reports/smell-report-[timestamp].md`
 5. Present a summary of findings to the user
 
 ---
@@ -236,7 +236,7 @@ Generate the report in this structure:
 
 ## Step 4: Save and Present
 
-Save the report to `tasks/smell-report-[YYYY-MM-DD-HHmm].md` and present a brief summary to the user.
+Save the report to `docs/reports/smell-report-[YYYY-MM-DD-HHmm].md` and present a brief summary to the user.
 
 ---
 
@@ -686,5 +686,5 @@ Critical: 3  |  Warnings: 6  |  Suggestions: 9
   5. Circular Dependency — `auth` ↔ `user` modules depend on each other
   6. Magic Numbers — ~23 hardcoded values without named constants
 
-Full report: tasks/smell-report-2026-05-27-1530.md
+Full report: docs/reports/smell-report-2026-05-27-1530.md
 ```
