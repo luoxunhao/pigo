@@ -1,6 +1,6 @@
 # SPEC: pigo 标准 ACP + HTTP Serve
 
-> Derived from `tasks/prd-acp-http-refactor.md` and the 2026-08-11 design conversation.
+> Derived from `tasks/prd/prd-001-acp-http-refactor.md` and the 2026-08-11 design conversation.
 
 ## 1. Problem Statement
 

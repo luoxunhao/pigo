@@ -1,6 +1,6 @@
 # PRD: ACP 按项目进程模型的目录与权限链路修复
 
-> 已废弃：本 PRD 的“按项目进程池 + 独立配置网关”方案已被 `prd-global-shared-acp-session.md` 取代。权限链路部分仍有效，并纳入新 PRD 的回归范围。
+> 已废弃：本 PRD 的“按项目进程池 + 独立配置网关”方案已被 `tasks/prd/prd-007-global-shared-acp-session.md` 取代。权限链路部分仍有效，并纳入新 PRD 的回归范围。
 
 ## 1. Introduction
 

@@ -1,6 +1,6 @@
 # SPEC: 通用 Subagent 编排与实时状态
 
-> Technical specification derived from: `tasks/prd-subagent-orchestration.md`
+> Technical specification derived from: `tasks/prd/prd-030-subagent-orchestration.md`
 > Generated: 2026-07-31 | Target branch: master | Commit: 4f919af
 
 ## 1. Summary
@@ -9,7 +9,7 @@
 新增一个通用 `task` 工具（复用并泛化 `internal/runtime` 现有 `SubAgentTool`），让模型能以自定义 prompt 派发通用子 agent，从而使 `/graph` 能在一条消息内并行 fan-out。同时新增 `SubAgentProgressEvent` 事件类型，让子 agent 的结构化进度经运行级 emitter 上报到父事件流，供交互式 TUI（多行状态面板）与 headless 模式（stderr 行）实时展示。范围限于 goroutine 隔离模式的通用 agent；不涉及 `subagent_type`/技能人格、多层嵌套、进程隔离行为变更。
 
 ### 1.2 PRD Reference
-- Source: `tasks/prd-subagent-orchestration.md`
+- Source: `tasks/prd/prd-030-subagent-orchestration.md`
 - User Stories covered: US-001 ~ US-008
 - Functional Requirements covered: FR-1 ~ FR-10
 

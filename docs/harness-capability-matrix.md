@@ -3,8 +3,8 @@
 > 状态：living document（活文档）。本文由 US-001（#247）产出，是 harness engineering 路线图的对标基线。后续每个 US（#248–#253）在落地时应回到本文更新对应行的"现状"与"缺口"状态。
 >
 > 关联文档：
-> - PRD：`tasks/prd-harness-engineering.md`（六个维度的原始盘点与 User Story 定义）
-> - pi 源码映射：`tasks/research-pi-agent-loop-go-mapping.md`（TS→Go 控制流与钩子契约）
+> - PRD：`tasks/prd/prd-009-harness-engineering.md`（六个维度的原始盘点与 User Story 定义）
+> - pi 源码映射：`docs/research/pi-agent-loop-go-mapping.md`（TS→Go 控制流与钩子契约）
 
 ## 什么是 harness engineering
 
@@ -18,7 +18,7 @@
 
 ## 对标来源约定
 
-- **pi**：源码精读自 `/Users/chaoyuepan/ai/pi`（映射见 `research-pi-agent-loop-go-mapping.md`）。当无法定位到精确 pi 源码行时，本文描述"被对标的行为"而非杜撰文件路径。
+- **pi**：源码精读自 `/Users/chaoyuepan/ai/pi`（映射见 `docs/research/pi-agent-loop-go-mapping.md`）。当无法定位到精确 pi 源码行时，本文描述"被对标的行为"而非杜撰文件路径。
 - **Claude Code (CC)**：以其公开可观察的 harness 行为为准（system-reminder 语义、工具输出裁剪、结构化遥测等），不引用非公开实现。
 
 ## 能力矩阵总览
@@ -56,7 +56,7 @@
 
 **无通用 `system-reminder` 动态上下文注入机制。** 当前无法按轮次注入待办状态、文件状态变化、预算告警等"易失上下文"。AGENTS.md 经 `BuildSystemPrompt` 一次性拼进系统提示后即固定，`prompt.go` 不含任何按轮次刷新的注入路径。
 
-- **对标出处**：Claude Code 的 `<system-reminder>` 机制——按轮次注入被明确标注为"背景上下文而非用户指令"的易失消息（todo 列表状态、文件变更提示等），且不污染持久化会话历史。pi 侧对应"每轮工具执行后的 steering/上下文回调"语义（`research-pi-agent-loop-go-mapping.md` §3.2、§4 的 `getSteeringMessages` / `transformContext` 钩子契约）。
+- **对标出处**：Claude Code 的 `<system-reminder>` 机制——按轮次注入被明确标注为"背景上下文而非用户指令"的易失消息（todo 列表状态、文件变更提示等），且不污染持久化会话历史。pi 侧对应"每轮工具执行后的 steering/上下文回调"语义（`docs/research/pi-agent-loop-go-mapping.md` §3.2、§4 的 `getSteeringMessages` / `transformContext` 钩子契约）。
 - **优先级**：**P0**（影响面最大，是 CC harness 的标志性能力）。
 - **落地**：**US-002 → #248**。技术方向：复用 loop.go 已有的 `GetSteeringMessages` / `PrepareNextTurn` 钩子注入，避免新增并行注入路径；reminder 内容须标注为背景上下文，且与 compaction 协同——压缩时可安全丢弃易失 reminder，不被误纳入结构化摘要。
 
@@ -78,13 +78,13 @@
 
 **缺口 2a：`bash` 工具输出无字节上限。** `internal/agenttool/bash_tool.go` 只有 `bashDefaultTimeout`（2min）与 `bashMaxTimeout`（10min）两个**时间**上限；`streamWriter` 把 stdout/stderr 全量累积进 `combined bytes.Buffer` 并原样作为结果内容返回，**没有任何字节上限或 head/tail 截断**。单条命令的海量输出（如 `cat` 大文件、冗长构建日志）可直接撑爆上下文。
 
-- **对标出处**：pi 的工具输出裁剪——超阈值时保留 head + tail 预览、中间以明确的 `[truncated N bytes]` 标注（被对标行为，参见 `research-pi-agent-loop-go-mapping.md` 对工具结果整形的描述；pi 对流式工具输出统一做尾部保护）。
+- **对标出处**：pi 的工具输出裁剪——超阈值时保留 head + tail 预览、中间以明确的 `[truncated N bytes]` 标注（被对标行为，参见 `docs/research/pi-agent-loop-go-mapping.md` 对工具结果整形的描述；pi 对流式工具输出统一做尾部保护）。
 - **优先级**：**P0**（长任务上下文溢出的直接诱因）。
 - **落地**：**US-003 → #249**。方向：新增 `bashMaxOutputBytes` 常量（可经配置层调整），超限时保留首尾预览 + `[truncated N bytes]` 标注，截断须发生在结果进入上下文之前。
 
 **缺口 2b：executor 层无统一工具结果预算。** `internal/agenttool/tool_executor.go` 的 `prepare→execute→finalize` 三段式中，`finalizeToolCall` 只做 `afterToolCall` 字段级覆盖，**不对结果内容施加任何字节预算**。裁剪逻辑散落在各工具自身，任何未自带上限的工具（现在的 `bash`，以及未来新增工具）都能绕过裁剪。
 
-- **对标出处**：pi 的统一结果整形——在执行器/批处理的结果整形阶段施加统一上限，各工具特化上限作为更严格的内层约束（`research-pi-agent-loop-go-mapping.md` §3.4 finalize 阶段 + PRD Technical Considerations "裁剪单点"）。
+- **对标出处**：pi 的统一结果整形——在执行器/批处理的结果整形阶段施加统一上限，各工具特化上限作为更严格的内层约束（`docs/research/pi-agent-loop-go-mapping.md` §3.4 finalize 阶段 + PRD Technical Considerations "裁剪单点"）。
 - **优先级**：**P0**。
 - **落地**：**US-004 → #250**。方向：在 `tool_executor.go` 的结果整形阶段实现单一裁剪点，新增可配置的单条工具结果字节预算；`read` 行数、`search` 条数、`webfetch` 字节等特化上限作为更严格的内层约束继续生效。
 
@@ -102,7 +102,7 @@
 
 **无工具执行失败的分类与有限重试。** `tool_executor.go` 的 `runTool` 把工具错误（及 panic）一律转成 `IsError` 结果一次性返回，**不区分瞬态（临时 IO/网络）与终态错误，也不重试**。传输层的连接期重试语义与工具层无关联。
 
-- **对标出处**：pi 的错误恢复——工具执行错误按"瞬态可重试 vs 终态不可重试"分类，可重试类别按有限次数重试（`research-pi-agent-loop-go-mapping.md` §4 钩子契约中"不得抛错"→安全回退语义 + PRD FR-8）。
+- **对标出处**：pi 的错误恢复——工具执行错误按"瞬态可重试 vs 终态不可重试"分类，可重试类别按有限次数重试（`docs/research/pi-agent-loop-go-mapping.md` §4 钩子契约中"不得抛错"→安全回退语义 + PRD FR-8）。
 - **优先级**：**P1**。
 - **落地**：**US-006 → #252**。约束：可重试类别按有限次数重试、绝不无限循环；传输层现有连接期重试语义必须保持不变（仍仅 429/503/529、尊重 Retry-After、绝不重放已消费的流，见 PRD FR-9）。
 
@@ -119,7 +119,7 @@
 
 steering 的触发/来源较薄；无标准化的运行时中断—引导 UX。
 
-- **对标出处**：pi 的 steering/follow-up 双时机注入（`research-pi-agent-loop-go-mapping.md` §3.2）与 Claude Code 运行中可插话/引导的交互模型。
+- **对标出处**：pi 的 steering/follow-up 双时机注入（`docs/research/pi-agent-loop-go-mapping.md` §3.2）与 Claude Code 运行中可插话/引导的交互模型。
 - **优先级**：P2。
 - **落地**：本文记录，不单独开 US；与 **US-002（#248）** 的 system-reminder 注入机制协同——两者都经 `GetSteeringMessages` / `PrepareNextTurn` 注入路径，实现时统一考虑，避免注入路径分裂。
 
@@ -149,7 +149,7 @@ steering 的触发/来源较薄；无标准化的运行时中断—引导 UX。
 
 **无结构化 harness 遥测的统一采集。** 现有事件流虽能承载数据，但缺少统一采集：每轮工具耗时、截断发生次数、压缩发生次数（`CompactionEvent` 可数但未聚合）、上下文 token 占用率（`Usage` 已有原料但未换算为占用率）都没有统一的度量点或 summary 导出。没有度量就无法验证 PRD 4C-b 的鲁棒性指标。
 
-- **对标出处**：Claude Code 的结构化遥测/会话度量（轮次、工具耗时、上下文利用率）——公开可观察的 headless 度量行为。pi 侧对应 `AgentEvent` 事件族承载 usage/turn 信息（`research-pi-agent-loop-go-mapping.md` §1.3 事件全集）。
+- **对标出处**：Claude Code 的结构化遥测/会话度量（轮次、工具耗时、上下文利用率）——公开可观察的 headless 度量行为。pi 侧对应 `AgentEvent` 事件族承载 usage/turn 信息（`docs/research/pi-agent-loop-go-mapping.md` §1.3 事件全集）。
 - **优先级**：**P1**（是 4C-b 鲁棒性指标的前提）。
 - **落地**：**US-005 → #251**。方向：优先扩展现有 `AgentEvent` 事件族，headless 下经 stream-json 暴露；至少一项指标在 headless 模式下可被脚本读取；不引入外部遥测后端（Prometheus/OTLP 等属 Non-Goal）。
 
@@ -166,7 +166,7 @@ steering 的触发/来源较薄；无标准化的运行时中断—引导 UX。
 
 trust 与 harness 其他机制（executor 裁剪、reminder 注入、遥测）未打通；无按工具/按操作粒度的统一策略入口。当前信任是目录级二元开关，无法表达"某工具需确认、某工具免确认"的细粒度策略。
 
-- **对标出处**：Claude Code 按工具/操作粒度的权限策略入口（allow/deny/confirm 规则）；pi 的 `beforeToolCall` block 钩子作为统一策略挂载点（`research-pi-agent-loop-go-mapping.md` §4）。
+- **对标出处**：Claude Code 按工具/操作粒度的权限策略入口（allow/deny/confirm 规则）；pi 的 `beforeToolCall` block 钩子作为统一策略挂载点（`docs/research/pi-agent-loop-go-mapping.md` §4）。
 - **优先级**：P2。
 - **落地**：本文记录，本 PRD 不展开设计（PRD Non-Goal：不改动 trust 既有交互模型）。安全护栏与 harness 协同留作后期 US；若届时范围较大，可能需单独 PRD——此判断作为路线图待决项交由维护者，不属于本文可自行敲定的实现细节。
 

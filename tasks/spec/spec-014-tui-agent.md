@@ -1,6 +1,6 @@
 # SPEC: TUI 形式 Agent 交互界面
 
-> Technical specification derived from: `tasks/prd-tui-agent.md`
+> Technical specification derived from: `tasks/prd/prd-032-tui-agent.md`
 > Generated: 2026-07-28 | Target branch: master | Commit: bdc9071
 
 ## 1. Summary
@@ -9,7 +9,7 @@
 本 SPEC 描述如何为 pigo 新增一个基于 **Bubble Tea v2** 的全屏 TUI 交互界面，作为 TTY 下的默认交互模式，并保留行式 REPL 作为 `--no-tui` 与非 TTY 的 fallback。核心策略是**复用现有 agent 内核**：TUI 不重写运行循环，而是复用 `runtime.StartRun` + `runtime.DrainStream` 这一既有运行/流式消费 seam，通过一个把 `agentcore.AgentEvent` 桥接为 `tea.Msg` 的适配器驱动 UI。范围包括：入口接线、主题与宽度感知渲染、状态栏、事件桥、流式 transcript、富工具卡片、CJK 输入框、斜杠命令复用、会话恢复。
 
 ### 1.2 PRD Reference
-- Source: `tasks/prd-tui-agent.md`
+- Source: `tasks/prd/prd-032-tui-agent.md`
 - User Stories covered: US-001 ~ US-009（全部）
 - Functional Requirements covered: FR-1 ~ FR-17（全部）
 

@@ -4,5 +4,5 @@ pigo 的 compaction 采用 harness 风格 `retainedTail` 自包含 checkpoint：
 
 同时完整实现 split-turn（history summary + turn prefix summary 合并）、overflow 单次自动重试、每次 prompt 前 aborted 检查。压缩永远作为新 `compaction` entry 追加到当前 lane 并推进 leaf，REPL/TUI/serve/headless 共用 `AppendCompaction`。
 
-本重构移除 `<memoryRoot>/sessions/<id>/checkpoint.md` 的会话集成与 `/rebuild` 的 checkpoint 优先路径；memory 能力本身不在此范围，另起 effort 设计。完整设计见 `tasks/spec-session-tree-pi-alignment.md` §8。
+本重构移除 `<memoryRoot>/sessions/<id>/checkpoint.md` 的会话集成与 `/rebuild` 的 checkpoint 优先路径；memory 能力本身不在此范围，另起 effort 设计。完整设计见 `tasks/spec/spec-012-session-tree-pi-alignment.md` §8。
 

@@ -302,7 +302,7 @@ Update state: `pending` → `in_progress`, `phase: "implement"`, write checkpoin
 
 **由 agent 内联完成实现**（本环境无 `goal` 命令/skill 可调用，必须自己干）：
 
-1. 读取该 issue 的标题与正文，提取需求与全部验收条件（Acceptance Criteria）；若正文引用了 PRD/SPEC 文件（如 `tasks/prd-*.md`），一并读取作为上下文
+1. 读取该 issue 的标题与正文，提取需求与全部验收条件（Acceptance Criteria）；若正文引用了 PRD/SPEC 文件（如 `tasks/prd/prd-*.md`），一并读取作为上下文
 2. 阅读相关现有代码，遵循项目既有风格、命名与依赖约定
 3. 实现/修改代码以满足全部验收条件
 4. 跑项目的构建、测试与 lint（如 `go build ./...`、`go vet ./...`、`go test ./...`）

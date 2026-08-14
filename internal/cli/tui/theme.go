@@ -10,7 +10,7 @@ import (
 
 // Theme bundles the lipgloss styles for every visual element the TUI paints so
 // the transcript, tool cards and status bar share one palette instead of each
-// call site hand-rolling colors (see tasks/spec-tui-agent.md Sections 2.2, 5.1).
+// call site hand-rolling colors (see tasks/spec/spec-014-tui-agent.md Sections 2.2, 5.1).
 // The reference palette is: success green, error/warn red & yellow, file/accent
 // blue, and gray for secondary chrome. Styles are plain value types, so a Theme
 // is cheap to copy and safe to pass by value.

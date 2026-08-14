@@ -1,6 +1,6 @@
 // Package remotecontrol implements the /remote-control feature: an in-process
 // web server that lets a phone on the same LAN mirror the CLI session, inject
-// prompts, and approve risky tool calls (see tasks/spec-remote-control.md).
+// prompts, and approve risky tool calls (see tasks/spec/spec-011-remote-control.md).
 //
 // This file (node #438) provides the auth substrate: a one-time, TTL-bound
 // pairing token that a paired browser exchanges for an opaque session

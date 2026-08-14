@@ -137,7 +137,7 @@
 - **注入点复用**：system-reminder 应优先复用 loop.go 已有的 `GetSteeringMessages` / `PrepareNextTurn` / `TurnUpdate` 钩子，避免新增并行的注入路径。
 - **裁剪单点**：工具结果预算应在 `tool_executor.go` / batch executor 的结果整形阶段实现，各工具特化上限作为内层约束，防止逻辑散落。
 - **易失性与压缩的关系**：reminder 注入内容需与 compaction 协同——压缩时应可安全丢弃易失 reminder，不被误纳入结构化摘要。
-- **对标来源**：pi 源码（`research-pi-agent-loop-go-mapping.md` 已有映射）与 Claude Code 的公开 harness 行为作为主要对标依据。
+- **对标来源**：pi 源码（`docs/research/pi-agent-loop-go-mapping.md` 已有映射）与 Claude Code 的公开 harness 行为作为主要对标依据。
 - **遥测载体**：优先扩展现有 `AgentEvent` 事件族，headless 下经 stream-json 暴露，避免引入新依赖。
 - **测试隔离**：e2e 场景用 provider 桩/录制流，禁止依赖真实外部大模型，保证 CI 可复现。
 

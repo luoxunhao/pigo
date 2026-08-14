@@ -1,6 +1,6 @@
 # SPEC: contextbuild 与 pi harness 对齐实施 Code Review 修复
 
-> 状态：待实施。决策源为 `616368a`（`实施 contextbuild 与 pi harness 对齐`）相对 `fc09a0c` 的双轴 code review 报告；修复验收沿用 `tasks/spec-contextbuild-pi-alignment.md` 与 `.scratch/contextbuild-pi-alignment/issues/01-09`。
+> 状态：待实施。决策源为 `616368a`（`实施 contextbuild 与 pi harness 对齐`）相对 `fc09a0c` 的双轴 code review 报告；修复验收沿用 `tasks/spec/spec-003-contextbuild-pi-alignment-code-review.md` 与 `.scratch/contextbuild-pi-alignment/issues/01-09`。
 
 ## 目标
 
@@ -31,7 +31,7 @@
 
 - 位置：`internal/acp/http_adapter.go:242`、`internal/acp/http_adapter.go:996`。
 - 问题：`session/load` 增加 `_meta.pigo.laneConfig/systemPrompt`，session/update 增加顶层 `laneConfig/systemPrompt`，拓宽标准 ACP payload。
-- 说明：spec 06 明确要求 `_meta.pigo` 扩展，属有意为之；需在 `internal/acp` 文档或 `spec-acp.md` 登记 vendor extension 名称与版本。
+- 说明：spec 06 明确要求 `_meta.pigo` 扩展，属有意为之；需在 `internal/acp` 文档或 `tasks/spec/spec-001-acp.md` 登记 vendor extension 名称与版本。
 - 验收：协议文档记录 `_meta.pigo.laneConfig` / `_meta.pigo.systemPrompt` 扩展。
 
 ### S3. RequestBuilder 包装重复（低，smell）
@@ -144,4 +144,4 @@
 
 ## Backlog
 
-- K1: `activeToolNames` 更新路径暂不接入 `session/update`；`lane.config.ActiveToolNames` 保持 `nil`（= 全部工具）。后续出现真实需求时再实现；完整决策链见 `tasks/spec-lane-config-authority.md`。
+- K1: `activeToolNames` 更新路径暂不接入 `session/update`；`lane.config.ActiveToolNames` 保持 `nil`（= 全部工具）。后续出现真实需求时再实现；完整决策链见 `tasks/spec/spec-006-lane-config-authority.md`。

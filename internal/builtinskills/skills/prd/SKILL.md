@@ -16,7 +16,7 @@ Create detailed Product Requirements Documents that are clear, actionable, and s
 2. Ask clarifying questions to cover key ambiguities — scale the count to complexity, not a fixed number (see Step 1)
 3. Generate a structured PRD based on answers
 4. **Present PRD to user for review** — ask "Please review the PRD. Let me know if any adjustments are needed, or reply OK to confirm."
-5. Apply any adjustments, then save to `tasks/prd-[feature-name].md`
+5. Apply any adjustments, then save to `tasks/prd/prd-NNN-[feature-name].md`
 6. **Suggest next steps** (see Step 3)
 
 **Important:** Do NOT start implementing. Just create the PRD.
@@ -70,7 +70,7 @@ This lets users respond with "1A, 2C, 3B" for quick iteration. Remember to inden
 |----------|----------|
 | User skips clarifying questions (e.g., replies "whatever", "just write it") | Fill with reasonable defaults, mark with `[Assumption]` in PRD, prompt user to confirm during review |
 | User input is too vague (e.g., "add a feature") | Ask once for specifics; if still vague, infer from project context and mark assumptions |
-| `tasks/` directory does not exist | Auto-create `tasks/` directory |
+| `tasks/prd/` directory does not exist | Auto-create `tasks/prd/` directory |
 | feature-name is hard to extract from input | Ask the user directly: "Suggested PRD filename is prd-XXX.md, please confirm or modify" |
 | User requests PRD changes after review | Apply changes and re-save without re-running the clarification flow |
 | PRD content exceeds 500 lines | Suggest the user consider splitting into multiple sub-feature PRDs |
@@ -152,8 +152,8 @@ Remaining questions or areas needing clarification.
 ## Output
 
 - **Format:** Markdown (`.md`)
-- **Location:** `tasks/`
-- **Filename:** `prd-[feature-name].md` (kebab-case)
+- **Location:** `tasks/prd/`
+- **Filename:** `prd-NNN-[feature-name].md` (zero-padded 3 位编号 + kebab-case)
 
 ---
 
@@ -162,7 +162,7 @@ Remaining questions or areas needing clarification.
 After the PRD is saved, suggest the user:
 
 ```
-✅ PRD saved to tasks/prd-[feature-name].md
+✅ PRD saved to tasks/prd/prd-NNN-[feature-name].md
 
 Next steps:
   /prd-to-spec  →  Generate technical SPEC (optional — for complex features)
@@ -274,5 +274,5 @@ Before saving the PRD:
 - [ ] User stories are small and specific
 - [ ] Functional requirements are numbered and unambiguous
 - [ ] Non-goals section defines clear boundaries
-- [ ] Saved to `tasks/prd-[feature-name].md`
+- [ ] Saved to `tasks/prd/prd-NNN-[feature-name].md`
 - [ ] Suggested next steps: `/prd-to-spec` (optional) and `/to-issues`

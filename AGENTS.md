@@ -38,6 +38,18 @@ pigo.exe -v                       # 打印版本信息
 | `internal/dream` | 记忆整合 / distill |
 | `sdk/node/pigo-acp` | Node ACP 客户端（pi-web 使用） |
 | `scripts` | pi-web 启动 / 停止脚本 |
+| `tasks/issues` | Issue 卡片：bug、需求与验收条件，按编号递增命名 |
+| `tasks/prd` | PRD 需求文档，按编号递增命名 |
+| `tasks/tickets` | 实施 tickets（由 PRD/SPEC 拆解），按编号递增命名 |
+| `tasks/spec` | 技术规格文档，按编号递增命名 |
+
+## 任务文档目录
+
+- `tasks/` 只存放开发规范文档，按类型放入 `issues/`、`prd/`、`tickets/`、`spec/` 子目录；根目录不放置散文档。
+- 文档直接平铺在类型目录下，不建任务子目录；文件名按编号递增（zero-padded 3 位），如 `tasks/prd/prd-017-pigo-hooks.md`、`tasks/issues/issue-012-multi-dir-additional-directories.md`。
+- 新增文档按下一个编号命名：`tasks/prd/prd-NNN-<任务名>.md`、`tasks/spec/spec-NNN-<任务名>.md`、`tasks/issues/issue-NNN-<任务名>.md`、`tasks/tickets/ticket-NNN-<任务名>.md`。
+- 开发规范文档（PRD、SPEC、issue、ticket）必须平铺落盘到 `tasks/<类型>/`，禁止建子目录，也禁止散落在 `tasks/` 根目录、`docs/`、`.autoresearch/` 或其他位置；内置 skills 与自动化流程生成此类文档时也必须遵守该路径。
+- research、smell report、design doc 等分析类文档放 `docs/`（如 `docs/research/`、`docs/reports/`），不进入 `tasks/`。
 
 ## 关键约定
 
@@ -47,6 +59,7 @@ pigo.exe -v                       # 打印版本信息
 - 会话删除必须走 `internal/sessionstore` 的 store API，保持磁盘持久化一致。
 - 会话 canonical 存储是 `$PIGO_HOME/sessions.db`（SQLite，pi 对齐 schema）；v4 typed JSONL 仅用于 `/export`、`/import`，不承担运行时读写。
 - `lanes.main.leaf_id` 是 resume / `session/load` / 所有前端的 leaf 权威来源；不再读写 `metadata.customMetadata["curLeaf"]`。
+- 开发规范文档一律平铺落盘到 `tasks/<类型>/` 并按编号递增命名，不得建子目录或散落到其他位置（详见「任务文档目录」）。
 - 旧 v1/v2/v3 JSONL 与 `$PIGO_HOME/sessions`、`$PIGO_HOME/projects/*/sessions` 运行时不再可读；升级前执行 `scripts/quarantine-legacy-sessions.ps1` 或 `.sh` 隔离旧目录。
 - 新增能力默认在核心层实现；外部客户端通过 ACP 暴露，TUI/REPL 通过共享 runtime 直连，避免旁路实现。
 - 不为旧协议/旧接口保留兼容 shim；移除即移除。`--acp`、`model/set`、`pigo/*` 已从对外入口移除，不再提供向后兼容 alias。

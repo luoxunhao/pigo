@@ -13,7 +13,7 @@ for a deterministic scenario so future changes are diffable:
   environment/cwd, no date).
 
 The corpus is anchored to the pi behavior described in
-`tasks/spec-contextbuild-pi-alignment.md`. `piCommit` records the pigo commit the
+`tasks/spec/spec-003-contextbuild-pi-alignment-code-review.md`. `piCommit` records the pigo commit the
 fixtures were generated at; `deviations` registers deliberate differences
 (Go provider abstraction, extension registration mechanics, storage metadata).
 

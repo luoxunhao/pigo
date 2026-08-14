@@ -6,5 +6,5 @@ pigo 的会话持久化从“项目级 JSONL 文件 + metadata/index + 进程内
 
 首次版本同时纳入 `session_search_fts`（FTS5 trigram + content triggers + bm25）与 `schema_migrations` 版本表。本 ADR 不保留旧 JSONL 运行时兼容，旧格式处理见 `0008`。
 
-完整设计见 `tasks/spec-session-tree-pi-alignment.md` §4。
+完整设计见 `tasks/spec/spec-012-session-tree-pi-alignment.md` §4。
 

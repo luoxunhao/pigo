@@ -27,9 +27,9 @@ Find the input document:
 ```
 What should I base the Issues on?
 
-A. Auto-detect: scan tasks/ for recent PRDs and SPECs
-B. Specific PRD file (e.g., tasks/prd-priority-system.md)
-C. Specific SPEC file (e.g., tasks/spec-priority-system.md)
+A. Auto-detect: scan tasks/prd/ and tasks/spec/ for recent PRDs and SPECs
+B. Specific PRD file (e.g., tasks/prd/prd-001-priority-system.md)
+C. Specific SPEC file (e.g., tasks/spec/spec-001-priority-system.md)
 D. Both PRD and SPEC (best: PRD for requirements, SPEC for technical contracts)
 E. Paste requirements directly
 ```
@@ -122,12 +122,12 @@ Your choice:
 
 **Ask user:**
 ```
-Where should I save the Issue files? (default: .autoresearch/issues)
+Where should I save the Issue files? (default: tasks/issues/)
 ```
 
 **Actions:**
-1. If the specified folder does not exist, create it with `mkdir -p`
-2. For each Issue #N, save a file named `issue-NNN-[slug].md` (zero-padded to 3 digits):
+1. If `tasks/issues/` does not exist, create it with `mkdir -p`
+2. For each Issue #N, save a file named `issue-NNN-[slug].md` (zero-padded to 3 digits, 编号递增):
    ```markdown
    # [Title]
 
@@ -204,7 +204,7 @@ Issues created: N
 
 | Scenario | Handling |
 |----------|----------|
-| No PRD/SPEC found in tasks/ | Ask user to provide file path or paste requirements |
+| No PRD/SPEC found in tasks/prd/ or tasks/spec/ | Ask user to provide file path or paste requirements |
 | PRD has no User Stories | Derive Issues from Functional Requirements instead |
 | SPEC has Issue Mapping (Section 10.2) | Use it as primary source, cross-reference with PRD |
 | `gh` CLI not authenticated for GitHub mode | Show error, suggest `gh auth login`, offer to switch to Local mode |
