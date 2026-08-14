@@ -1,6 +1,6 @@
 # SPEC: contextbuild 与 pi harness 对齐实施 Code Review 修复
 
-> 状态：待实施。决策源为 `616368a`（`实施 contextbuild 与 pi harness 对齐`）相对 `fc09a0c` 的双轴 code review 报告；修复验收沿用 `tasks/spec/spec-015-contextbuild-pi-alignment.md` 与 `.scratch/contextbuild-pi-alignment/issues/01-09`。
+> 状态：待实施。决策源为 `616368a`（`实施 contextbuild 与 pi harness 对齐`）相对 `fc09a0c` 的双轴 code review 报告；修复验收沿用 `tasks/spec/spec-015-contextbuild-pi-alignment.md` 与 `tasks/issues/issue-037-045`。
 
 ## 目标
 

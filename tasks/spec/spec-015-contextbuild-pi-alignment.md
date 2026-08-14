@@ -1,6 +1,7 @@
 # SPEC: pigo contextbuild 与 pi harness 对齐实施
 
-> 状态：待实施。决策源为 `.scratch/contextbuild-pi-alignment/map.md` 与其 `issues/01-09`（均 resolved）；`08 before_request` 本轮明确不实现。
+> 状态：**superseded**——被 `tasks/spec/spec-018-contextbuild-registry-dsh-alignment.md` 取代（对齐目标从 pi 改为 deepseek-harness，注册表化；见 `docs/adr/0014-contextbuild-registry-dsh-alignment.md`）。归档保留，不再实施。
+> 原状态：待实施。决策源为 `docs/research/contextbuild-pi-alignment-map.md` 与 `tasks/issues/issue-037-045`（均 resolved）；`issue-044 before_request` 本轮明确不实现。
 
 ## 目标
 
